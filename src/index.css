@@ -1014,3 +1014,99 @@
     }
   }
 }
+
+/* --------------------------------------------------------------------------
+   Split-view chat panes — compact the chat chrome when a pane is narrow.
+   Each grid pane is a CSS container (.pane-chat); the composer/message padding
+   and the bulkier toolbar labels — sized for a full-width desktop via sm:/md:
+   VIEWPORT breakpoints — compact to fit a quarter-width pane. Selectors are
+   prefixed with .pane-chat so they out-specify Tailwind's single-class
+   utilities (e.g. md:pb-2) regardless of source order. The single (full) view
+   is NOT a container, so none of this applies there.
+-------------------------------------------------------------------------- */
+.pane-chat {
+  container-type: inline-size;
+  container-name: chatpane;
+}
+
+@container chatpane (max-width: 700px) {
+  /* Composer: kill the desktop bottom / side padding. */
+  .pane-chat .chat-composer-shell {
+    padding-left: 0.5rem;
+    padding-right: 0.5rem;
+    padding-bottom: 0.25rem;
+  }
+  /* Toolbar: drop the bulky text labels; the icon/dot/value carry the meaning. */
+  .pane-chat .composer-mode-label,
+  .pane-chat .composer-effort-label,
+  .pane-chat .composer-token-label {
+    display: none;
+  }
+  /* Text area: tighter top/bottom padding. Both the textarea AND its mention-
+     highlight mirror carry .chat-input-placeholder, so they shrink together and
+     stay aligned. (Height itself starts at 1 row via rows={1}.) */
+  .pane-chat .chat-input-placeholder {
+    padding-top: 0.25rem;
+    padding-bottom: 0.25rem;
+  }
+  /* Toolbar row under the input: slimmer padding + shorter control buttons. */
+  .pane-chat [data-slot='prompt-input-footer'] {
+    padding-top: 0.25rem;
+    padding-bottom: 0.25rem;
+  }
+  .pane-chat [data-slot='prompt-input-footer'] button {
+    height: 1.75rem;
+  }
+  /* Message column: tighter side gutters + inter-message spacing. */
+  .pane-chat .chat-messages-pane .mx-auto {
+    padding-left: 0.625rem;
+    padding-right: 0.625rem;
+  }
+  .pane-chat .chat-messages-pane .mx-auto > * + * {
+    margin-top: 0.5rem;
+  }
+}
+
+/* --------------------------------------------------------------------------
+   Running-session indicator -- an animated, colorful rotating gradient border
+   applied to a split-view pane while its session has an active LLM run. Lets
+   you tell at a glance which panes are working vs idle (ready for input).
+   The conic gradient is drawn as a thin ring via a mask, and a registered
+   custom property (@property) lets the angle animate smoothly.
+-------------------------------------------------------------------------- */
+@property --pane-ring-angle {
+  syntax: '<angle>';
+  initial-value: 0deg;
+  inherits: false;
+}
+.pane-running {
+  border-color: transparent !important;
+}
+.pane-running::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 2px;
+  background: conic-gradient(
+    from var(--pane-ring-angle),
+    #6366f1, #22d3ee, #ec4899, #f59e0b, #10b981, #6366f1
+  );
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  animation: pane-ring-spin 2.6s linear infinite;
+  pointer-events: none;
+  z-index: 15;
+}
+@keyframes pane-ring-spin {
+  to {
+    --pane-ring-angle: 360deg;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pane-running::after {
+    animation: none;
+  }
+}

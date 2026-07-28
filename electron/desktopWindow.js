@@ -1,31 +1,54 @@
-import { BrowserWindow, Menu, Tray, clipboard, nativeImage, nativeTheme, session, webContents as electronWebContents } from 'electron';
+import { BrowserWindow, Menu, Tray, clipboard, nativeImage, nativeTheme, session } from 'electron';
 
 import { ViewHost } from './viewHost.js';
 
-const TITLEBAR_HEIGHT = 44;
+const TITLEBAR_HEIGHT = 30;   // slim: just traffic lights + compact controls
+const PANE_HEADER_HEIGHT = 0;  // no per-pane header strip (app shows its own)
+const GUTTER = 2;              // thin frame around each pane (focus accent)
 const AUTH_TOKEN_STORAGE_KEY = 'auth-token';
-function isAllowedPermissionOrigin(sourceUrl, controlPlaneUrl) {
-  try {
-    const source = new URL(sourceUrl);
-    if ((source.hostname === '127.0.0.1' || source.hostname === 'localhost') && source.protocol === 'http:') {
-      return true;
-    }
-    if (source.protocol !== 'https:') {
-      return false;
-    }
-    const controlPlane = new URL(controlPlaneUrl);
-    return source.origin === controlPlane.origin || source.hostname.endsWith('.cloudcli.ai');
-  } catch {
-    return false;
-  }
-}
 
-function getWebContentsProcessId(contents) {
-  return {
-    osProcessId: typeof contents.getOSProcessId === 'function' ? contents.getOSProcessId() : null,
-    processId: typeof contents.getProcessId === 'function' ? contents.getProcessId() : null,
-  };
+// The web app's persistent desktop sidebar wrapper (AppContent.tsx:
+// `<div class="h-full flex-shrink-0 border-r border-border/50">`). Hidden so
+// panes are full-bleed chat — nav happens via the shell picker + in-app ⌘K.
+const SIDEBAR_HIDE_CSS = `
+.fixed.inset-0.flex.bg-background > .flex-shrink-0.border-r { display: none !important; }
+`;
+
+// Always-injected desktop style tweaks for the loaded web app:
+//  - strip sidebar clutter (GitHub star badge, Report Issue, Discord, OSS line)
+//  - user's sent chat messages: colored text only, no blue bubble background
+const DESKTOP_OVERRIDE_CSS = `
+a[href*="discord.gg"],
+a[href*="/issues/new"],
+a[href="https://github.com/siteboon/claudecodeui"],
+[class~="group/star"] { display: none !important; }
+
+.chat-message.user .bg-blue-600.rounded-2xl {
+  background-color: transparent !important;
+  box-shadow: none !important;
+  padding-left: 0 !important;
+  padding-right: 0 !important;
+  color: #4b96ff !important;
 }
+.chat-message.user .bg-blue-600.rounded-2xl .text-blue-100 { color: #8b97a8 !important; }
+`;
+
+// Fractional cell rectangles per layout. Index maps to pane index.
+const LAYOUT_RECTS = {
+  1: [{ x: 0, y: 0, w: 1, h: 1 }],
+  2: [{ x: 0, y: 0, w: 0.5, h: 1 }, { x: 0.5, y: 0, w: 0.5, h: 1 }],
+  3: [
+    { x: 0, y: 0, w: 0.5, h: 1 },
+    { x: 0.5, y: 0, w: 0.5, h: 0.5 },
+    { x: 0.5, y: 0.5, w: 0.5, h: 0.5 },
+  ],
+  4: [
+    { x: 0, y: 0, w: 0.5, h: 0.5 },
+    { x: 0.5, y: 0, w: 0.5, h: 0.5 },
+    { x: 0, y: 0.5, w: 0.5, h: 0.5 },
+    { x: 0.5, y: 0.5, w: 0.5, h: 0.5 },
+  ],
+};
 
 export class DesktopWindowManager {
   constructor({
@@ -35,12 +58,11 @@ export class DesktopWindowManager {
     getPreloadPath,
     openExternalUrl,
     getDesktopState,
-    getDisplayTargetName,
-    getRemoteEnvironmentMenuItems,
-    getCloudState,
-    getLocalState,
+    getAllowedOrigins,
+    onPaneUpdate,
+    onPaneFocus,
+    onResize,
     actions,
-    tabs,
   }) {
     this.appName = appName;
     this.getWindowIconPath = getWindowIconPath;
@@ -48,25 +70,26 @@ export class DesktopWindowManager {
     this.getPreloadPath = getPreloadPath;
     this.openExternalUrl = openExternalUrl;
     this.getDesktopState = getDesktopState;
-    this.getDisplayTargetName = getDisplayTargetName;
-    this.getRemoteEnvironmentMenuItems = getRemoteEnvironmentMenuItems;
-    this.getCloudState = getCloudState;
-    this.getLocalState = getLocalState;
+    this.getAllowedOrigins = getAllowedOrigins;
+    this.onResize = onResize || (() => {});
     this.actions = actions;
-    this.tabs = tabs;
 
     this.mainWindow = null;
-    this.settingsWindow = null;
     this.tray = null;
     this.launcherLoaded = false;
+    this.lastGeometry = null;
+    this.connected = false;
+
     this.viewHost = new ViewHost({
-      appName: this.appName,
       getMainWindow: () => this.mainWindow,
-      getContentViewBounds: () => this.getContentViewBounds(),
       getPreloadPath: this.getPreloadPath,
       openExternalUrl: this.openExternalUrl,
       showError: this.actions.showError,
+      onPaneUpdate,
+      onPaneFocus,
     });
+    this.viewHost.setSidebarHideCss(SIDEBAR_HIDE_CSS);
+    this.viewHost.setOverrideCss(DESKTOP_OVERRIDE_CSS);
   }
 
   getMainWindow() {
@@ -78,344 +101,142 @@ export class DesktopWindowManager {
     return image.resize({ width: 18, height: 18 });
   }
 
-  getContentViewBounds() {
+  getContentBounds() {
     if (!this.mainWindow) return { x: 0, y: TITLEBAR_HEIGHT, width: 0, height: 0 };
     const [width, height] = this.mainWindow.getContentSize();
-    return {
-      x: 0,
-      y: TITLEBAR_HEIGHT,
-      width,
-      height: Math.max(0, height - TITLEBAR_HEIGHT),
-    };
+    return { x: 0, y: TITLEBAR_HEIGHT, width, height: Math.max(0, height - TITLEBAR_HEIGHT) };
   }
 
-  detachActiveContentView() {
-    this.viewHost.detachAll();
-  }
-
-  async showTabPlaceholder(target, message) {
-    const tabId = this.tabs.getTabIdForTarget(target);
-    await this.viewHost.showTabPlaceholder(tabId, target, message);
-  }
-
-  async showLocalStartupTarget(target, logs) {
-    const tabId = this.tabs.getTabIdForTarget(target);
-    await this.viewHost.showLocalStartupTarget(tabId, target, logs);
-  }
-
-  async showContentTarget(target) {
-    const tabId = this.tabs.getTabIdForTarget(target);
-    await this.viewHost.showContentTarget(tabId, target);
-  }
-
-  destroyTabView(tabId) {
-    this.viewHost.destroyTabView(tabId);
-  }
-
-  emitDesktopState() {
-    const state = this.getDesktopState();
-    if (this.mainWindow && !this.mainWindow.webContents.isDestroyed()) {
-      this.mainWindow.webContents.send('cloudcli-desktop:state-updated', state);
+  computeGeometry(layout, paneCount, content) {
+    const rects = LAYOUT_RECTS[layout] || LAYOUT_RECTS[1];
+    const headerH = layout === 1 ? 0 : PANE_HEADER_HEIGHT;
+    const cells = [];
+    for (let i = 0; i < paneCount; i += 1) {
+      const frac = rects[i] || rects[rects.length - 1];
+      const cellX = Math.round(content.x + frac.x * content.width);
+      const cellY = Math.round(content.y + frac.y * content.height);
+      const cellW = Math.round(frac.w * content.width);
+      const cellH = Math.round(frac.h * content.height);
+      const headerRect = { x: cellX, y: cellY, width: cellW, height: headerH };
+      const viewBounds = {
+        x: cellX + GUTTER,
+        y: cellY + headerH + GUTTER,
+        width: Math.max(0, cellW - GUTTER * 2),
+        height: Math.max(0, cellH - headerH - GUTTER * 2),
+      };
+      cells.push({ index: i, cellRect: { x: cellX, y: cellY, width: cellW, height: cellH }, headerRect, viewBounds });
     }
-    if (this.settingsWindow && !this.settingsWindow.webContents.isDestroyed()) {
-      this.settingsWindow.webContents.send('cloudcli-desktop:state-updated', state);
-    }
+    return cells;
   }
 
-  emitLauncherCommand(command) {
-    if (!this.mainWindow || this.mainWindow.webContents.isDestroyed()) return;
-    this.mainWindow.webContents.send('cloudcli-desktop:launcher-command', command);
-  }
-
-  emitSettingsCommand(command) {
-    if (!this.settingsWindow || this.settingsWindow.webContents.isDestroyed()) return;
-    this.settingsWindow.webContents.send('cloudcli-desktop:launcher-command', command);
-  }
-
-  syncSettingsWindowBounds() {
-    if (!this.mainWindow || !this.settingsWindow || this.settingsWindow.isDestroyed()) return;
-    this.settingsWindow.setBounds(this.mainWindow.getBounds());
-  }
-
-  async ensureSettingsWindow(sheet = 'desktop-settings') {
-    if (!this.mainWindow) return null;
-
-    if (this.settingsWindow && !this.settingsWindow.isDestroyed()) {
-      this.syncSettingsWindowBounds();
-      this.emitSettingsCommand({ type: 'open-sheet', sheet });
-      this.settingsWindow.focus();
-      return this.settingsWindow;
-    }
-
-    this.settingsWindow = new BrowserWindow({
-      parent: this.mainWindow,
-      show: false,
-      frame: false,
-      transparent: true,
-      hasShadow: false,
-      resizable: false,
-      minimizable: false,
-      maximizable: false,
-      fullscreenable: false,
-      movable: false,
-      skipTaskbar: true,
-      backgroundColor: '#00000000',
-      webPreferences: {
-        contextIsolation: true,
-        nodeIntegration: false,
-        sandbox: true,
-        preload: this.getPreloadPath(),
-      },
-    });
-    this.syncSettingsWindowBounds();
-    this.viewHost.configureChildWebContents(this.settingsWindow.webContents);
-    this.settingsWindow.once('ready-to-show', () => this.settingsWindow?.show());
-    this.settingsWindow.on('closed', () => {
-      this.settingsWindow = null;
-    });
-    await this.settingsWindow.loadFile(this.getLauncherPath(), {
-      query: { modal: '1', sheet },
-    });
-    return this.settingsWindow;
-  }
-
-  closeSettingsWindow() {
-    if (!this.settingsWindow || this.settingsWindow.isDestroyed()) return;
-    this.settingsWindow.close();
-  }
-
-  async showTarget(target, { trackTab = true } = {}) {
+  /** Tile the panes; render pane-header chrome from the launcher layer. */
+  applyWorkspace({ layout, panes, activePaneId }) {
+    this.connected = true;
     if (!this.mainWindow) return;
-    if (trackTab) {
-      this.tabs.upsertTarget(target);
-    }
-    this.actions.setActiveTarget(target);
-    this.buildAppMenu();
-    this.mainWindow.setTitle(`${this.appName} - ${target.name}`);
-    const finalUrl = await this.showContentTarget(target);
-    this.emitDesktopState();
-    return finalUrl;
-  }
 
-  async showLauncher() {
-    if (!this.mainWindow) return;
-    const target = { kind: 'launcher', name: this.appName, url: null };
-    this.tabs.upsertTarget(target);
-    this.actions.setActiveTarget(target);
-    this.detachActiveContentView();
-    this.buildAppMenu();
-    this.mainWindow.setTitle(this.appName);
-    this.mainWindow.webContents.focus();
-    if (!this.launcherLoaded) {
-      await this.mainWindow.loadFile(this.getLauncherPath());
-      this.launcherLoaded = true;
-    } else {
-      this.emitDesktopState();
-    }
-  }
+    const content = this.getContentBounds();
+    const cells = this.computeGeometry(layout, panes.length, content);
 
-  async switchDesktopTab(tabId) {
-    const tab = this.tabs.activate(tabId);
-    if (!tab || !this.mainWindow) return this.getDesktopState();
-
-    if (tab.id === 'home' || tab.kind === 'launcher') {
-      await this.showLauncher();
-      return this.getDesktopState();
-    }
-
-    if (!tab.target?.url) {
-      throw new Error('This tab does not have a target URL.');
-    }
-
-    await this.showTarget(tab.target, { trackTab: false });
-    return this.getDesktopState();
-  }
-
-  async reloadActiveTab() {
-    const activeTab = this.tabs.getActiveTab();
-    if (!activeTab || activeTab.id === 'home' || activeTab.kind === 'launcher') {
-      this.emitDesktopState();
-      return this.getDesktopState();
-    }
-
-    const reloaded = this.viewHost.reloadTab(activeTab.id);
-    if (!reloaded && activeTab.target?.url) {
-      await this.showTarget(activeTab.target, { trackTab: false });
-    }
-    this.emitDesktopState();
-    return this.getDesktopState();
-  }
-
-  async navigateActiveView(url) {
-    const navigated = await this.viewHost.navigateActiveView(url);
-    this.emitDesktopState();
-    return navigated;
-  }
-
-  async readAuthTokenForTarget(url) {
-    return this.viewHost.readLocalStorageValueForOrigin(url, AUTH_TOKEN_STORAGE_KEY);
-  }
-
-  openActiveTabDevTools() {
-    if (this.viewHost.openActiveViewDevTools()) return;
-    void this.actions.showError('No active BrowserView', new Error('Switch to a non-launcher tab before opening active tab DevTools.'));
-  }
-
-  reloadActiveBrowserViewForDiagnostics() {
-    if (this.viewHost.reloadActiveView()) return;
-    void this.actions.showError('No active BrowserView', new Error('Switch to a non-launcher tab before reloading the active BrowserView.'));
-  }
-
-  detachActiveBrowserViewForDiagnostics() {
-    if (this.viewHost.detachActiveView()) return;
-    void this.actions.showError('No active BrowserView', new Error('Switch to a non-launcher tab before detaching the active BrowserView.'));
-  }
-
-  copyWebContentsDiagnostics() {
-    const tabViewDiagnostics = this.viewHost.getTabViewDiagnostics();
-    const tabViewByContentsId = new Map(
-      tabViewDiagnostics
-        .filter((item) => item.webContentsId != null)
-        .map((item) => [item.webContentsId, item])
-    );
-
-    const rows = electronWebContents.getAllWebContents().map((contents) => {
-      const destroyed = contents.isDestroyed();
-      const processIds = destroyed ? { osProcessId: null, processId: null } : getWebContentsProcessId(contents);
-      const tabView = tabViewByContentsId.get(contents.id);
-      let owner = 'unknown';
-      if (this.mainWindow?.webContents?.id === contents.id) {
-        owner = 'main-window';
-      } else if (this.settingsWindow?.webContents?.id === contents.id) {
-        owner = 'settings-window';
-      } else if (tabView) {
-        owner = `browser-view:${tabView.tabId}`;
+    // Non-empty panes get a live BrowserView; empty panes show a launcher placeholder.
+    const viewPanes = [];
+    const geometryPanes = panes.map((pane, index) => {
+      const cell = cells[index];
+      const empty = !pane.url;
+      if (!empty) {
+        viewPanes.push({
+          id: pane.id,
+          url: pane.url,
+          bounds: cell.viewBounds,
+          active: pane.id === activePaneId,
+        });
       }
-
       return {
-        id: contents.id,
-        owner,
-        osProcessId: processIds.osProcessId,
-        processId: processIds.processId,
-        url: destroyed ? null : contents.getURL(),
-        title: destroyed ? null : contents.getTitle(),
-        destroyed,
-        focused: destroyed || typeof contents.isFocused !== 'function' ? false : contents.isFocused(),
-        attached: tabView ? tabView.attached : null,
-        active: tabView ? tabView.active : null,
+        id: pane.id,
+        title: pane.title || '',
+        url: pane.url || null,
+        empty,
+        active: pane.id === activePaneId,
+        headerRect: cell.headerRect,
+        cellRect: cell.cellRect,
+        viewBounds: cell.viewBounds,
       };
     });
 
-    const activeTab = this.tabs.getActiveTab();
-    const diagnostics = {
-      generatedAt: new Date().toISOString(),
-      activeTabId: this.tabs.activeTabId,
-      activeTab: activeTab
-        ? {
-            id: activeTab.id,
-            title: activeTab.title,
-            kind: activeTab.kind,
-            targetUrl: activeTab.target?.url || null,
-          }
-        : null,
-      tabViews: tabViewDiagnostics,
-      webContents: rows,
+    void this.viewHost.syncPanes(viewPanes);
+    this.lastGeometry = {
+      titlebarHeight: TITLEBAR_HEIGHT,
+      paneHeaderHeight: layout === 1 ? 0 : PANE_HEADER_HEIGHT,
+      layout,
+      panes: geometryPanes,
     };
 
-    clipboard.writeText(JSON.stringify(diagnostics, null, 2));
+    const activePane = panes.find((pane) => pane.id === activePaneId) || panes[0];
+    const titleName = layout === 1 && activePane?.title ? activePane.title : this.appName;
+    this.mainWindow.setTitle(`${this.appName} — ${titleName}`);
+    this.buildAppMenu();
+    this.emitDesktopState();
   }
 
-  async closeDesktopTab(tabId) {
-    const tab = this.tabs.remove(tabId);
-    if (!tab) return this.getDesktopState();
-    this.destroyTabView(tabId);
-    if (this.tabs.activeTabId === 'home') {
-      await this.showLauncher();
-    } else {
-      this.emitDesktopState();
+  showConnectScreen() {
+    this.connected = false;
+    this.lastGeometry = null;
+    this.viewHost.detachAll();
+    if (this.mainWindow) {
+      this.mainWindow.setTitle(this.appName);
+      this.mainWindow.webContents.focus();
     }
-    return this.getDesktopState();
+    this.buildAppMenu();
+    this.emitDesktopState();
   }
 
-  buildEnvironmentActionsSubmenu(environment) {
-    const items = [];
-    const statusSuffix = environment.status === 'running' ? '' : ` (${environment.status})`;
-    items.push({
-      label: 'Open Environment',
-      click: () => void this.actions.openEnvironmentInDesktop(environment)
-        .catch((error) => this.actions.showError(`Could not open ${environment.name || environment.subdomain}${statusSuffix}`, error)),
-    });
-    items.push({
-      label: 'Open in Browser',
-      click: () => void this.actions.openEnvironmentInBrowser(environment)
-        .catch((error) => this.actions.showError('Could not open environment in browser', error)),
-    });
-    items.push({
-      label: 'Open in VS Code',
-      click: () => void this.actions.openEnvironmentInIde(environment, 'vscode')
-        .catch((error) => this.actions.showError('Could not open environment in VS Code', error)),
-    });
-    items.push({
-      label: 'Open in Cursor',
-      click: () => void this.actions.openEnvironmentInIde(environment, 'cursor')
-        .catch((error) => this.actions.showError('Could not open environment in Cursor', error)),
-    });
-    items.push({
-      label: 'Open SSH Terminal',
-      click: () => void this.actions.openEnvironmentInSsh(environment)
-        .catch((error) => this.actions.showError('Could not open SSH terminal', error)),
-    });
-    items.push({
-      label: 'Copy Mobile/Web URL',
-      click: () => this.actions.copyText(this.actions.getEnvironmentUrl(environment)),
-    });
-    if (environment.status !== 'running') {
-      items.unshift({
-        label: environment.status === 'paused' ? 'Resume' : 'Start',
-        click: () => void this.actions.startEnvironment(environment)
-          .catch((error) => this.actions.showError('Could not start environment', error)),
-      });
-    }
-    if (environment.status === 'running') {
-      items.push({
-        label: 'Stop',
-        click: () => void this.actions.stopEnvironment(environment)
-          .catch((error) => this.actions.showError('Could not stop environment', error)),
-      });
-    }
-    return items;
+  reloadPane(paneId) {
+    return this.viewHost.reloadPane(paneId);
   }
 
-  buildTrayEnvironmentSection() {
-    const cloudState = this.getCloudState();
-    if (!cloudState.account?.apiKey) {
-      return [
-        {
-          label: cloudState.account?.email ? `Reconnect ${cloudState.account.email}` : 'Login',
-          click: () => void this.actions.connectCloudAccount()
-            .catch((error) => this.actions.showError('Could not connect CloudCLI account', error)),
-        },
-      ];
-    }
+  // Detach the live panes so a launcher-drawn modal (picker) can render above
+  // them — BrowserViews always sit above the window's HTML. Re-tiled on close.
+  detachPanes() {
+    this.viewHost.detachAll();
+  }
 
-    if (!cloudState.environments.length) {
-      return [{ label: 'No environments found', enabled: false }];
-    }
+  openActivePaneDevTools() {
+    if (this.viewHost.openPaneDevTools()) return;
+    void this.actions.showError('No active pane', new Error('Connect and focus a pane first.'));
+  }
 
-    return cloudState.environments.map((environment) => ({
-      label: `${environment.name || environment.subdomain} - ${environment.status}`,
-      submenu: this.buildEnvironmentActionsSubmenu(environment),
-    }));
+  async readAuthTokenForOrigin(originUrl) {
+    return this.viewHost.readLocalStorageValueForOrigin(originUrl, AUTH_TOKEN_STORAGE_KEY);
+  }
+
+  getLastGeometry() {
+    return this.lastGeometry;
+  }
+
+  emitDesktopState() {
+    if (!this.mainWindow || this.mainWindow.webContents.isDestroyed()) return;
+    const state = { ...this.getDesktopState(), geometry: this.lastGeometry };
+    this.mainWindow.webContents.send('cloudcli-desktop:state-updated', state);
   }
 
   buildAppMenu() {
     if (!this.mainWindow) return;
-    const cloudState = this.getCloudState();
-    const localState = this.getLocalState();
-    const remoteItems = this.getRemoteEnvironmentMenuItems();
-    const cloudAccountLabel = cloudState.account?.apiKey
-      ? (cloudState.account?.email ? `Connected: ${cloudState.account.email}` : 'CloudCLI Connected')
-      : (cloudState.account?.email ? `Reconnect: ${cloudState.account.email}` : 'Connect CloudCLI Account...');
+    const state = this.getDesktopState();
+    const recents = state.recentServers || [];
+    const recentItems = recents.length
+      ? recents.map((url) => ({
+          label: url,
+          click: () => void this.actions.showConnectScreen(),
+        }))
+      : [{ label: 'No recent servers', enabled: false }];
+
+    const layoutItem = (n, label, accel) => ({
+      label,
+      accelerator: accel,
+      type: 'checkbox',
+      checked: state.layout === n,
+      enabled: state.connected,
+      click: () => this.actions.setLayout(n),
+    });
 
     const template = [
       {
@@ -424,105 +245,40 @@ export class DesktopWindowManager {
           { label: `About ${this.appName}`, role: 'about' },
           { type: 'separator' },
           {
-            label: 'Show Launcher',
-            accelerator: 'CmdOrCtrl+Shift+L',
-            click: () => void this.showLauncher().catch((error) => this.actions.showError('Could not show launcher', error)),
+            label: 'Change Server…',
+            accelerator: 'CmdOrCtrl+Shift+O',
+            click: () => void this.actions.showConnectScreen(),
           },
-          {
-            label: 'Switch Environment',
-            accelerator: 'CmdOrCtrl+Shift+E',
-            click: () => void this.actions.showEnvironmentPicker().catch((error) => this.actions.showError('Could not switch environment', error)),
-          },
-          {
-            label: 'Diagnostics',
-            submenu: [
-              {
-                label: 'Copy Diagnostics',
-                click: () => void this.actions.copyDiagnostics(),
-              },
-            ],
-          },
+          { label: 'Copy Diagnostics', click: () => void this.actions.copyDiagnostics() },
           { type: 'separator' },
-          {
-            label: process.platform === 'darwin' ? `Hide ${this.appName}` : 'Hide',
-            role: 'hide',
-            visible: process.platform === 'darwin',
-          },
+          { label: process.platform === 'darwin' ? `Hide ${this.appName}` : 'Hide', role: 'hide' },
           { label: 'Hide Others', role: 'hideOthers', visible: process.platform === 'darwin' },
-          { label: 'Show All', role: 'unhide', visible: process.platform === 'darwin' },
-          { type: 'separator', visible: process.platform === 'darwin' },
+          { type: 'separator' },
           { label: `Quit ${this.appName}`, accelerator: 'CmdOrCtrl+Q', role: 'quit' },
         ],
       },
       {
-        label: 'Environment',
+        label: 'Layout',
         submenu: [
-          {
-            label: 'Show Launcher',
-            accelerator: 'CmdOrCtrl+Shift+L',
-            click: () => void this.showLauncher().catch((error) => this.actions.showError('Could not show launcher', error)),
-          },
-          {
-            label: 'Switch Environment',
-            accelerator: 'CmdOrCtrl+Shift+E',
-            click: () => void this.actions.showEnvironmentPicker().catch((error) => this.actions.showError('Could not switch environment', error)),
-          },
+          layoutItem(1, 'Single Pane', 'CmdOrCtrl+1'),
+          layoutItem(2, 'Two Panes', 'CmdOrCtrl+2'),
+          layoutItem(3, 'Three Panes', 'CmdOrCtrl+3'),
+          layoutItem(4, 'Four Panes (Grid)', 'CmdOrCtrl+4'),
           { type: 'separator' },
           {
-            label: 'Open Local CloudCLI',
-            accelerator: 'CmdOrCtrl+L',
-            click: () => void this.actions.openLocalInDesktop().catch((error) => this.actions.showError('Could not open local CloudCLI', error)),
-          },
-          {
-            label: 'Open Local Web UI in Browser',
-            accelerator: 'CmdOrCtrl+Shift+W',
-            click: () => void this.actions.openLocalWebUi().catch((error) => this.actions.showError('Could not open local web UI', error)),
-          },
-          {
-            label: 'Copy Local Web URL',
-            accelerator: 'CmdOrCtrl+Shift+U',
-            click: () => void this.actions.copyLocalWebUrl().catch((error) => this.actions.showError('Could not copy local web URL', error)),
-          },
-          { type: 'separator' },
-          {
-            label: 'Keep Local Server Running After Quit',
-            type: 'checkbox',
-            checked: localState.desktopSettings.keepLocalServerRunning,
-            click: (menuItem) => void this.actions.updateDesktopSetting('keepLocalServerRunning', menuItem.checked)
-              .catch((error) => this.actions.showError('Could not update desktop setting', error)),
-          },
-          {
-            label: 'Allow LAN Access to Local Server',
-            type: 'checkbox',
-            checked: localState.desktopSettings.exposeLocalServerOnNetwork,
-            click: (menuItem) => void this.actions.updateDesktopSetting('exposeLocalServerOnNetwork', menuItem.checked)
-              .catch((error) => this.actions.showError('Could not update desktop setting', error)),
+            label: 'Reload Focused Pane',
+            accelerator: 'CmdOrCtrl+R',
+            enabled: state.connected,
+            click: () => this.actions.reloadPane(null),
           },
         ],
       },
       {
-        label: 'Cloud',
+        label: 'Server',
         submenu: [
-          {
-            label: cloudAccountLabel,
-            accelerator: 'CmdOrCtrl+Shift+C',
-            click: () => void this.actions.connectCloudAccount().catch((error) => this.actions.showError('Could not connect CloudCLI account', error)),
-          },
-          {
-            label: 'Refresh Cloud Environments',
-            click: () => void this.actions.refreshCloudEnvironments().catch((error) => this.actions.showError('Could not load CloudCLI environments', error)),
-            enabled: Boolean(cloudState.account?.apiKey),
-          },
-          {
-            label: 'Logout CloudCLI Account',
-            click: () => void this.actions.clearCloudAccount().catch((error) => this.actions.showError('Could not logout', error)),
-            enabled: Boolean(cloudState.account?.apiKey),
-          },
+          { label: 'Change Server…', click: () => void this.actions.showConnectScreen() },
           { type: 'separator' },
-          {
-            label: 'Remote Environments',
-            submenu: remoteItems,
-          },
+          { label: 'Recent Servers', submenu: recentItems },
         ],
       },
       {
@@ -540,25 +296,9 @@ export class DesktopWindowManager {
       {
         label: 'View',
         submenu: [
-          { role: 'reload' },
-          { role: 'forceReload' },
-          { role: 'toggleDevTools' },
-          {
-            label: 'Open Active Tab DevTools',
-            click: () => this.openActiveTabDevTools(),
-          },
-          {
-            label: 'Copy WebContents Diagnostics',
-            click: () => this.copyWebContentsDiagnostics(),
-          },
-          {
-            label: 'Reload Active BrowserView',
-            click: () => this.reloadActiveBrowserViewForDiagnostics(),
-          },
-          {
-            label: 'Detach Active BrowserView',
-            click: () => this.detachActiveBrowserViewForDiagnostics(),
-          },
+          { label: 'Reload Focused Pane', accelerator: 'CmdOrCtrl+R', click: () => this.actions.reloadPane(null) },
+          { label: 'Focused Pane DevTools', click: () => this.openActivePaneDevTools() },
+          { role: 'toggleDevTools', label: 'Shell DevTools' },
           { type: 'separator' },
           { role: 'resetZoom' },
           { role: 'zoomIn' },
@@ -575,19 +315,6 @@ export class DesktopWindowManager {
           ...(process.platform === 'darwin' ? [{ type: 'separator' }, { role: 'front' }] : []),
         ],
       },
-      {
-        label: 'Help',
-        submenu: [
-        {
-          label: 'Open cloudcli.ai',
-          click: () => void this.actions.openCloudDashboard(),
-        },
-          {
-            label: 'Copy Diagnostics',
-            click: () => void this.actions.copyDiagnostics(),
-          },
-        ],
-      },
     ];
 
     Menu.setApplicationMenu(Menu.buildFromTemplate(template));
@@ -596,113 +323,54 @@ export class DesktopWindowManager {
 
   buildTrayMenu() {
     if (!this.tray) return;
-    const cloudState = this.getCloudState();
-    const localState = this.getLocalState();
-
+    const state = this.getDesktopState();
     const template = [
       {
-        label: 'Local',
-        submenu: [
-          {
-            label: localState.localServerRunning ? 'Open Local in CloudCLI' : 'Start Local in CloudCLI',
-            click: () => void this.actions.openLocalInDesktop().catch((error) => this.actions.showError('Could not open local CloudCLI', error)),
-          },
-          {
-            label: 'Open Local in Browser',
-            click: () => void this.actions.openLocalWebUi().catch((error) => this.actions.showError('Could not open local web UI', error)),
-          },
-          {
-            label: 'Copy Local URL',
-            click: () => void this.actions.copyLocalWebUrl().catch((error) => this.actions.showError('Could not copy local web URL', error)),
-          },
-        ],
-      },
-      {
-        label: 'Cloud Environments',
-        submenu: this.buildTrayEnvironmentSection(),
+        label: state.connected ? `Connected: ${state.serverUrl}` : 'Not connected',
+        enabled: false,
       },
       { type: 'separator' },
-      {
-        label: cloudState.account?.email ? `Connected: ${cloudState.account.email}` : 'Login',
-        click: () => void this.actions.connectCloudAccount().catch((error) => this.actions.showError('Could not connect CloudCLI account', error)),
-      },
-      {
-        label: 'Logout CloudCLI Account',
-        click: () => void this.actions.clearCloudAccount().catch((error) => this.actions.showError('Could not logout', error)),
-        enabled: Boolean(cloudState.account?.apiKey),
-      },
+      { label: 'Change Server…', click: () => void this.actions.showConnectScreen() },
+      { label: 'Show Window', click: () => this.mainWindow?.show() },
       { type: 'separator' },
-      {
-        label: `Quit ${this.appName}`,
-        role: 'quit',
-      },
+      { label: `Quit ${this.appName}`, role: 'quit' },
     ];
-
-    this.tray.setToolTip(`${this.appName}${this.actions.getActiveTarget()?.name ? ` - ${this.actions.getActiveTarget().name}` : ''}`);
+    this.tray.setToolTip(`${this.appName}${state.serverUrl ? ` — ${state.serverUrl}` : ''}`);
     this.tray.setContextMenu(Menu.buildFromTemplate(template));
   }
 
-  async showDesktopSettings() {
-    if (!this.mainWindow) return this.getDesktopState();
-    await this.ensureSettingsWindow('desktop-settings');
-    return this.getDesktopState();
-  }
-
-  async showLocalSettings() {
-    if (!this.mainWindow) return this.getDesktopState();
-    await this.ensureSettingsWindow('local-settings');
-    return this.getDesktopState();
-  }
-
-  async showActiveEnvironmentActionsMenu() {
-    if (!this.mainWindow) return this.getDesktopState();
-    const activeTarget = this.actions.getActiveTarget();
-    if (activeTarget?.kind !== 'remote') return this.getDesktopState();
-
-    const environment = this.getCloudState().environments.find((item) => item.id === activeTarget.id);
-    if (!environment) return this.getDesktopState();
-
-    const menu = Menu.buildFromTemplate(this.buildEnvironmentActionsSubmenu(environment));
-    menu.popup({ window: this.mainWindow });
-    return this.getDesktopState();
-  }
-
-  async showEnvironmentActionsMenu(environmentId) {
-    if (!this.mainWindow) return this.getDesktopState();
-    const environment = this.getCloudState().environments.find((item) => item.id === environmentId);
-    if (!environment) return this.getDesktopState();
-
-    const menu = Menu.buildFromTemplate(this.buildEnvironmentActionsSubmenu(environment));
-    menu.popup({ window: this.mainWindow });
-    return this.getDesktopState();
-  }
-
   configurePermissions() {
-    const isAllowedPermission = (webContents, permission) => {
-      const sourceUrl = webContents.getURL();
-      const allowedPermissions = new Set(['clipboard-read', 'media', 'notifications']);
-      return isAllowedPermissionOrigin(sourceUrl, this.getCloudState().controlPlaneUrl) && allowedPermissions.has(permission);
+    const allowed = new Set(['clipboard-read', 'clipboard-sanitized-write', 'media', 'notifications']);
+    const isAllowed = (contents, permission) => {
+      if (!contents) return false;
+      let origin;
+      try {
+        origin = new URL(contents.getURL()).origin;
+      } catch {
+        return false;
+      }
+      return this.getAllowedOrigins().includes(origin) && allowed.has(permission);
     };
-
-    session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
-      callback(isAllowedPermission(webContents, permission));
+    session.defaultSession.setPermissionRequestHandler((contents, permission, callback) => {
+      callback(isAllowed(contents, permission));
     });
-    session.defaultSession.setPermissionCheckHandler((webContents, permission) => {
-      if (!webContents) return false;
-      return isAllowedPermission(webContents, permission);
-    });
+    session.defaultSession.setPermissionCheckHandler((contents, permission) => isAllowed(contents, permission));
   }
 
   createTray() {
     if (this.tray) return;
-    this.tray = new Tray(this.getTrayImage());
+    try {
+      this.tray = new Tray(this.getTrayImage());
+    } catch (error) {
+      // Headless / no system tray (e.g. bare Linux) — the app still works.
+      console.warn('[Tray] unavailable:', error?.message || error);
+      this.tray = null;
+      return;
+    }
     this.tray.on('click', () => {
       if (!this.mainWindow) return;
-      if (this.mainWindow.isVisible()) {
-        this.mainWindow.focus();
-      } else {
-        this.mainWindow.show();
-      }
+      if (this.mainWindow.isVisible()) this.mainWindow.focus();
+      else this.mainWindow.show();
     });
     this.buildTrayMenu();
   }
@@ -711,20 +379,20 @@ export class DesktopWindowManager {
     this.mainWindow = new BrowserWindow({
       width: 1440,
       height: 960,
-      minWidth: 1024,
-      minHeight: 720,
+      minWidth: 900,
+      minHeight: 640,
       show: false,
-      backgroundColor: '#0f172a',
+      backgroundColor: '#0b0f17',
       title: this.appName,
       icon: this.getWindowIconPath(),
       titleBarStyle: 'hidden',
       ...(process.platform === 'darwin'
-        ? { trafficLightPosition: { x: 18, y: 14 } }
+        ? { trafficLightPosition: { x: 12, y: 8 } }
         : {
             titleBarOverlay: {
-              color: nativeTheme.shouldUseDarkColors ? '#111111' : '#f7f8fa',
+              color: nativeTheme.shouldUseDarkColors ? '#0b0f17' : '#f7f8fa',
               symbolColor: nativeTheme.shouldUseDarkColors ? '#a1a1a1' : '#5b6470',
-              height: 44,
+              height: TITLEBAR_HEIGHT,
             },
           }),
       webPreferences: {
@@ -735,32 +403,28 @@ export class DesktopWindowManager {
       },
     });
 
-    this.mainWindow.once('ready-to-show', () => {
-      this.mainWindow?.show();
-    });
+    this.mainWindow.once('ready-to-show', () => this.mainWindow?.show());
 
     this.mainWindow.webContents.setWindowOpenHandler(({ url }) => {
       void this.openExternalUrl(url).catch((error) => this.actions.showError('Could not open external link', error));
       return { action: 'deny' };
     });
 
+    let resizeTimer = null;
     this.mainWindow.on('resize', () => {
-      this.viewHost.resizeActiveView();
-      this.syncSettingsWindowBounds();
-    });
-
-    this.mainWindow.on('move', () => {
-      this.syncSettingsWindowBounds();
+      if (resizeTimer) clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => this.onResize(), 60);
     });
 
     this.mainWindow.on('closed', () => {
       this.viewHost.clear();
-      this.settingsWindow = null;
       this.mainWindow = null;
       this.launcherLoaded = false;
     });
 
+    await this.mainWindow.loadFile(this.getLauncherPath());
+    this.launcherLoaded = true;
     this.buildAppMenu();
-    await this.showLauncher();
+    this.emitDesktopState();
   }
 }

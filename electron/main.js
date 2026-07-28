@@ -1,38 +1,43 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, session, shell } from 'electron';
-import { spawn } from 'node:child_process';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { CloudController } from './cloud.js';
 import { DesktopWindowManager } from './desktopWindow.js';
-import { DesktopNotificationsController } from './desktopNotifications.js';
-import { LocalServerController } from './localServer.js';
-import { TabsController } from './tabs.js';
+import { ServerConfigController, getHostForUrl, getOriginForUrl } from './serverConfig.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const APP_NAME = 'CloudCLI';
 const APP_USER_MODEL_ID = 'ai.cloudcli.desktop';
-const CALLBACK_PROTOCOL = 'cloudcli';
-const CALLBACK_URL = `${CALLBACK_PROTOCOL}://auth/callback`;
-const CLOUDCLI_CONTROL_PLANE_URL = process.env.CLOUDCLI_CONTROL_PLANE_URL || 'https://cloudcli.ai';
-const REMOTE_START_TIMEOUT_MS = 30000;
-const AUTH_CALLBACK_TTL_MS = 10 * 60 * 1000;
-
-const tabs = new TabsController();
+const DEFAULT_SERVER_URL = process.env.CLOUDCLI_DEFAULT_SERVER_URL || 'https://dev.nesar.dev';
+const MAX_PANES = 4;
+const VALID_LAYOUTS = new Set([1, 2, 3, 4]);
 
 if (process.platform === 'win32') {
   app.setAppUserModelId(APP_USER_MODEL_ID);
 }
 
-let activeTarget = { kind: 'launcher', name: APP_NAME, url: null };
+// ---------------------------------------------------------------------------
+// Workspace model: a layout (how many panes) + the panes themselves. Each pane
+// holds a session URL (or is empty). The grid IS the view — no tab switching.
+// ---------------------------------------------------------------------------
+let serverConfig = null;
 let desktopWindow = null;
-let localServer = null;
-let cloud = null;
-let desktopNotifications = null;
-let isQuitting = false;
-let isRefreshingCloud = false;
-let pendingCloudConnectStartedAt = 0;
+
+let connected = false;
+let layout = 1;
+let panes = []; // [{ id, url, title }]  url null = empty pane
+let activePaneId = null;
+let paneSeq = 0;
+
+function nextPaneId() {
+  paneSeq += 1;
+  return `pane-${paneSeq}`;
+}
+
+function makePane(url = null) {
+  return { id: nextPaneId(), url, title: url ? getHostForUrl(url) : '' };
+}
 
 function getAppRoot() {
   return app.isPackaged ? app.getAppPath() : path.resolve(__dirname, '..');
@@ -53,91 +58,66 @@ function getWindowIconPath() {
   return path.join(getAppRoot(), 'public', 'logo-512.png');
 }
 
-function getStorePath() {
-  return path.join(app.getPath('userData'), 'cloud-account.json');
+function getServerConfigPath() {
+  return path.join(app.getPath('userData'), 'server-config.json');
 }
 
-function getSettingsPath() {
-  return path.join(app.getPath('userData'), 'desktop-settings.json');
-}
-
-function getDesktopNotificationsSettingsPath() {
-  return path.join(app.getPath('userData'), 'desktop-notifications-settings.json');
-}
-
-function getRunningEnvironmentUrls() {
-  return cloud.getEnvironments()
-    .filter((environment) => environment.status === 'running')
-    .map((environment) => cloud.getEnvironmentUrl(environment))
-    .filter(Boolean);
-}
-
-function getDisplayTargetName() {
-  return activeTarget?.name || APP_NAME;
-}
-
-function getCloudState() {
-  return {
-    account: cloud.getAccount(),
-    environments: cloud.getEnvironments(),
-    controlPlaneUrl: CLOUDCLI_CONTROL_PLANE_URL,
+/** Origins the loaded web app may request permissions from. */
+function getAllowedOrigins() {
+  const origins = ['http://127.0.0.1', 'http://localhost'];
+  const push = (url) => {
+    const origin = getOriginForUrl(url);
+    if (origin && !origins.includes(origin)) origins.push(origin);
   };
+  push(serverConfig?.getUrl());
+  for (const recent of serverConfig?.getRecents() || []) push(recent);
+  return origins;
 }
 
-function getLocalState() {
-  return {
-    desktopSettings: localServer.getSettings(),
-    localServerRunning: Boolean(localServer.getLocalServerUrl()),
-    localWebUrl: localServer.getLocalServerUrl(),
-    shareableWebUrl: localServer.getShareableWebUrl(),
-  };
-}
-
-function serializeEnvironment(environment) {
-  return {
-    id: environment.id,
-    name: environment.name,
-    subdomain: environment.subdomain,
-    access_url: cloud.getEnvironmentUrl(environment),
-    status: environment.status,
-    created_at: environment.created_at,
-    github_url: environment.github_url || null,
-    region: environment.region || null,
-    agent: environment.agent || null,
-  };
+function getActivePaneId() {
+  if (activePaneId && panes.some((pane) => pane.id === activePaneId)) return activePaneId;
+  return panes[0]?.id || null;
 }
 
 function getDesktopState() {
-  const cloudAccount = cloud.getAccount();
-  const localState = getLocalState();
-  const authState = cloud.getAuthState();
   return {
-    account: {
-      connected: authState === 'connected',
-      email: cloudAccount?.email || null,
-      authState,
-      requiresReconnect: authState === 'expired',
-    },
-    activeTarget,
-    desktopSettings: localState.desktopSettings,
-    localWebUrl: localState.localWebUrl,
-    shareableWebUrl: localState.shareableWebUrl,
-    localServerRunning: localState.localServerRunning,
-    localStartupLogs: localServer.getStartupLogs(),
-    cloudLoading: isRefreshingCloud,
-    tabs: tabs.getSerializableTabs(),
-    activeTabId: tabs.activeTabId,
-    environments: cloud.getEnvironments().map(serializeEnvironment),
-    desktopNotifications: desktopNotifications?.getState() || { enabled: false, supported: false, connectedCount: 0, targetCount: 0 },
+    serverUrl: serverConfig?.getUrl() || null,
+    recentServers: serverConfig?.getRecents() || [],
+    defaultServerUrl: DEFAULT_SERVER_URL,
+    connected,
+    layout,
+    maxPanes: MAX_PANES,
+    activePaneId: getActivePaneId(),
+    panes: panes.map((pane) => ({ id: pane.id, url: pane.url, title: pane.title })),
+    // Geometry must ride along with EVERY state response — IPC handlers (e.g.
+    // set-layout) resolve to this, and the renderer draws pane headers/empty
+    // cards from state.geometry. Omitting it caused a race where the IPC reply
+    // (no geometry) clobbered the event render (with geometry) → blank panes.
+    geometry: (desktopWindow && desktopWindow.getLastGeometry)
+      ? desktopWindow.getLastGeometry()
+      : null,
   };
 }
 
-async function openExternalUrl(url) {
-  if (String(url).startsWith(CALLBACK_PROTOCOL + "://")) {
-    await handleDeepLink(url);
-    return;
+/** Push the current model into the window (tiles the BrowserViews). */
+function renderWorkspace() {
+  if (!desktopWindow) return;
+  if (!connected) {
+    desktopWindow.showConnectScreen();
+  } else {
+    desktopWindow.applyWorkspace({ layout, panes, activePaneId: getActivePaneId() });
   }
+  desktopWindow.buildAppMenu();
+  desktopWindow.emitDesktopState();
+}
 
+function syncDesktopState() {
+  if (!desktopWindow) return;
+  desktopWindow.buildAppMenu();
+  desktopWindow.emitDesktopState();
+}
+
+async function openExternalUrl(url) {
   await shell.openExternal(url);
 }
 
@@ -152,71 +132,188 @@ async function showError(title, error) {
   });
 }
 
-function isExpectedNavigationAbort(error) {
-  const message = error instanceof Error ? error.message : String(error);
-  return error?.code === 'ERR_ABORTED' || message.includes('ERR_ABORTED') || message.includes('(-3)');
+function ensurePaneCount(count) {
+  const target = Math.max(1, Math.min(MAX_PANES, count));
+  while (panes.length < target) panes.push(makePane());
+  if (panes.length > target) panes = panes.slice(0, target);
 }
 
-function syncDesktopState() {
-  if (!desktopWindow) return;
-  desktopWindow.buildAppMenu();
-  desktopWindow.emitDesktopState();
-  if (activeTarget?.kind === 'local' && !localServer?.getLocalServerUrl()) {
-    void desktopWindow.showLocalStartupTarget(localServer.getPendingTarget(), localServer.getStartupLogs())
-      .catch((error) => {
-        if (isExpectedNavigationAbort(error)) return;
-        void showError('Could not update local startup log', error);
-      });
-  }
+// ---------------------------------------------------------------------------
+// Actions
+// ---------------------------------------------------------------------------
+
+/** Connect to a server: persist it, open it in pane 1, show the grid. */
+async function connectToServer(rawUrl, requestedLayout = 1) {
+  await serverConfig.save(rawUrl);
+  layout = VALID_LAYOUTS.has(requestedLayout) ? requestedLayout : 1;
+  // Every pane starts empty + uniform (Open / New card) — no special first pane.
+  panes = [makePane()];
+  ensurePaneCount(layout);
+  activePaneId = panes[0].id;
+  connected = true;
+  renderWorkspace();
+  return getDesktopState();
 }
 
-function setActiveTarget(target) {
-  activeTarget = target;
+function setLayout(nextLayout) {
+  if (!VALID_LAYOUTS.has(Number(nextLayout))) return getDesktopState();
+  layout = Number(nextLayout);
+  ensurePaneCount(layout);
+  renderWorkspace();
+  return getDesktopState();
 }
 
-function getEnvironmentTarget(environment) {
-  return {
-    kind: 'remote',
-    id: environment.id,
-    name: environment.name || environment.subdomain,
-    url: cloud.getEnvironmentUrl(environment),
-  };
-}
-
-async function getEnvironmentLaunchTarget(environment) {
-  const environmentUrl = cloud.getEnvironmentUrl(environment);
-  return {
-    ...getEnvironmentTarget(environment),
-    url: environmentUrl,
-    loadUrl: await cloud.getEnvironmentLaunchUrl(environment),
-  };
-}
-
-async function hasCloudWebSession() {
-  const cookies = await session.defaultSession.cookies.get({});
-  return cookies.some((cookie) => {
-    const cookieDomain = String(cookie.domain || '');
-    return cookieDomain.includes('cloudcli.ai')
-      && /-auth-token(?:\.\d+)?$/.test(cookie.name)
-      && Boolean(cookie.value);
-  });
-}
-
-function isCloudAuthRedirect(url) {
-  if (!url) return false;
+// Desktop panes already ARE the grid, so the web app must render single-view
+// inside them (never nest a web grid). `?solo=1` tells the web app to do that.
+function withSolo(url) {
   try {
     const parsed = new URL(url);
-    const controlPlane = new URL(CLOUDCLI_CONTROL_PLANE_URL);
-    return parsed.origin === controlPlane.origin
-      && (parsed.pathname === '/login' || parsed.pathname.startsWith('/auth/'));
+    parsed.searchParams.set('solo', '1');
+    return parsed.toString();
   } catch {
-    return false;
+    return url;
   }
+}
+
+/** Point a pane at a session URL (fill or swap). */
+function setPaneUrl(paneId, url) {
+  const pane = panes.find((item) => item.id === paneId);
+  if (!pane) return getDesktopState();
+  pane.url = url ? withSolo(url) : null;
+  pane.title = url ? getHostForUrl(url) : '';
+  activePaneId = paneId;
+  renderWorkspace();
+  return getDesktopState();
+}
+
+function focusPane(paneId) {
+  if (panes.some((pane) => pane.id === paneId)) {
+    activePaneId = paneId;
+    renderWorkspace();
+  }
+  return getDesktopState();
+}
+
+// Fired when a pane's web contents gains focus (user clicked into it). Move the
+// active-pane accent + titlebar controls to it. Guarded so tiling's own focus()
+// call (on the already-active pane) doesn't cause a render loop.
+function onPaneFocus(paneId) {
+  if (paneId === getActivePaneId()) return;
+  if (!panes.some((pane) => pane.id === paneId)) return;
+  activePaneId = paneId;
+  renderWorkspace();
+}
+
+/** Expand one pane to fill the window (1-up), remembering nothing fancy. */
+function expandPane(paneId) {
+  const pane = panes.find((item) => item.id === paneId);
+  if (!pane) return getDesktopState();
+  panes = [pane];
+  layout = 1;
+  activePaneId = pane.id;
+  renderWorkspace();
+  return getDesktopState();
+}
+
+function clearPane(paneId) {
+  const pane = panes.find((item) => item.id === paneId);
+  if (!pane) return getDesktopState();
+  pane.url = null;
+  pane.title = '';
+  renderWorkspace();
+  return getDesktopState();
+}
+
+function reloadPane(paneId) {
+  desktopWindow?.reloadPane(paneId || getActivePaneId());
+  return getDesktopState();
+}
+
+async function showConnectScreen() {
+  connected = false;
+  renderWorkspace();
+  return getDesktopState();
+}
+
+async function connectRecent(url) {
+  return connectToServer(url, layout);
+}
+
+async function forgetServer(rawUrl) {
+  await serverConfig.forget(rawUrl);
+  syncDesktopState();
+  return getDesktopState();
+}
+
+/** viewHost tells us a pane's page title changed → reflect it in the header. */
+function onPaneUpdate(paneId, info) {
+  const pane = panes.find((item) => item.id === paneId);
+  if (!pane) return;
+  if (info?.title) pane.title = info.title;
+  if (info?.url) pane.url = info.url;
+  syncDesktopState();
+}
+
+// ---------------------------------------------------------------------------
+// Server API (projects/sessions) — authed with the JWT the web app stored in a
+// logged-in pane's localStorage. Lets the shell fill a pane with an exact
+// session (`<server>/session/<id>`) without using the in-pane sidebar.
+// ---------------------------------------------------------------------------
+async function apiFetch(pathname) {
+  const base = serverConfig?.getUrl();
+  if (!base) throw new Error('Not connected to a server.');
+  const token = await desktopWindow?.readAuthTokenForOrigin(base);
+  if (!token) throw new Error('Sign in to a pane first so the app can list your projects.');
+  const res = await fetch(base + pathname, {
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`Server returned ${res.status} for ${pathname}`);
+  return res.json();
+}
+
+async function listProjects() {
+  const data = await apiFetch('/api/projects');
+  const arr = Array.isArray(data) ? data : (data.projects || []);
+  return arr.map((p) => ({
+    id: p.projectId || p.name || p.id || p.path,
+    label: p.displayName || p.projectId || p.path || p.name,
+    // Sessions come embedded in /api/projects — no N+1 fetch needed.
+    sessions: (p.sessions || []).map((s) => ({
+      id: s.id,
+      label: s.summary || s.title || s.name || s.id,
+      provider: s.provider || null,
+      lastActivity: s.lastActivity || s.updatedAt || s.updated_at || null,
+    })).filter((s) => s.id),
+  })).filter((p) => p.id);
+}
+
+async function listSessions(projectId) {
+  const data = await apiFetch(`/api/projects/${encodeURIComponent(projectId)}/sessions?limit=50&offset=0`);
+  const arr = data.sessions || (Array.isArray(data) ? data : []);
+  return arr.map((s) => ({
+    id: s.id,
+    label: s.title || s.summary || s.name || s.id,
+    provider: s.provider || s.__provider || null,
+  })).filter((s) => s.id);
+}
+
+function openSessionInPane(paneId, sessionId) {
+  const base = serverConfig?.getUrl();
+  if (!base || !sessionId) return getDesktopState();
+  return setPaneUrl(paneId, `${base}/session/${encodeURIComponent(sessionId)}`);
+}
+
+// Open a fresh new-session composer for a project in a pane. The web reads
+// `?newProject=<id>` (and `?solo` via withSolo) and shows the composer without
+// needing the in-pane sidebar.
+function newSessionInPane(paneId, projectId) {
+  const base = serverConfig?.getUrl();
+  if (!base) return getDesktopState();
+  const url = projectId ? `${base}/?newProject=${encodeURIComponent(projectId)}` : base;
+  return setPaneUrl(paneId, url);
 }
 
 function getDiagnosticsText() {
-  const cloudAccount = cloud.getAccount();
-  const localState = getLocalState();
   return JSON.stringify({
     app: APP_NAME,
     version: app.getVersion(),
@@ -224,21 +321,13 @@ function getDiagnosticsText() {
     node: process.versions.node,
     platform: process.platform,
     arch: process.arch,
-    appPath: getAppRoot(),
+    mode: 'remote-client',
+    serverUrl: serverConfig?.getUrl() || null,
+    recentServers: serverConfig?.getRecents() || [],
+    layout,
+    panes: panes.map((pane) => ({ id: pane.id, url: pane.url, title: pane.title })),
     userDataPath: app.getPath('userData'),
-    activeTarget,
-    localServerUrl: localState.localWebUrl,
-    localServerPort: localServer.localServerPort,
-    localWebUrl: localState.localWebUrl,
-    shareableWebUrl: localState.shareableWebUrl,
-    desktopSettings: localState.desktopSettings,
-    cloudConnected: Boolean(cloudAccount?.apiKey),
-    cloudEmail: cloudAccount?.email || null,
-    cloudEnvironmentCount: cloud.getEnvironments().length,
-    cloudRunningEnvironmentCount: getRunningEnvironmentUrls().length,
-    cloudAuthState: cloud.getAuthState(),
-    cloudAccountPath: getStorePath(),
-    controlPlaneUrl: CLOUDCLI_CONTROL_PLANE_URL,
+    serverConfigPath: getServerConfigPath(),
   }, null, 2);
 }
 
@@ -251,532 +340,46 @@ async function copyDiagnostics() {
   });
 }
 
-async function refreshCloudEnvironments({ showErrors = false } = {}) {
-  isRefreshingCloud = true;
-  syncDesktopState();
-  try {
-    return await cloud.refreshCloudEnvironments();
-  } catch (error) {
-    const authState = cloud.getAuthState();
-    if (authState === 'expired') {
-      const expiredError = new Error('Your CloudCLI session expired. Reconnect your account.');
-      if (showErrors) {
-        await showError('CloudCLI login required', expiredError);
-        return [];
-      }
-      throw expiredError;
-    }
-    if (showErrors) {
-      await showError('Could not load CloudCLI environments', error);
-      return [];
-    }
-    throw error;
-  } finally {
-    isRefreshingCloud = false;
-    void desktopNotifications?.sync().catch((error) => console.error('[DesktopNotifications] sync failed:', error?.message || error));
-    syncDesktopState();
-  }
-}
-
-async function connectCloudAccount() {
-  const connectUrl = cloud.buildConnectUrl();
-  pendingCloudConnectStartedAt = Date.now();
-  clipboard.writeText(connectUrl);
-  await openExternalUrl(connectUrl);
-  return connectUrl;
-}
-
-async function handleDeepLink(url) {
-  let parsed;
-  try {
-    parsed = new URL(url);
-  } catch {
-    return;
-  }
-
-  if (parsed.protocol !== `${CALLBACK_PROTOCOL}:` || parsed.hostname !== 'auth') {
-    return;
-  }
-
-  if (!pendingCloudConnectStartedAt || Date.now() - pendingCloudConnectStartedAt > AUTH_CALLBACK_TTL_MS) {
-    await showError('CloudCLI account connection failed', new Error('No recent CloudCLI account connection was started from this app.'));
-    return;
-  }
-
-  const apiKey = parsed.searchParams.get('api_key');
-  if (!apiKey) {
-    await showError('CloudCLI account connection failed', new Error('The callback did not include an API key.'));
-    return;
-  }
-
-  await cloud.saveFromCallback({
-    apiKey,
-    email: parsed.searchParams.get('email'),
-  });
-  pendingCloudConnectStartedAt = 0;
-  await refreshCloudEnvironments({ showErrors: true });
-
-  dialog.showMessageBox(desktopWindow?.getMainWindow() || undefined, {
-    type: 'info',
-    title: 'CloudCLI account connected',
-    message: cloud.getAccount()?.email ? `Connected as ${cloud.getAccount().email}.` : 'CloudCLI account connected.',
-  }).catch(() => {});
-}
-
-async function copyLocalWebUrl() {
-  await localServer.ensureLocalServer();
-  const shareableUrl = localServer.getShareableWebUrl();
-  const localUrl = localServer.getLocalServerUrl();
-
-  if (!shareableUrl) {
-    throw new Error('Local CloudCLI URL is not available yet.');
-  }
-
-  clipboard.writeText(shareableUrl);
-  const isLanUrl = shareableUrl !== localUrl;
-  await dialog.showMessageBox(desktopWindow?.getMainWindow() || undefined, {
-    type: 'info',
-    title: 'Web URL copied',
-    message: isLanUrl ? 'LAN web URL copied.' : 'Local web URL copied.',
-    detail: isLanUrl
-      ? `${shareableUrl}\n\nUse this URL from another device on the same network.`
-      : `${shareableUrl}\n\nThis URL works on this computer. Enable LAN access before starting Local CloudCLI to copy a phone-accessible URL.`,
-  });
-
-  return getDesktopState();
-}
-
-async function openLocalWebUi() {
-  await localServer.ensureLocalServer();
-  const url = localServer.getShareableWebUrl() || localServer.getLocalServerUrl();
-  if (!url) {
-    throw new Error('Local CloudCLI URL is not available yet.');
-  }
-
-  await openExternalUrl(url);
-  return getDesktopState();
-}
-
-async function updateDesktopSetting(key, value) {
-  const result = await localServer.updateDesktopSetting(key, value);
-  syncDesktopState();
-
-  if (result.requiresRestartNotice) {
-    await dialog.showMessageBox(desktopWindow?.getMainWindow() || undefined, {
-      type: 'info',
-      title: 'Restart local server to apply',
-      message: 'LAN access changes apply the next time the local server starts.',
-      detail: 'Quit CloudCLI and stop the local server, then open Local CloudCLI again.',
-    });
-  }
-
-  return getDesktopState();
-}
-
-async function showEnvironmentPicker() {
-  let environments = cloud.getEnvironments();
-  let refreshError = null;
-
-  if (cloud.getAccount()?.apiKey) {
-    try {
-      environments = await refreshCloudEnvironments({ showErrors: false });
-    } catch (error) {
-      refreshError = error;
-      console.warn('[Cloud] Could not refresh environments before showing picker:', error?.message || error);
-    }
-  }
-
-  const choices = ['Local CloudCLI', ...environments.map((environment) => {
-    const status = environment.status === 'running' ? '' : ` (${environment.status})`;
-    return `${environment.name || environment.subdomain}${status}`;
-  })];
-
-  const response = await dialog.showMessageBox(desktopWindow?.getMainWindow(), {
-    type: 'question',
-    buttons: [...choices, 'Cancel'],
-    defaultId: 0,
-    cancelId: choices.length,
-    title: 'Switch CloudCLI Environment',
-    message: 'Choose where this desktop window should connect.',
-    detail: refreshError ? `Cloud environments could not be refreshed. Showing cached environments.\n\n${refreshError.message || refreshError}` : undefined,
-  });
-
-  if (response.response === choices.length) return getDesktopState();
-  if (response.response === 0) return openLocalInDesktop();
-  return openEnvironmentInDesktop(environments[response.response - 1]);
-}
-
-async function startEnvironment(environment) {
-  await cloud.startEnvironmentAndWait(environment, REMOTE_START_TIMEOUT_MS);
-  await refreshCloudEnvironments({ showErrors: true });
-  return getDesktopState();
-}
-
-async function stopEnvironment(environment) {
-  await cloud.stopEnvironment(environment);
-  await refreshCloudEnvironments({ showErrors: true });
-  return getDesktopState();
-}
-
-async function openEnvironmentInBrowser(environment) {
-  await openExternalUrl(await cloud.getEnvironmentLaunchUrl(environment));
-  return getDesktopState();
-}
-
-function getProjectFolder(environment) {
-  return String(environment.name || environment.subdomain || 'workspace').replace(/[^a-zA-Z0-9-]/g, '');
-}
-
-function getSshTarget(credentials) {
-  if (credentials.ssh_command) {
-    const parts = String(credentials.ssh_command).split(/\s+/);
-    if (parts.length >= 2) return parts[1];
-  }
-  return `${credentials.username}@ssh.cloudcli.ai`;
-}
-
-function getSshHost(credentials) {
-  const target = getSshTarget(credentials);
-  const atIndex = target.indexOf('@');
-  return atIndex >= 0 ? target.slice(atIndex + 1) : 'ssh.cloudcli.ai';
-}
-
-function getSafeSshUsername(credentials) {
-  const username = String(credentials.username || '');
-  if (!/^[a-zA-Z0-9._-]+$/.test(username)) {
-    throw new Error('Cloud environment returned an invalid SSH username.');
-  }
-  return username;
-}
-
-function getSafeSshHost(credentials) {
-  const host = getSshHost(credentials);
-  if (!/^[a-zA-Z0-9.-]+$/.test(host)) {
-    throw new Error('Cloud environment returned an invalid SSH host.');
-  }
-  return host;
-}
-
-function shellQuote(value) {
-  return `'${String(value).replace(/'/g, `'\\''`)}'`;
-}
-
-async function getEnvironmentCredentials(environment) {
-  const credentials = await cloud.getEnvironmentCredentials(environment);
-  if (credentials.password) {
-    clipboard.writeText(credentials.password);
-  }
-  return credentials;
-}
-
-async function openEnvironmentInIde(environment, ide) {
-  const credentials = await getEnvironmentCredentials(environment);
-  const scheme = ide === 'cursor' ? 'cursor' : 'vscode';
-  const remoteUri = `${scheme}://vscode-remote/ssh-remote+${getSafeSshUsername(credentials)}@${getSafeSshHost(credentials)}/workspace/${getProjectFolder(environment)}?windowId=_blank`;
-  await shell.openExternal(remoteUri);
-  return getDesktopState();
-}
-
-async function openEnvironmentInSsh(environment) {
-  const credentials = await getEnvironmentCredentials(environment);
-  const remoteCommand = `cd /workspace/${getProjectFolder(environment)} && exec $SHELL -l`;
-  const sshCommand = `ssh -t ${shellQuote(getSshTarget(credentials))} ${shellQuote(remoteCommand)}`;
-
-  if (process.platform === 'darwin') {
-    const escaped = sshCommand.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-    spawn('osascript', ['-e', `tell application "Terminal" to do script "${escaped}"`], {
-      detached: true,
-      stdio: 'ignore',
-    }).unref();
-  } else {
-    clipboard.writeText(sshCommand);
-    await dialog.showMessageBox(desktopWindow?.getMainWindow() || undefined, {
-      type: 'info',
-      title: 'SSH command copied',
-      message: 'The SSH command was copied to the clipboard.',
-      detail: sshCommand,
-    });
-  }
-
-  return getDesktopState();
-}
-
-async function copyEnvironmentMobileUrl(environment) {
-  const url = cloud.getEnvironmentUrl(environment);
-  clipboard.writeText(url);
-  await dialog.showMessageBox(desktopWindow?.getMainWindow() || undefined, {
-    type: 'info',
-    title: 'Environment URL copied',
-    message: 'Use this URL from your mobile browser.',
-    detail: url,
-  });
-  return getDesktopState();
-}
-
-async function openCloudDashboard() {
-  await openExternalUrl(CLOUDCLI_CONTROL_PLANE_URL);
-  return getDesktopState();
-}
-
-function getActiveRemoteEnvironment() {
-  if (activeTarget?.kind !== 'remote') return null;
-  return cloud.findEnvironment(activeTarget.id);
-}
-
-async function runActiveEnvironmentAction(action) {
-  const environment = getActiveRemoteEnvironment();
-  if (!environment) {
-    throw new Error('Open a cloud environment first.');
-  }
-
-  switch (action) {
-    case 'web':
-      return openEnvironmentInBrowser(environment);
-    case 'vscode':
-      return openEnvironmentInIde(environment, 'vscode');
-    case 'cursor':
-      return openEnvironmentInIde(environment, 'cursor');
-    case 'ssh':
-      return openEnvironmentInSsh(environment);
-    case 'mobile':
-      return copyEnvironmentMobileUrl(environment);
-    default:
-      throw new Error(`Unknown environment action: ${action}`);
-  }
-}
-
-async function openLocalInDesktop() {
-  const existingTab = tabs.getTab('local');
-  if (existingTab && localServer.getLocalServerUrl()) {
-    await desktopWindow.showTarget(await localServer.getResolvedTarget());
-    return getDesktopState();
-  }
-
-  const pendingTarget = localServer.getPendingTarget();
-  tabs.upsertTarget(pendingTarget);
-  setActiveTarget(pendingTarget);
-  await desktopWindow.showLocalStartupTarget(pendingTarget, localServer.getStartupLogs());
-  desktopWindow.emitDesktopState();
-
-  const target = await localServer.getResolvedTarget();
-  await desktopWindow.showTarget(target);
-  return getDesktopState();
-}
-
-async function openEnvironmentInDesktop(environment) {
-  const pendingTarget = getEnvironmentTarget(environment);
-  const tabId = tabs.getTabIdForTarget(pendingTarget);
-  const hadTab = Boolean(tabs.getTab(tabId));
-  const previousTabId = tabs.activeTabId;
-
-  if (!hadTab) {
-    await desktopWindow.showTabPlaceholder(
-      pendingTarget,
-      `${environment.status === 'running' ? 'Opening' : 'Starting'} ${pendingTarget.name}...`,
-    );
-    tabs.upsertTarget(pendingTarget);
-    desktopWindow.emitDesktopState();
-  }
-
-  let nextEnvironment = environment;
-
-  if (environment.status !== 'running') {
-    const response = await dialog.showMessageBox(desktopWindow?.getMainWindow(), {
-      type: 'question',
-      buttons: ['Start Environment', 'Cancel'],
-      defaultId: 0,
-      cancelId: 1,
-      title: 'Start environment?',
-      message: `${pendingTarget.name} is ${environment.status}.`,
-      detail: 'CloudCLI can start it before opening the remote app.',
-    });
-
-    if (response.response !== 0) {
-      if (!hadTab) {
-        tabs.remove(tabId);
-        desktopWindow.destroyTabView(tabId);
-        if (previousTabId && previousTabId !== tabId) {
-          await desktopWindow.switchDesktopTab(previousTabId);
-        } else {
-          await desktopWindow.showLauncher();
-        }
-      }
-      return getDesktopState();
-    }
-
-    if (hadTab) {
-      await desktopWindow.showTabPlaceholder(pendingTarget, `Starting ${pendingTarget.name}...`);
-      tabs.upsertTarget(pendingTarget);
-      desktopWindow.emitDesktopState();
-    }
-
-    nextEnvironment = await cloud.startEnvironmentAndWait(environment, REMOTE_START_TIMEOUT_MS);
-  }
-
-  let target = getEnvironmentTarget(nextEnvironment);
-  if (!(await hasCloudWebSession())) {
-    target = await getEnvironmentLaunchTarget(nextEnvironment);
-  }
-
-  const usedBootstrap = Boolean(target.loadUrl);
-  const finalUrl = await desktopWindow.showTarget(target);
-  if (!usedBootstrap && isCloudAuthRedirect(finalUrl)) {
-    const bootstrapTarget = await getEnvironmentLaunchTarget(nextEnvironment);
-    bootstrapTarget.forceLoad = true;
-    await desktopWindow.showTarget(bootstrapTarget);
-  }
-  return getDesktopState();
-}
-
-function findEnvironmentByUrl(environmentUrl) {
-  const targetOrigin = (() => {
-    try {
-      return new URL(environmentUrl).origin;
-    } catch {
-      return null;
-    }
-  })();
-  if (!targetOrigin) return null;
-
-  return cloud.getEnvironments().find((environment) => {
-    try {
-      return new URL(cloud.getEnvironmentUrl(environment)).origin === targetOrigin;
-    } catch {
-      return false;
-    }
-  }) || null;
-}
-
-async function openNotificationTarget({ environmentUrl, sessionId = null }) {
-  const window = desktopWindow?.getMainWindow();
-  if (window) {
-    if (window.isMinimized()) window.restore();
-    window.show();
-    window.focus();
-  }
-
-  const environment = findEnvironmentByUrl(environmentUrl);
-  if (environment) {
-    await openEnvironmentInDesktop(environment);
-  } else {
-    const parsed = new URL(environmentUrl);
-    await desktopWindow.showTarget({
-      kind: 'remote',
-      name: parsed.hostname,
-      url: parsed.origin,
-    });
-  }
-
-  const targetUrl = new URL(sessionId ? `/session/${encodeURIComponent(sessionId)}` : '/', environmentUrl).toString();
-  await desktopWindow.navigateActiveView(targetUrl);
-  return getDesktopState();
-}
-
-async function getEnvironmentAuthToken(environmentUrl) {
-  return (await desktopWindow?.readAuthTokenForTarget(environmentUrl)) || null;
-}
-
-async function clearCloudAccount() {
-  await cloud.clearCloudAccount();
-  desktopNotifications?.stop();
-  const removedTabs = tabs.removeByKind('remote');
-  for (const tab of removedTabs) {
-    desktopWindow?.destroyTabView(tab.id);
-  }
-  if (activeTarget?.kind === 'remote') {
-    await desktopWindow?.showLauncher();
-  } else {
-    syncDesktopState();
-  }
-  return getDesktopState();
-}
-
-function getRemoteEnvironmentMenuItems() {
-  const cloudAccount = cloud.getAccount();
-  const environments = cloud.getEnvironments();
-
-  if (!cloudAccount?.apiKey) {
-    return [{ label: 'Connect CloudCLI Account...', click: () => void connectCloudAccount() }];
-  }
-
-  if (!environments.length) {
-    return [{ label: 'No environments found', enabled: false }];
-  }
-
-  return environments.map((environment) => ({
-    label: `${environment.name || environment.subdomain}${environment.status === 'running' ? '' : ` (${environment.status})`}`,
-    click: () => void openEnvironmentInDesktop(environment)
-      .catch((error) => showError('Could not open environment', error)),
-  }));
-}
-
-function registerProtocolHandler() {
-  const appEntry = path.join(getAppRoot(), 'electron', 'main.js');
-  if (process.defaultApp && process.argv.length >= 2) {
-    app.setAsDefaultProtocolClient(CALLBACK_PROTOCOL, process.execPath, [appEntry]);
-  } else {
-    app.setAsDefaultProtocolClient(CALLBACK_PROTOCOL);
-  }
-}
-
 function registerIpcHandlers() {
-  ipcMain.handle('cloudcli-desktop:connect-cloud', async () => ({
-    ...getDesktopState(),
-    connectUrl: await connectCloudAccount(),
-  }));
-
+  ipcMain.handle('cloudcli-desktop:get-state', () => getDesktopState());
+  ipcMain.handle('cloudcli-desktop:connect-server', async (_event, url, requestedLayout) =>
+    connectToServer(url, Number(requestedLayout) || 1));
+  ipcMain.handle('cloudcli-desktop:connect-recent', async (_event, url) => connectRecent(url));
+  ipcMain.handle('cloudcli-desktop:show-connect-screen', async () => showConnectScreen());
+  ipcMain.handle('cloudcli-desktop:forget-server', async (_event, url) => forgetServer(url));
+  ipcMain.handle('cloudcli-desktop:set-layout', async (_event, nextLayout) => setLayout(nextLayout));
+  ipcMain.handle('cloudcli-desktop:set-pane-url', async (_event, paneId, url) => setPaneUrl(paneId, url));
+  ipcMain.handle('cloudcli-desktop:focus-pane', async (_event, paneId) => focusPane(paneId));
+  ipcMain.handle('cloudcli-desktop:expand-pane', async (_event, paneId) => expandPane(paneId));
+  ipcMain.handle('cloudcli-desktop:clear-pane', async (_event, paneId) => clearPane(paneId));
+  ipcMain.handle('cloudcli-desktop:reload-pane', async (_event, paneId) => reloadPane(paneId));
+  ipcMain.handle('cloudcli-desktop:list-projects', async () => listProjects());
+  ipcMain.handle('cloudcli-desktop:list-sessions', async (_event, projectId) => listSessions(projectId));
+  ipcMain.handle('cloudcli-desktop:open-session-in-pane', async (_event, paneId, sessionId) =>
+    openSessionInPane(paneId, sessionId));
+  ipcMain.handle('cloudcli-desktop:new-session-in-pane', async (_event, paneId, projectId) =>
+    newSessionInPane(paneId, projectId));
+  ipcMain.handle('cloudcli-desktop:set-overlay', async (_event, active) => {
+    if (active) desktopWindow?.detachPanes();
+    else renderWorkspace();
+    return getDesktopState();
+  });
+  ipcMain.handle('cloudcli-desktop:read-auth-token', async () => {
+    const url = serverConfig?.getUrl();
+    if (!url) return null;
+    return desktopWindow?.readAuthTokenForOrigin(url) || null;
+  });
   ipcMain.handle('cloudcli-desktop:copy-diagnostics', async () => {
     await copyDiagnostics();
     return getDesktopState();
   });
-
-  ipcMain.handle('cloudcli-desktop:copy-local-web-url', async () => copyLocalWebUrl());
-  ipcMain.handle('cloudcli-desktop:get-state', () => getDesktopState());
-  ipcMain.handle('cloudcli-desktop:open-cloud-dashboard', async () => openCloudDashboard());
-  ipcMain.handle('cloudcli-desktop:run-active-environment-action', async (_event, action) => runActiveEnvironmentAction(action));
-  ipcMain.handle('cloudcli-desktop:open-environment', async (_event, environmentId) => {
-    const environment = cloud.findEnvironment(environmentId);
-    if (!environment) {
-      throw new Error('Environment not found. Refresh and try again.');
-    }
-    return openEnvironmentInDesktop(environment);
-  });
-  ipcMain.handle('cloudcli-desktop:open-local', async () => openLocalInDesktop());
-  ipcMain.handle('cloudcli-desktop:open-local-web-ui', async () => openLocalWebUi());
-  ipcMain.handle('cloudcli-desktop:refresh-environments', async () => {
-    await refreshCloudEnvironments({ showErrors: true });
+  ipcMain.handle('cloudcli-desktop:open-external', async (_event, url) => {
+    await openExternalUrl(url);
     return getDesktopState();
   });
-  ipcMain.handle('cloudcli-desktop:disconnect-cloud', async () => clearCloudAccount());
-  ipcMain.handle('cloudcli-desktop:reload-active-tab', async () => desktopWindow.reloadActiveTab());
-  ipcMain.handle('cloudcli-desktop:show-environment-picker', async () => showEnvironmentPicker());
-  ipcMain.handle('cloudcli-desktop:show-launcher', async () => {
-    await desktopWindow.showLauncher();
-    return getDesktopState();
-  });
-  ipcMain.handle('cloudcli-desktop:update-desktop-notifications', async (_event, settings) => {
-    await desktopNotifications?.saveSettings(settings);
-    return getDesktopState();
-  });
-  ipcMain.handle('cloudcli-desktop:show-desktop-settings', async () => desktopWindow.showDesktopSettings());
-  ipcMain.handle('cloudcli-desktop:show-local-settings', async () => desktopWindow.showLocalSettings());
-  ipcMain.handle('cloudcli-desktop:close-settings-window', async () => {
-    desktopWindow.closeSettingsWindow();
-    return getDesktopState();
-  });
-  ipcMain.handle('cloudcli-desktop:show-active-environment-actions-menu', async () => desktopWindow.showActiveEnvironmentActionsMenu());
-  ipcMain.handle('cloudcli-desktop:show-environment-actions-menu', async (_event, environmentId) => desktopWindow.showEnvironmentActionsMenu(environmentId));
-  ipcMain.handle('cloudcli-desktop:switch-tab', async (_event, tabId) => desktopWindow.switchDesktopTab(tabId));
-  ipcMain.handle('cloudcli-desktop:close-tab', async (_event, tabId) => desktopWindow.closeDesktopTab(tabId));
-  ipcMain.handle('cloudcli-desktop:update-setting', async (_event, key, value) => updateDesktopSetting(key, value));
 }
 
 function registerAppEvents() {
-  app.on('open-url', (event, url) => {
-    event.preventDefault();
-    void handleDeepLink(url);
-  });
-
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       if (desktopWindow) {
@@ -786,7 +389,6 @@ function registerAppEvents() {
       }
       return;
     }
-
     const window = desktopWindow?.getMainWindow();
     if (window) {
       window.show();
@@ -794,26 +396,8 @@ function registerAppEvents() {
     }
   });
 
-  app.on('before-quit', () => {
-    desktopNotifications?.stop();
-  });
-
-  app.on('before-quit', (event) => {
-    if (isQuitting || !localServer?.hasOwnedServer()) return;
-    if (localServer.getSettings().keepLocalServerRunning) {
-      localServer.detachOwnedServer();
-      return;
-    }
-
-    event.preventDefault();
-    isQuitting = true;
-    void localServer.shutdownOwnedServer().finally(() => app.quit());
-  });
-
   app.on('window-all-closed', () => {
-    if (process.platform !== 'darwin') {
-      app.quit();
-    }
+    if (process.platform !== 'darwin') app.quit();
   });
 }
 
@@ -825,34 +409,17 @@ async function createDesktopWindow() {
     getPreloadPath,
     openExternalUrl,
     getDesktopState,
-    getDisplayTargetName,
-    getRemoteEnvironmentMenuItems,
-    getCloudState,
-    getLocalState,
-    tabs,
+    getAllowedOrigins,
+    onPaneUpdate,
+    onPaneFocus,
+    onResize: () => renderWorkspace(),
     actions: {
       copyDiagnostics,
       copyText: (text) => clipboard.writeText(text),
-      clearCloudAccount,
-      connectCloudAccount,
-      getActiveTarget: () => activeTarget,
-      getEnvironmentUrl: (environment) => cloud.getEnvironmentUrl(environment),
-      openEnvironmentInBrowser,
-      openEnvironmentInDesktop,
-      openEnvironmentInIde,
-      openEnvironmentInSsh,
-      openLocalInDesktop,
-      openLocalWebUi,
-      openCloudDashboard,
-      refreshCloudEnvironments: () => refreshCloudEnvironments({ showErrors: true }),
-      setActiveTarget,
-      showEnvironmentPicker,
+      showConnectScreen,
+      setLayout,
+      reloadPane,
       showError,
-      startEnvironment,
-      stopEnvironment,
-      updateDesktopSetting,
-      copyLocalWebUrl,
-      openNotificationTarget,
     },
   });
 
@@ -867,13 +434,7 @@ function registerSingleInstance() {
     app.quit();
     return false;
   }
-
-  app.on('second-instance', (_event, argv) => {
-    const deepLink = argv.find((arg) => arg.startsWith(`${CALLBACK_PROTOCOL}://`));
-    if (deepLink) {
-      void handleDeepLink(deepLink);
-    }
-
+  app.on('second-instance', () => {
     const window = desktopWindow?.getMainWindow();
     if (window) {
       if (window.isMinimized()) window.restore();
@@ -881,7 +442,6 @@ function registerSingleInstance() {
       window.focus();
     }
   });
-
   return true;
 }
 
@@ -892,48 +452,46 @@ async function bootstrap() {
 
   await app.whenReady();
   app.setName(APP_NAME);
+  // Pin userData to our app name so dev + packaged builds share one config dir
+  // (unpackaged Electron otherwise falls back to ~/.config/Electron).
+  try {
+    app.setPath('userData', path.join(app.getPath('appData'), APP_NAME));
+  } catch (error) {
+    console.error('Could not pin userData path:', error?.message || error);
+  }
   app.setAboutPanelOptions({
     applicationName: APP_NAME,
     applicationVersion: app.getVersion(),
     copyright: 'CloudCLI',
   });
 
-  localServer = new LocalServerController({
-    appRoot: getAppRoot(),
-    settingsPath: getSettingsPath(),
-    isPackaged: app.isPackaged,
-    appVersion: app.getVersion(),
+  serverConfig = new ServerConfigController({
+    storePath: getServerConfigPath(),
     onChange: syncDesktopState,
   });
-  cloud = new CloudController({
-    storePath: getStorePath(),
-    controlPlaneUrl: CLOUDCLI_CONTROL_PLANE_URL,
-    callbackUrl: CALLBACK_URL,
-    onChange: syncDesktopState,
-  });
-  desktopNotifications = new DesktopNotificationsController({
-    settingsPath: getDesktopNotificationsSettingsPath(),
-    appVersion: app.getVersion(),
-    appName: APP_NAME,
-    getDeviceId: () => cloud.getAccount()?.deviceId || '',
-    getAccountEmail: () => cloud.getAccount()?.email || null,
-    getRunningEnvironmentUrls,
-    getApiKey: () => cloud.getAccount()?.apiKey || '',
-    getAuthToken: getEnvironmentAuthToken,
-    getIconPath: getWindowIconPath,
-    openNotificationTarget,
-    onChange: syncDesktopState,
-  });
+  await serverConfig.load();
 
-  await localServer.loadDesktopSettings();
-  await cloud.loadCloudAccount();
-  await desktopNotifications.loadSettings();
-
-  registerProtocolHandler();
   registerIpcHandlers();
   registerAppEvents();
   await createDesktopWindow();
-  void refreshCloudEnvironments({ showErrors: false });
+
+  // Auto-connect to the last-used server; otherwise show the connect screen.
+  const savedUrl = serverConfig.getUrl();
+  if (process.env.CLOUDCLI_DEBUG) {
+    console.error('[boot] userData=%s configPath=%s savedUrl=%s',
+      app.getPath('userData'), getServerConfigPath(), String(savedUrl));
+  }
+  if (savedUrl) {
+    try {
+      await connectToServer(savedUrl, layout);
+      if (process.env.CLOUDCLI_DEBUG) console.error('[boot] connected -> %s', savedUrl);
+    } catch (error) {
+      console.error('Auto-connect failed:', error?.message || error);
+      await showConnectScreen();
+    }
+  } else {
+    await showConnectScreen();
+  }
 }
 
 if (registerSingleInstance()) {

@@ -94,7 +94,6 @@ function buildDesktopPackageJson(copiedOptionalDependencies) {
         'electron/**',
         'public/**',
         'dist/**',
-        'dist-server/**',
         'node_modules/**',
         'package.json',
       ],
@@ -110,7 +109,7 @@ await fs.rm(stageDir, { recursive: true, force: true });
 await fs.mkdir(stageDir, { recursive: true });
 
 await copyRequired('electron');
-await copyRequired('dist');
+await copyIfExists('dist');
 await copyRequired('public');
 
 const copiedRuntimeDependencies = [];
