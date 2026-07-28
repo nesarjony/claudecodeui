@@ -11,6 +11,71 @@ export const isValidRefreshedToken = (token) =>
   typeof token === 'string' &&
   /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(token);
 
+// Graceful recovery when an edge auth gateway (e.g. Cloudflare Access, used for
+// the off-tailnet cloud.nesar.dev host) has expired the session. The SPA stays
+// loaded, but API/XHR calls then get redirected cross-origin to the gateway's
+// login page — which a fetch() cannot read — surfacing as a bare "Failed to
+// fetch" with no way forward. A full top-level navigation re-triggers the login.
+//
+// We only reload when a safe, idempotent probe CONFIRMS an auth redirect
+// (`opaqueredirect`), never on a plain network blip (so the common tailnet path
+// is unaffected), and at most once per short window to avoid reload loops.
+const AUTH_REDIRECT_RELOAD_KEY = 'auth-redirect-reload-at';
+
+// The probe is a throttled single-flight. With an expired edge session EVERY
+// in-flight /api call fails at once (many panes/pollers), so probing per-failure
+// would flood /api/auth/user. Instead: at most one probe per cooldown, concurrent
+// failures share the one in-flight probe, and the verdict is cached between
+// cooldowns so a burst of failures reuses a single network call.
+const EDGE_AUTH_PROBE_COOLDOWN_MS = 10000;
+let edgeAuthProbeAt = 0;
+let edgeAuthConfirmed = false;
+let edgeAuthInFlight = null;
+
+const isEdgeAuthRedirect = () => {
+  if (edgeAuthInFlight) return edgeAuthInFlight;
+  if (Date.now() - edgeAuthProbeAt <= EDGE_AUTH_PROBE_COOLDOWN_MS) {
+    return Promise.resolve(edgeAuthConfirmed);
+  }
+  edgeAuthInFlight = (async () => {
+    let result = false;
+    try {
+      const probe = await fetch('/api/auth/user', {
+        method: 'GET',
+        redirect: 'manual',
+        headers: { Authorization: `Bearer ${localStorage.getItem('auth-token') || ''}` },
+      });
+      // A cross-origin auth redirect is opaque; a live backend answers `basic`.
+      result = probe.type === 'opaqueredirect';
+    } catch {
+      result = false;
+    }
+    edgeAuthProbeAt = Date.now();
+    edgeAuthConfirmed = result;
+    edgeAuthInFlight = null;
+    return result;
+  })();
+  return edgeAuthInFlight;
+};
+
+const maybeRecoverFromEdgeAuth = async () => {
+  if (!(await isEdgeAuthRedirect())) return false;
+  let last = 0;
+  try {
+    last = Number(sessionStorage.getItem(AUTH_REDIRECT_RELOAD_KEY)) || 0;
+  } catch {
+    /* sessionStorage may be unavailable */
+  }
+  if (Date.now() - last <= 15000) return false; // already tried recently
+  try {
+    sessionStorage.setItem(AUTH_REDIRECT_RELOAD_KEY, String(Date.now()));
+  } catch {
+    /* ignore */
+  }
+  window.location.reload();
+  return true;
+};
+
 // Utility function for authenticated API calls
 export const authenticatedFetch = (url, options = {}) => {
   const token = localStorage.getItem('auth-token');
@@ -32,13 +97,25 @@ export const authenticatedFetch = (url, options = {}) => {
       ...defaultHeaders,
       ...options.headers,
     },
-  }).then((response) => {
-    const refreshedToken = response.headers.get('X-Refreshed-Token');
-    if (isValidRefreshedToken(refreshedToken)) {
-      localStorage.setItem('auth-token', refreshedToken);
-    }
-    return response;
-  });
+  })
+    .then((response) => {
+      const refreshedToken = response.headers.get('X-Refreshed-Token');
+      if (isValidRefreshedToken(refreshedToken)) {
+        localStorage.setItem('auth-token', refreshedToken);
+      }
+      return response;
+    })
+    .catch(async (error) => {
+      // A same-origin API call that throws a network TypeError may actually be
+      // an expired edge-auth session redirecting us cross-origin. If a probe
+      // confirms that, reload to re-login instead of bubbling "Failed to fetch".
+      if (error instanceof TypeError && typeof url === 'string' && url.startsWith('/api')) {
+        const recovering = await maybeRecoverFromEdgeAuth();
+        // Page is navigating away; never resolve so callers don't flash an error.
+        if (recovering) return new Promise(() => {});
+      }
+      throw error;
+    });
 };
 
 // API endpoints

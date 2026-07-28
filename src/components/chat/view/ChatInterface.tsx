@@ -1,5 +1,6 @@
-import React, { useCallback, useEffect, useMemo, useRef } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { authenticatedFetch } from '../../../utils/api';
 import { ArrowDownIcon } from 'lucide-react';
 
 import { useTasksSettings } from '../../../contexts/TasksSettingsContext';
@@ -15,6 +16,7 @@ import { useSessionStore } from '../../../stores/useSessionStore';
 
 import ChatMessagesPane from './subcomponents/ChatMessagesPane';
 import ChatComposer from './subcomponents/ChatComposer';
+import QuickCommandBar from './subcomponents/QuickCommandBar';
 import CommandResultModal from './subcomponents/CommandResultModal';
 
 function ChatInterface({
@@ -89,6 +91,32 @@ function ChatInterface({
     selectedSession,
     selectedProject,
   });
+
+  // The model this session's next/running turn will actually use. Uses the
+  // server's getCurrentActiveModel (persisted per-session pick, falling back to
+  // the transcript/default) so the composer chip reflects a haiku/minimax route,
+  // not just the global model selection.
+  const [sessionRunningModel, setSessionRunningModel] = useState<string | null>(null);
+  useEffect(() => {
+    const sid = selectedSession?.id;
+    if (!sid) {
+      setSessionRunningModel(null);
+      return;
+    }
+    let cancelled = false;
+    authenticatedFetch(`/api/providers/${provider}/sessions/${encodeURIComponent(sid)}/active-model`)
+      .then((response) => (response.ok ? response.json() : null))
+      .then((data) => {
+        if (!cancelled) setSessionRunningModel(data?.data?.model ?? null);
+      })
+      .catch(() => {
+        if (!cancelled) setSessionRunningModel(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedSession?.id, provider]);
+  const composerRunningModel = sessionRunningModel || claudeModel;
 
   const {
     chatMessages,
@@ -381,12 +409,21 @@ function ChatInterface({
             </div>
           )}
 
+          <QuickCommandBar
+            setInput={setInput}
+            textareaRef={textareaRef}
+            chatMessages={chatMessages}
+            isProcessing={isProcessing}
+            onSubmit={handleSubmit}
+          />
+
           <ChatComposer
           pendingPermissionRequests={pendingPermissionRequests}
           handlePermissionDecision={handlePermissionDecision}
           handleGrantToolPermission={handleGrantToolPermission}
           activity={sessionActivity}
           isLoading={isProcessing}
+          runningModel={composerRunningModel}
           onAbortSession={handleAbortSession}
           permissionMode={permissionMode}
           onModeSwitch={cyclePermissionMode}

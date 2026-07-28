@@ -165,7 +165,7 @@ function Sidebar({
     loadingMoreProjects,
     activeSessions,
     attentionSessionIds,
-    forceExpanded: searchMode === 'running',
+    forceExpanded: true,
     isProjectStarred,
     onEditingNameChange: setEditingName,
     onToggleProject: toggleProject,

@@ -1,7 +1,7 @@
 // Service Worker for CloudCLI PWA
 // Cache only manifest (needed for PWA install). HTML and JS are never pre-cached
 // so a rebuild + refresh always picks up the latest assets.
-const CACHE_NAME = 'claude-ui-v2';
+const CACHE_NAME = 'claude-ui-v3';
 const urlsToCache = [
   '/manifest.json'
 ];
@@ -24,14 +24,20 @@ self.addEventListener('fetch', event => {
     return;
   }
 
-  // Navigation requests (HTML) — always go to network, no caching
+  // Navigation requests (HTML) — always go to network, no caching.
+  // Use `redirect: 'manual'` so an edge-auth redirect (e.g. Cloudflare Access on
+  // cloud.nesar.dev) comes back as an opaqueredirect that the browser FOLLOWS to
+  // the login page. With the default 'follow', the SW's own fetch can't read the
+  // cross-origin login response, rejects, and we'd wrongly serve "Offline" —
+  // masking the Access login. The bogus offline page only shows on a real
+  // network failure now.
   if (event.request.mode === 'navigate') {
     event.respondWith(
-      fetch(event.request).catch(() => caches.match('/manifest.json').then(() =>
+      fetch(event.request, { redirect: 'manual' }).catch(() =>
         new Response('<h1>Offline</h1><p>Please check your connection.</p>', {
           headers: { 'Content-Type': 'text/html' }
         })
-      ))
+      )
     );
     return;
   }

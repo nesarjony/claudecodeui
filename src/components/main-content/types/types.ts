@@ -57,6 +57,16 @@ export type MainContentProps = {
   onShowSettings: (tab?: SettingsMainTab) => void;
   externalMessageUpdate: number;
   newSessionTrigger: number;
+  // Split-view panes render MainContent with their own slim header (icon tabs +
+  // pane controls) and suppress MainContent's full-width header via showHeader=false.
+  showHeader?: boolean;
+  // Whether this MainContent instance owns the shared TaskMaster `currentProject`.
+  // Only ONE instance may drive it: with multiple split-view panes each syncing
+  // their own project into the single global currentProject, the panes fight in
+  // an infinite setCurrentProject<->effect loop that floods the taskmaster API.
+  // The single view defaults to true; split panes pass their active state so only
+  // the focused pane syncs.
+  isActivePane?: boolean;
 };
 
 export type MainContentHeaderProps = {

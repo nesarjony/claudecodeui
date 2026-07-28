@@ -11,10 +11,11 @@ import type {
   RefObject,
   TouchEvent,
 } from 'react';
-import { ImageIcon, MessageSquareIcon, XIcon, Loader2, ChevronDown, Check, ArrowUpIcon } from 'lucide-react';
+import { ImageIcon, MessageSquareIcon, XIcon, Loader2, ChevronDown, Check, ArrowUpIcon, SparklesIcon } from 'lucide-react';
 
 import { useVoiceInput } from '../../hooks/useVoiceInput';
 import { useVoiceAvailable } from '../../hooks/useVoiceAvailable';
+import { useQuickCommandsVisible } from '../../hooks/useQuickCommandsVisible';
 import type { QueuedDraft } from '../../hooks/useChatComposerState';
 import type { SessionActivity } from '../../../../hooks/useSessionProtection';
 import type { PendingPermissionRequest, PermissionMode } from '../../types/types';
@@ -53,6 +54,19 @@ interface SlashCommand {
   [key: string]: unknown;
 }
 
+// Compact, human label for the composer's running-model chip.
+function prettyModelLabel(model?: string | null): string | null {
+  if (!model) return null;
+  const m = model.toLowerCase();
+  const oneM = m.includes('1m') ? ' 1M' : '';
+  if (m.includes('haiku')) return 'Haiku';
+  if (m.includes('sonnet')) return `Sonnet${oneM}`;
+  if (m.includes('opus')) return `Opus${oneM}`;
+  if (m.includes('fable')) return 'Fable';
+  if (m === 'default') return 'Default';
+  return model.replace(/^claude-/, '').replace(/-\d{8}$/, '');
+}
+
 interface ChatComposerProps {
   pendingPermissionRequests: PendingPermissionRequest[];
   handlePermissionDecision: (
@@ -66,6 +80,7 @@ interface ChatComposerProps {
   permissionMode: PermissionMode | string;
   onModeSwitch: () => void;
   effort: string;
+  runningModel?: string | null;
   availableEffortOptions: NonNullable<ProviderModelOption['effort']>['values'];
   onSelectEffort: (effort: string) => void;
   tokenBudget: Record<string, unknown> | null;
@@ -124,6 +139,7 @@ export default function ChatComposer({
   permissionMode,
   onModeSwitch,
   effort,
+  runningModel,
   availableEffortOptions,
   onSelectEffort,
   tokenBudget,
@@ -172,6 +188,7 @@ export default function ChatComposer({
   sendByCtrlEnter,
 }: ChatComposerProps) {
   const { t } = useTranslation('chat');
+  const [quickCommandsVisible, setQuickCommandsVisible] = useQuickCommandsVisible();
   const commandMenuPosition = useMemo(() => {
     if (!isCommandMenuOpen) {
       return { top: 0, left: 16, bottom: 90 };
@@ -293,7 +310,7 @@ export default function ChatComposer({
       : t('input.send');
 
   return (
-    <div className="chat-composer-shell relative flex-shrink-0 px-2 pb-2 pt-0 sm:px-4 sm:pb-4 md:px-4 md:pb-6">
+    <div className="chat-composer-shell relative flex-shrink-0 px-2 pb-1 pt-0 sm:px-4 sm:pb-2 md:px-4 md:pb-2">
       {!hasPendingPermissions && (
         <div className="pointer-events-none absolute bottom-full left-1/2 z-10 w-[calc(100%-1rem)] max-w-[54.25rem] -translate-x-1/2 translate-y-px bg-transparent sm:w-[calc(100%-2rem)]">
           <ActivityIndicator activity={activity} onAbort={onAbortSession} isInputFocused={isInputFocused} />
@@ -411,6 +428,7 @@ export default function ChatComposer({
 
             <PromptInputTextarea
               ref={textareaRef}
+              rows={1}
               dir="auto"
               value={input}
               onChange={onInputChange}
@@ -433,6 +451,25 @@ export default function ChatComposer({
             >
               <ImageIcon />
             </PromptInputButton>
+
+            <PromptInputButton
+              tooltip={{ content: quickCommandsVisible ? 'Hide quick commands' : 'Show quick commands' }}
+              onClick={() => setQuickCommandsVisible(!quickCommandsVisible)}
+              className={quickCommandsVisible ? 'text-primary' : ''}
+              aria-pressed={quickCommandsVisible}
+            >
+              <SparklesIcon />
+            </PromptInputButton>
+
+            {runningModel && (
+              <span
+                className="composer-model-chip inline-flex h-8 items-center gap-1 rounded-lg border border-border/60 bg-muted/40 px-2 text-xs font-medium text-muted-foreground"
+                title={`Model for this session: ${runningModel}`}
+              >
+                <span className="h-1.5 w-1.5 rounded-full bg-primary/70" />
+                {prettyModelLabel(runningModel)}
+              </span>
+            )}
 
             {onVoiceTranscript && voiceAvailable && (
               <VoiceInputButton state={voiceState} onToggle={voiceToggle} errorMsg={voiceError} />
@@ -468,7 +505,7 @@ export default function ChatComposer({
                             : 'bg-primary'
                   }`}
                 />
-                <span className="hidden whitespace-nowrap sm:inline">
+                <span className="composer-mode-label hidden whitespace-nowrap sm:inline">
                   {permissionMode === 'default' && t('codex.modes.default')}
                   {permissionMode === 'acceptEdits' && t('codex.modes.acceptEdits')}
                   {permissionMode === 'auto' && t('codex.modes.auto')}
@@ -493,7 +530,7 @@ export default function ChatComposer({
                   aria-label="Select reasoning effort"
                   title="Select reasoning effort"
                 >
-                  <span className="hidden text-[11px] text-muted-foreground sm:inline">Effort</span>
+                  <span className="composer-effort-label hidden text-[11px] text-muted-foreground sm:inline">Effort</span>
                   <span className="max-w-16 truncate capitalize sm:max-w-20">{selectedEffortLabel}</span>
                   <ChevronDown className={`h-3 w-3 text-muted-foreground transition-transform ${isEffortDropdownOpen ? 'rotate-180' : ''}`} />
                 </button>
@@ -572,13 +609,14 @@ export default function ChatComposer({
           </PromptInputTools>
 
           <div className="flex items-center gap-2">
-            <div
-              className={`hidden text-xs text-muted-foreground/50 transition-opacity duration-200 lg:block ${
-                input.trim() && !canQueueDraft ? 'opacity-0' : 'opacity-100'
-              }`}
-            >
-              {submitHint}
-            </div>
+            {/* Only surface the composer hint while queuing (a useful, transient
+                state). The always-on keyboard cheat-sheet was verbose and wrapped
+                into a clipped stack inside narrow panes — dropped for a clean footer. */}
+            {canQueueDraft && (
+              <div className="hidden whitespace-nowrap text-xs text-muted-foreground/60 lg:block">
+                {submitHint}
+              </div>
+            )}
             <PromptInputSubmit
               onClick={
                 canQueueDraft

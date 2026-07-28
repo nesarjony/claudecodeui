@@ -246,8 +246,12 @@ function ModelsContent({
   const [changingModel, setChangingModel] = useState<string | null>(null);
   const [pendingSessionModel, setPendingSessionModel] = useState<string | null>(null);
   const [selectionNotice, setSelectionNotice] = useState<string | null>(null);
+  // Optimistic: reflect the user's pick as the active model immediately. Without
+  // this the header kept showing the previous model (with only a small "next"
+  // badge), which read as "the model did not stick / reset to default".
+  const [optimisticModel, setOptimisticModel] = useState<string | null>(null);
   const currentProvider = (data?.current?.provider || 'claude') as LLMProvider;
-  const currentModel = data?.current?.model || 'Unknown';
+  const currentModel = optimisticModel || data?.current?.model || 'Unknown';
   const providerLabel = data?.current?.providerLabel || getProviderLabel(currentProvider);
   const liveDefinition = providerModelCatalog[currentProvider];
   const availableOptions = useMemo<ModelOption[]>(() => {
@@ -281,13 +285,13 @@ function ModelsContent({
     setChangingModel(model);
     try {
       const result = await onSelectProviderModel(currentProvider, model, currentSessionId);
+      setOptimisticModel(result.model);
+      setPendingSessionModel(null);
       if (result.scope === 'session') {
-        setPendingSessionModel(result.model);
-        setSelectionNotice(`Next response will resume with ${result.model}.`);
+        setSelectionNotice(`${result.model} applies from your next response.`);
         return;
       }
 
-      setPendingSessionModel(null);
       setSelectionNotice(`Default ${providerLabel} model set to ${result.model}.`);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unable to change the model right now.';

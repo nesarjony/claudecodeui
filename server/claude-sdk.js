@@ -16,6 +16,7 @@ import crypto from 'crypto';
 import { promises as fs } from 'fs';
 import os from 'os';
 import path from 'path';
+import { execSync } from 'child_process';
 
 import { query } from '@anthropic-ai/claude-agent-sdk';
 
@@ -471,9 +472,14 @@ async function queryClaudeSDK(command, options = {}, ws) {
   };
 
   try {
+    // Per-session model overrides are keyed by the APP session id, but on resume
+    // `sessionId` is the provider-native id. Prefer the app id so the model the
+    // user picked is actually found (otherwise it silently falls back to the
+    // client-sent model -- e.g. a migration kept running Opus after Haiku was set).
+    const modelOverrideSessionId = options.appSessionId || sessionId;
     const resolvedModel = await providerModelsService.resolveResumeModel(
       'claude',
-      sessionId,
+      modelOverrideSessionId,
       options.model,
     );
     let effortModels = CLAUDE_FALLBACK_MODELS;
@@ -625,8 +631,14 @@ async function queryClaudeSDK(command, options = {}, ws) {
       delete process.env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT;
     }
 
-    // Track the query instance for abort capability
-    if (capturedSessionId) {
+    // Track the query instance for abort capability. Register under the APP
+    // session id immediately (known from the start) so Stop works even before
+    // Claude announces its own session id -- a brand-new session previously had
+    // a window where nothing was registered and Stop silently no-op'd.
+    if (options.appSessionId) {
+      addSession(options.appSessionId, queryInstance, ws);
+    }
+    if (capturedSessionId && capturedSessionId !== options.appSessionId) {
       addSession(capturedSessionId, queryInstance, ws);
     }
 
@@ -733,6 +745,33 @@ async function queryClaudeSDK(command, options = {}, ws) {
  * @param {string} sessionId - Session identifier
  * @returns {boolean} True if session was aborted, false if not found
  */
+function findSessionPids(sessionId) {
+  try {
+    const output = execSync(
+      `pgrep -P ${process.pid} -f "${sessionId}" 2>/dev/null || pgrep -P ${process.pid} -f "claude" 2>/dev/null || true`,
+      { encoding: 'utf-8', timeout: 5000 }
+    );
+    return output.trim().split('\n').filter(Boolean).map(Number).filter(n => !isNaN(n) && n !== process.pid);
+  } catch {
+    return [];
+  }
+}
+
+function killPids(pids, signal) {
+  for (const pid of pids) {
+    try {
+      process.kill(pid, signal);
+      console.log(`[ABORT] Sent ${signal} to PID ${pid}`);
+    } catch (err) {
+      if (err.code !== 'ESRCH') console.error(`[ABORT] kill ${pid} failed:`, err.message);
+    }
+  }
+}
+
+function isProcessAlive(pid) {
+  try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
 async function abortClaudeSDKSession(sessionId) {
   const session = getSession(sessionId);
 
@@ -742,26 +781,49 @@ async function abortClaudeSDKSession(sessionId) {
   }
 
   try {
-    console.log(`Aborting SDK session: ${sessionId}`);
-
-    // Mark before interrupting so the run loop knows not to emit its own
-    // terminal complete (the abort handler sends the aborted one).
+    console.log(`[ABORT] Aborting SDK session: ${sessionId}`);
     abortedSessionIds.add(sessionId);
 
-    // Call interrupt() on the query instance
-    await session.instance.interrupt();
+    // Step 1: cooperative interrupt via SDK (5s timeout)
+    try {
+      await Promise.race([
+        session.instance.interrupt(),
+        new Promise(resolve => setTimeout(resolve, 5000))
+      ]);
+    } catch (e) {
+      console.warn(`[ABORT] interrupt() threw for ${sessionId}:`, e?.message);
+    }
 
-    // Update session status
+    // Step 2: check if child process is still alive
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    let pids = findSessionPids(sessionId);
+    const alive = pids.filter(isProcessAlive);
+
+    if (alive.length > 0) {
+      console.warn(`[ABORT] Session ${sessionId} still alive (PIDs: ${alive}), sending SIGTERM`);
+      killPids(alive, 'SIGTERM');
+
+      await new Promise(resolve => setTimeout(resolve, 3000));
+      const stillAlive = alive.filter(isProcessAlive);
+
+      if (stillAlive.length > 0) {
+        console.warn(`[ABORT] Session ${sessionId} survived SIGTERM (PIDs: ${stillAlive}), sending SIGKILL`);
+        killPids(stillAlive, 'SIGKILL');
+      }
+    }
+
     session.status = 'aborted';
-
-    // Clean up session
     removeSession(sessionId);
-
     return true;
   } catch (error) {
-    console.error(`Error aborting session ${sessionId}:`, error);
-    // The run keeps going; let it emit its own terminal complete.
+    console.error(`[ABORT] Error aborting session ${sessionId}:`, error);
+    // Last resort: kill any child claude processes
+    try {
+      const pids = findSessionPids(sessionId);
+      killPids(pids, 'SIGKILL');
+    } catch {}
     abortedSessionIds.delete(sessionId);
+    removeSession(sessionId);
     return false;
   }
 }

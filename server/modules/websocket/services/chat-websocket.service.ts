@@ -198,6 +198,10 @@ async function handleChatSend(
     // Image attachments are re-validated server-side: only files inside the
     // global upload store may reach the provider runtimes' file reads.
     images: filterImagesToUploadStore(clientOptions.images),
+    // Provider runtimes resume by the provider-native id, but per-session model
+    // overrides are stored under the APP session id. Pass the app id too so the
+    // runtime looks up the override with the same key the picker wrote it with.
+    appSessionId: sessionId,
     sessionId: session.provider_session_id ?? undefined,
     resume: Boolean(session.provider_session_id),
     cwd: clientOptions.cwd ?? session.project_path ?? undefined,
@@ -242,9 +246,13 @@ async function handleChatAbort(
   }
 
   const abortFn = dependencies.abortFns[run.provider];
+  // Prefer the provider-native id, but fall back to the app id: a brand-new
+  // session has no provider id yet at the start of its first run, and without
+  // this fallback Stop silently no-op'd during that window.
+  const abortSessionId = run.providerSessionId || sessionId;
   let success = false;
-  if (abortFn && run.providerSessionId) {
-    success = Boolean(await abortFn(run.providerSessionId));
+  if (abortFn && abortSessionId) {
+    success = Boolean(await abortFn(abortSessionId));
   }
 
   chatRunRegistry.completeRun(sessionId, {

@@ -17,6 +17,18 @@ export interface SlashCommand {
   [key: string]: unknown;
 }
 
+// Mirrors the server's built-in command list (server/routes/commands.js) so the
+// slash menu is never fully empty -- used when no project is selected yet or the
+// fetch fails. Built-ins do not depend on a project.
+const BUILT_IN_FALLBACK_COMMANDS: SlashCommand[] = [
+  { name: '/help', description: 'Show help documentation for Claude Code', namespace: 'builtin', type: 'built-in', metadata: { type: 'builtin' } },
+  { name: '/models', description: 'View available models for the current provider', namespace: 'builtin', type: 'built-in', metadata: { type: 'builtin' } },
+  { name: '/cost', description: 'Display token usage information', namespace: 'builtin', type: 'built-in', metadata: { type: 'builtin' } },
+  { name: '/memory', description: 'Open CLAUDE.md memory file for editing', namespace: 'builtin', type: 'built-in', metadata: { type: 'builtin' } },
+  { name: '/config', description: 'Open settings and configuration', namespace: 'builtin', type: 'built-in', metadata: { type: 'builtin' } },
+  { name: '/status', description: 'Show system status and version information', namespace: 'builtin', type: 'built-in', metadata: { type: 'builtin' } },
+];
+
 interface UseSlashCommandsOptions {
   selectedProject: Project | null;
   provider: LLMProvider;
@@ -171,14 +183,11 @@ export function useSlashCommands({
     let cancelled = false;
 
     const fetchCommands = async () => {
-      if (!selectedProject) {
-        setSlashCommands([]);
-        setFilteredCommands([]);
-        return;
-      }
-
       try {
-        const workspacePath = selectedProject.fullPath || selectedProject.path || '';
+        // Built-ins need no project, so we always hit the endpoint (it returns
+        // built-ins for an empty projectPath). Bailing on a null project used to
+        // leave the slash menu showing "No commands available".
+        const workspacePath = selectedProject?.fullPath || selectedProject?.path || '';
         const response = await authenticatedFetch('/api/commands/list', {
           method: 'POST',
           headers: {
@@ -219,7 +228,7 @@ export function useSlashCommands({
           })),
         ];
 
-        const parsedHistory = readCommandHistory(selectedProject.projectId);
+        const parsedHistory = selectedProject ? readCommandHistory(selectedProject.projectId) : {};
         const sortedCommands = [...allCommands].sort((commandA, commandB) => {
           const commandAUsage = parsedHistory[commandA.name] || 0;
           const commandBUsage = parsedHistory[commandB.name] || 0;
@@ -232,7 +241,8 @@ export function useSlashCommands({
       } catch (error) {
         console.error('Error fetching slash commands:', error);
         if (!cancelled) {
-          setSlashCommands([]);
+          // Never leave the menu fully empty on a transient failure.
+          setSlashCommands(BUILT_IN_FALLBACK_COMMANDS);
         }
       }
     };

@@ -52,6 +52,8 @@ function MainContent({
   onShowSettings,
   externalMessageUpdate,
   newSessionTrigger,
+  showHeader = true,
+  isActivePane = true,
 }: MainContentProps) {
   const { preferences } = useUiPreferences();
   const { showRawParameters, showThinking, sendByCtrlEnter } = preferences;
@@ -88,10 +90,14 @@ function MainContent({
     const selectedProjectId = selectedProject?.projectId;
     const currentProjectId = currentProject?.projectId;
 
-    if (selectedProject && selectedProjectId !== currentProjectId) {
+    // Only the active pane owns the global currentProject. Without this guard,
+    // multiple panes on different projects re-trigger each other's effect via the
+    // shared currentProject.projectId dependency, looping forever and flooding
+    // /api/projects/:id/taskmaster + /api/taskmaster/tasks/:id.
+    if (isActivePane && selectedProject && selectedProjectId !== currentProjectId) {
       setCurrentProject?.(selectedProject);
     }
-  }, [selectedProject, currentProject?.projectId, setCurrentProject]);
+  }, [isActivePane, selectedProject, currentProject?.projectId, setCurrentProject]);
 
   useEffect(() => {
     if (!shouldShowTasksTab && activeTab === 'tasks') {
@@ -142,16 +148,18 @@ function MainContent({
 
   return (
     <div className="flex h-full flex-col">
-      <MainContentHeader
-        activeTab={activeTab}
-        setActiveTab={setActiveTab}
-        selectedProject={selectedProject}
-        selectedSession={selectedSession}
-        shouldShowTasksTab={shouldShowTasksTab}
-        shouldShowBrowserTab={shouldShowBrowserTab}
-        isMobile={isMobile}
-        onMenuClick={onMenuClick}
-      />
+      {showHeader && (
+        <MainContentHeader
+          activeTab={activeTab}
+          setActiveTab={setActiveTab}
+          selectedProject={selectedProject}
+          selectedSession={selectedSession}
+          shouldShowTasksTab={shouldShowTasksTab}
+          shouldShowBrowserTab={shouldShowBrowserTab}
+          isMobile={isMobile}
+          onMenuClick={onMenuClick}
+        />
+      )}
 
       <div className="flex min-h-0 flex-1 overflow-hidden">
         <div className={`flex min-h-0 min-w-[200px] flex-col overflow-hidden ${editorExpanded ? 'hidden' : ''} flex-1`}>

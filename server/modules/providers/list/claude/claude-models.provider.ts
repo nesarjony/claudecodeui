@@ -11,6 +11,7 @@ import type {
 } from '@/shared/types.js';
 import {
   buildDefaultProviderCurrentActiveModel,
+  readProviderSessionActiveModelChange,
   writeProviderSessionActiveModelChange,
 } from '@/shared/utils.js';
 
@@ -19,7 +20,7 @@ export const CLAUDE_FALLBACK_MODELS: ProviderModelsDefinition = {
     {
       value: 'default',
       label: 'Default (recommended)',
-      description: 'Use the Claude Code default model (currently Sonnet 4.6)',
+      description: 'Use the Claude Code default model (currently Opus 4.8, 1M context)',
       effort: {
         default: 'high',
         values: [
@@ -48,13 +49,14 @@ export const CLAUDE_FALLBACK_MODELS: ProviderModelsDefinition = {
     {
       value: "sonnet",
       label: "Sonnet",
-      description: "Sonnet 4.6 · Best for everyday tasks · $3/$15 per Mtok",
+      description: "Sonnet 5 · Efficient for routine tasks · $3/$15 per Mtok",
       effort: {
         default: 'high',
         values: [
           { value: 'low' },
           { value: 'medium' },
           { value: 'high' },
+          { value: 'xhigh' },
           { value: 'max' },
         ],
       },
@@ -62,13 +64,14 @@ export const CLAUDE_FALLBACK_MODELS: ProviderModelsDefinition = {
     {
       value: 'sonnet[1m]',
       label: 'Sonnet (1M context)',
-      description: 'Sonnet 4.6 for long sessions · $3/$15 per Mtok',
+      description: 'Sonnet 5 for long sessions (1M context) · $3/$15 per Mtok',
       effort: {
         default: 'high',
         values: [
           { value: 'low' },
           { value: 'medium' },
           { value: 'high' },
+          { value: 'xhigh' },
           { value: 'max' },
         ],
       },
@@ -251,6 +254,15 @@ export class ClaudeProviderModels implements IProviderModels {
     }
 
     try {
+      // An explicit user selection for this session (persisted by
+      // changeActiveModel) is what the next turn will actually use, so it takes
+      // precedence over the transcript. Without this the picker re-read the
+      // JSONL on reload and appeared to reset to the default model.
+      const pendingChange = await readProviderSessionActiveModelChange('claude', sessionId);
+      if (pendingChange.changed && pendingChange.model) {
+        return { model: pendingChange.model };
+      }
+
       const jsonlPath = sessionsDb.getSessionById(sessionId)?.jsonl_path;
       const activeModel = jsonlPath
         ? await readClaudeSessionModelFromJsonl(sessionId, jsonlPath)

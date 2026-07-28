@@ -134,6 +134,34 @@ CREATE TABLE IF NOT EXISTS app_config (
 );
 `;
 
+export const QUICK_COMMANDS_TABLE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS quick_commands (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    label TEXT NOT NULL,
+    body TEXT NOT NULL,
+    emoji TEXT,
+    trigger_state TEXT,
+    pinned INTEGER NOT NULL DEFAULT 0,
+    prompt TEXT,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+`;
+
+export const QUICK_COMMAND_SETTINGS_TABLE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS quick_command_settings (
+    user_id INTEGER PRIMARY KEY,
+    mode TEXT NOT NULL DEFAULT 'heuristic',
+    model TEXT NOT NULL DEFAULT 'haiku',
+    send_mode TEXT NOT NULL DEFAULT 'insert',
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+`;
+
 export const INIT_SCHEMA_SQL = `
 -- Initialize authentication database
 PRAGMA foreign_keys = ON;
@@ -147,6 +175,11 @@ ${API_KEYS_TABLE_SCHEMA_SQL}
 CREATE INDEX IF NOT EXISTS idx_api_keys_key ON api_keys(api_key);
 CREATE INDEX IF NOT EXISTS idx_api_keys_user_id ON api_keys(user_id);
 CREATE INDEX IF NOT EXISTS idx_api_keys_active ON api_keys(is_active);
+
+${QUICK_COMMANDS_TABLE_SCHEMA_SQL}
+CREATE INDEX IF NOT EXISTS idx_quick_commands_user_id ON quick_commands(user_id);
+
+${QUICK_COMMAND_SETTINGS_TABLE_SCHEMA_SQL}
 
 ${USER_CREDENTIALS_TABLE_SCHEMA_SQL}
 CREATE INDEX IF NOT EXISTS idx_user_credentials_user_id ON user_credentials(user_id);

@@ -58,6 +58,18 @@ const DEFAULT_PROVIDER: LLMProvider = 'claude';
 
 const serialize = (value: unknown) => JSON.stringify(value ?? null);
 
+// `?newProject=<projectId>` opens a fresh new-session composer for that project
+// on load. The CloudCLI desktop app uses this to start a new session inside a
+// pane (it loads the web with `?solo`, which hides the sidebar — so there is
+// otherwise no way to pick a project). Read once at module load.
+const NEW_PROJECT_PARAM: string | null = (() => {
+  try {
+    return new URLSearchParams(window.location.search).get('newProject');
+  } catch {
+    return null;
+  }
+})();
+
 const readSelectedProvider = (): LLMProvider => {
   try {
     const storedProvider = localStorage.getItem('selected-provider');
@@ -618,6 +630,23 @@ export function useProjectsState({
       setSelectedProject(projects[0]);
     }
   }, [isLoadingProjects, projects, selectedProject, sessionId]);
+
+  // `?newProject=<id>` (used by the desktop app's "New session"): once projects
+  // load, open a fresh new-session composer for that project. Consumed once.
+  const newProjectConsumedRef = useRef(false);
+  useEffect(() => {
+    if (!NEW_PROJECT_PARAM || newProjectConsumedRef.current || isLoadingProjects || sessionId) {
+      return;
+    }
+    const proj = projects.find((p) => p.projectId === NEW_PROJECT_PARAM);
+    if (proj) {
+      newProjectConsumedRef.current = true;
+      setSelectedProject(proj);
+      setSelectedSession(null);
+      setActiveTab('chat');
+      setNewSessionTrigger((n) => n + 1);
+    }
+  }, [isLoadingProjects, projects, sessionId]);
 
   // Realtime sidebar updates. The backend pushes per-session deltas
   // (`session_upserted`) instead of full project snapshots, so each event is

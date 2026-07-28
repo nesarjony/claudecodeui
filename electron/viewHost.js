@@ -2,35 +2,6 @@ import { BrowserView } from 'electron';
 
 const TARGET_LOAD_TIMEOUT_MS = 20000;
 
-function escapeHtml(value) {
-  return String(value == null ? '' : value)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
-
-function buildPlaceholderHtml(title, message, logs = []) {
-  const logHtml = logs.length
-    ? `<pre>${logs.map(escapeHtml).join('\n')}</pre>`
-    : '<pre>Waiting for process output...</pre>';
-  return [
-    '<!doctype html><meta charset="utf-8">',
-    '<style>',
-    'html,body{margin:0;height:100%;background:#0a0a0a;color:#fafafa;font:14px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}',
-    'body{padding:28px;overflow:hidden}',
-    '.shell{height:100%;display:flex;flex-direction:column;gap:16px}',
-    '.box{display:flex;align-items:center;gap:10px;color:#d4d4d4;flex:0 0 auto}',
-    '.dot{width:8px;height:8px;border-radius:50%;background:#0b60ea;box-shadow:0 0 0 6px rgba(11,96,234,.15)}',
-    'pre{margin:0;flex:1;overflow:auto;border:1px solid #262626;border-radius:10px;background:#050505;color:#d4d4d4;padding:14px;font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;white-space:pre-wrap;user-select:text}',
-    '</style>',
-    '<div class="shell">',
-    `<div class="box"><span class="dot"></span><span>${escapeHtml(message || `Opening ${title}...`)}</span></div>`,
-    logHtml,
-    '</div>',
-  ].join('');
-}
-
 function isHttpUrl(url) {
   try {
     const parsed = new URL(url);
@@ -38,6 +9,11 @@ function isHttpUrl(url) {
   } catch {
     return false;
   }
+}
+
+function isExpectedNavigationAbort(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  return error?.code === 'ERR_ABORTED' || message.includes('ERR_ABORTED') || message.includes('(-3)');
 }
 
 async function loadUrlWithTimeout(webContents, url, timeoutMs = TARGET_LOAD_TIMEOUT_MS) {
@@ -68,16 +44,51 @@ async function loadUrlWithTimeout(webContents, url, timeoutMs = TARGET_LOAD_TIME
   }
 }
 
+/**
+ * Tiles up to N live BrowserViews (one per pane) at rectangles computed by the
+ * main process. This replaces the old single-active-view model so multiple
+ * sessions can render and run in parallel (the 2x2 grid).
+ */
 export class ViewHost {
-  constructor({ appName, getMainWindow, getContentViewBounds, getPreloadPath, openExternalUrl, showError }) {
-    this.appName = appName;
+  constructor({ getMainWindow, getPreloadPath, openExternalUrl, showError, onPaneUpdate, onPaneFocus }) {
     this.getMainWindow = getMainWindow;
-    this.getContentViewBounds = getContentViewBounds;
     this.getPreloadPath = getPreloadPath;
     this.openExternalUrl = openExternalUrl;
     this.showError = showError;
-    this.activeContentView = null;
-    this.tabViews = new Map();
+    this.onPaneUpdate = onPaneUpdate || (() => {});
+    this.onPaneFocus = onPaneFocus || (() => {});
+    // paneId -> { view, loadedUrl, title, injected }
+    this.panes = new Map();
+    this.activePaneId = null;
+    this.sidebarHideCss = null;
+    this.overrideCss = null;
+  }
+
+  setSidebarHideCss(css) {
+    this.sidebarHideCss = css || null;
+  }
+
+  setOverrideCss(css) {
+    this.overrideCss = css || null;
+  }
+
+  // Hide the web app's sidebar only inside an actual session (`/session/*`) so
+  // chats are full-bleed, but keep it on `/` where you pick a project / start
+  // a new session. Toggles as the SPA navigates.
+  applySidebarVisibility(entry) {
+    if (!this.sidebarHideCss) return;
+    const wc = entry.view.webContents;
+    if (!wc || wc.isDestroyed()) return;
+    let pathname = '';
+    try { pathname = new URL(wc.getURL()).pathname; } catch { pathname = ''; }
+    const shouldHide = /\/session\//.test(pathname);
+    if (shouldHide && !entry.cssKey) {
+      wc.insertCSS(this.sidebarHideCss).then((key) => { entry.cssKey = key; }).catch(() => {});
+    } else if (!shouldHide && entry.cssKey) {
+      const key = entry.cssKey;
+      entry.cssKey = null;
+      wc.removeInsertedCSS(key).catch(() => {});
+    }
   }
 
   configureChildWebContents(webContents) {
@@ -85,6 +96,98 @@ export class ViewHost {
       void this.openExternalUrl(url).catch((error) => this.showError('Could not open external link', error));
       return { action: 'deny' };
     });
+  }
+
+  ensurePane(paneId) {
+    let entry = this.panes.get(paneId);
+    if (entry) return entry;
+
+    const view = new BrowserView({
+      webPreferences: {
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true,
+        preload: this.getPreloadPath(),
+      },
+    });
+    this.configureChildWebContents(view.webContents);
+
+    entry = { view, loadedUrl: null, title: '', cssKey: null };
+    this.panes.set(paneId, entry);
+
+    const { webContents } = view;
+    webContents.on('page-title-updated', (_event, title) => {
+      entry.title = title;
+      this.onPaneUpdate(paneId, { title, url: webContents.getURL() });
+    });
+    webContents.on('did-navigate', (_event, url) => {
+      this.applySidebarVisibility(entry);
+      this.onPaneUpdate(paneId, { title: entry.title, url });
+    });
+    webContents.on('did-navigate-in-page', (_event, url) => {
+      this.applySidebarVisibility(entry);
+      this.onPaneUpdate(paneId, { title: entry.title, url });
+    });
+    webContents.on('dom-ready', () => {
+      if (this.overrideCss) webContents.insertCSS(this.overrideCss).catch(() => {});
+      this.applySidebarVisibility(entry);
+    });
+    // Click-to-focus: the pane the user clicks into becomes active (drives the
+    // accent frame + titlebar controls) — replaces the removed pane header.
+    webContents.on('focus', () => this.onPaneFocus(paneId));
+
+    return entry;
+  }
+
+  /**
+   * Reconcile the attached BrowserViews with the requested panes.
+   * @param {Array<{id:string,url:string,bounds:{x,y,width,height},active:boolean}>} panes
+   */
+  async syncPanes(panes) {
+    const mainWindow = this.getMainWindow();
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+
+    const wanted = new Set(panes.map((pane) => pane.id));
+    for (const paneId of [...this.panes.keys()]) {
+      if (!wanted.has(paneId)) this.destroyPane(paneId);
+    }
+
+    // Detach everything, then attach in requested order (stable z-order).
+    try {
+      for (const view of mainWindow.getBrowserViews()) {
+        mainWindow.removeBrowserView(view);
+      }
+    } catch {
+      // Views may be mid-teardown; ignore.
+    }
+
+    for (const pane of panes) {
+      const entry = this.ensurePane(pane.id);
+      try {
+        mainWindow.addBrowserView(entry.view);
+      } catch {
+        continue;
+      }
+      entry.view.setBounds(pane.bounds);
+      entry.view.setAutoResize({ width: false, height: false });
+
+      if (isHttpUrl(pane.url) && entry.loadedUrl !== pane.url) {
+        entry.loadedUrl = pane.url;
+        loadUrlWithTimeout(entry.view.webContents, pane.url).catch((error) => {
+          if (isExpectedNavigationAbort(error)) return;
+          this.onPaneUpdate(pane.id, { error: error?.message || String(error) });
+        });
+      }
+    }
+
+    const active = panes.find((pane) => pane.active) || panes[0];
+    this.activePaneId = active?.id || null;
+    if (active) {
+      const entry = this.panes.get(active.id);
+      if (entry && !entry.view.webContents.isDestroyed()) {
+        entry.view.webContents.focus();
+      }
+    }
   }
 
   detachAll() {
@@ -95,44 +198,55 @@ export class ViewHost {
         mainWindow.removeBrowserView(view);
       }
     } catch {
-      // BrowserViews may already be gone during BrowserWindow teardown.
+      // ignore teardown races
     }
-    this.activeContentView = null;
   }
 
-  detachActiveView() {
-    const mainWindow = this.getMainWindow();
-    const view = this.activeContentView;
-    if (!mainWindow || mainWindow.isDestroyed() || !view) return false;
+  getPaneState(paneId) {
+    const entry = this.panes.get(paneId);
+    if (!entry || entry.view.webContents.isDestroyed()) return null;
+    return {
+      id: paneId,
+      title: entry.title || '',
+      url: entry.view.webContents.getURL(),
+    };
+  }
+
+  reloadPane(paneId) {
+    const entry = this.panes.get(paneId);
+    if (!entry || entry.view.webContents.isDestroyed()) return false;
+    entry.view.webContents.reloadIgnoringCache();
+    return true;
+  }
+
+  reloadActivePane() {
+    return this.activePaneId ? this.reloadPane(this.activePaneId) : false;
+  }
+
+  async navigatePane(paneId, url) {
+    const entry = this.panes.get(paneId);
+    if (!entry || entry.view.webContents.isDestroyed()) return false;
+    if (!isHttpUrl(url)) return false;
+    entry.loadedUrl = url;
+    await loadUrlWithTimeout(entry.view.webContents, url);
+    return true;
+  }
+
+  openPaneDevTools(paneId = this.activePaneId) {
+    const entry = paneId ? this.panes.get(paneId) : null;
+    if (!entry || entry.view.webContents.isDestroyed()) return false;
+    entry.view.webContents.openDevTools({ mode: 'detach' });
+    return true;
+  }
+
+  async runInPane(paneId, code) {
+    const entry = this.panes.get(paneId);
+    if (!entry || entry.view.webContents.isDestroyed()) return null;
     try {
-      if (mainWindow.getBrowserViews().includes(view)) {
-        mainWindow.removeBrowserView(view);
-      }
+      return await entry.view.webContents.executeJavaScript(code, true);
     } catch {
-      return false;
+      return null;
     }
-    this.activeContentView = null;
-    return true;
-  }
-
-  getActiveView() {
-    const view = this.activeContentView;
-    if (!view || view.webContents.isDestroyed()) return null;
-    return view;
-  }
-
-  openActiveViewDevTools() {
-    const view = this.getActiveView();
-    if (!view) return false;
-    view.webContents.openDevTools({ mode: 'detach' });
-    return true;
-  }
-
-  reloadActiveView() {
-    const view = this.getActiveView();
-    if (!view) return false;
-    view.webContents.reloadIgnoringCache();
-    return true;
   }
 
   async readLocalStorageValueForOrigin(originUrl, key) {
@@ -143,189 +257,55 @@ export class ViewHost {
       return null;
     }
 
-    for (const view of this.tabViews.values()) {
-      if (!view || view.webContents.isDestroyed()) continue;
+    for (const entry of this.panes.values()) {
+      const { webContents } = entry.view;
+      if (!webContents || webContents.isDestroyed()) continue;
       let viewOrigin;
       try {
-        viewOrigin = new URL(view.webContents.getURL()).origin;
+        viewOrigin = new URL(webContents.getURL()).origin;
       } catch {
         continue;
       }
       if (viewOrigin !== targetOrigin) continue;
-
       try {
-        const value = await view.webContents.executeJavaScript(
+        const value = await webContents.executeJavaScript(
           `window.localStorage.getItem(${JSON.stringify(key)})`,
-          true
+          true,
         );
         return typeof value === 'string' && value ? value : null;
       } catch {
         return null;
       }
     }
-
     return null;
   }
 
-  getTabViewDiagnostics() {
-    const mainWindow = this.getMainWindow();
-    const attachedViews = new Set();
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      try {
-        for (const view of mainWindow.getBrowserViews()) {
-          attachedViews.add(view);
-        }
-      } catch {
-        // Ignore teardown races while gathering best-effort diagnostics.
-      }
-    }
-
-    return Array.from(this.tabViews.entries()).map(([tabId, view]) => {
-      const { webContents } = view;
-      const destroyed = webContents.isDestroyed();
-      return {
-        tabId,
-        webContentsId: destroyed ? null : webContents.id,
-        url: destroyed ? null : webContents.getURL(),
-        title: destroyed ? null : webContents.getTitle(),
-        osProcessId: destroyed || typeof webContents.getOSProcessId !== 'function' ? null : webContents.getOSProcessId(),
-        processId: destroyed || typeof webContents.getProcessId !== 'function' ? null : webContents.getProcessId(),
-        attached: attachedViews.has(view),
-        active: this.activeContentView === view,
-        destroyed,
-      };
-    });
-  }
-
-  getOrCreateTabView(tabId) {
-    let view = this.tabViews.get(tabId);
-    if (view) return view;
-
-    view = new BrowserView({
-      webPreferences: {
-        contextIsolation: true,
-        nodeIntegration: false,
-        sandbox: true,
-        preload: this.getPreloadPath(),
-      },
-    });
-    this.configureChildWebContents(view.webContents);
-    this.tabViews.set(tabId, view);
-    return view;
-  }
-
-  attach(view) {
-    const mainWindow = this.getMainWindow();
-    if (!mainWindow || mainWindow.isDestroyed()) return;
-    if (this.activeContentView && this.activeContentView !== view) {
-      this.detachAll();
-    }
-    this.activeContentView = view;
-    try {
-      if (!mainWindow.getBrowserViews().includes(view)) {
-        mainWindow.addBrowserView(view);
-      }
-    } catch {
-      return;
-    }
-    view.setBounds(this.getContentViewBounds());
-    view.setAutoResize({ width: true, height: true });
-  }
-
-  resizeActiveView() {
-    if (this.activeContentView) {
-      this.activeContentView.setBounds(this.getContentViewBounds());
-    }
-  }
-
-  async showTabPlaceholder(tabId, target, message) {
-    const view = this.getOrCreateTabView(tabId);
-    this.attach(view);
-    const html = buildPlaceholderHtml(target.name || this.appName, message);
-    await view.webContents.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
-    view.__cloudcliStartupHtml = html;
-    view.__cloudcliLoadedUrl = null;
-  }
-
-  async showLocalStartupTarget(tabId, target, logs) {
-    const view = this.getOrCreateTabView(tabId);
-    if (view.__cloudcliLoadingUrl) return;
-    this.attach(view);
-    const html = buildPlaceholderHtml(target.name || this.appName, 'Starting Local CloudCLI...', logs);
-    if (view.__cloudcliStartupHtml === html) return;
-    await view.webContents.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
-    view.__cloudcliStartupHtml = html;
-    view.__cloudcliLoadedUrl = null;
-  }
-
-  async showContentTarget(tabId, target) {
-    const loadUrl = target.loadUrl || target.url;
-    if (!isHttpUrl(loadUrl)) {
-      throw new Error(`Refusing to load unsupported app URL: ${loadUrl}`);
-    }
-    const view = this.getOrCreateTabView(tabId);
-    this.attach(view);
-    if (target.forceLoad || view.__cloudcliLoadedUrl !== target.url) {
-      view.__cloudcliLoadingUrl = loadUrl;
-      try {
-        await loadUrlWithTimeout(view.webContents, loadUrl);
-        view.__cloudcliLoadedUrl = target.url;
-        view.__cloudcliStartupHtml = null;
-        delete target.loadUrl;
-        delete target.forceLoad;
-      } finally {
-        if (view.__cloudcliLoadingUrl === loadUrl) {
-          view.__cloudcliLoadingUrl = null;
-        }
-      }
-    }
-    return view.webContents.getURL();
-  }
-
-  reloadTab(tabId) {
-    const view = this.tabViews.get(tabId);
-    if (!view || view.webContents.isDestroyed()) return false;
-    view.webContents.reloadIgnoringCache();
-    return true;
-  }
-
-  async navigateActiveView(url) {
-    const view = this.getActiveView();
-    if (!view) return false;
-    await loadUrlWithTimeout(view.webContents, url);
-    view.__cloudcliLoadedUrl = url;
-    view.__cloudcliStartupHtml = null;
-    return true;
-  }
-
-  destroyTabView(tabId) {
-    const view = this.tabViews.get(tabId);
-    if (!view) return;
+  destroyPane(paneId) {
+    const entry = this.panes.get(paneId);
+    if (!entry) return;
     const mainWindow = this.getMainWindow();
     if (mainWindow && !mainWindow.isDestroyed()) {
       try {
-        if (mainWindow.getBrowserViews().includes(view)) {
-          mainWindow.removeBrowserView(view);
+        if (mainWindow.getBrowserViews().includes(entry.view)) {
+          mainWindow.removeBrowserView(entry.view);
         }
       } catch {
-        // Ignore teardown races; Electron owns final destruction during quit.
+        // ignore teardown races
       }
-    }
-    if (this.activeContentView === view) {
-      this.activeContentView = null;
     }
     try {
-      if (!view.webContents.isDestroyed()) {
-        view.webContents.destroy();
+      if (!entry.view.webContents.isDestroyed()) {
+        entry.view.webContents.destroy();
       }
     } catch {
-      // The view may already be destroyed by its parent BrowserWindow.
+      // already destroyed by parent
     }
-    this.tabViews.delete(tabId);
+    this.panes.delete(paneId);
+    if (this.activePaneId === paneId) this.activePaneId = null;
   }
 
   clear() {
-    this.tabViews.clear();
-    this.activeContentView = null;
+    this.panes.clear();
+    this.activePaneId = null;
   }
 }
