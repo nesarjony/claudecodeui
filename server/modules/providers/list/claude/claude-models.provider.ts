@@ -107,6 +107,36 @@ export const CLAUDE_FALLBACK_MODELS: ProviderModelsDefinition = {
       },
     },
     {
+      value: 'claude-opus-5',
+      label: 'Opus 5',
+      description: 'Opus 5 · Most capable — latest Opus',
+      effort: {
+        default: 'high',
+        values: [
+          { value: 'low' },
+          { value: 'medium' },
+          { value: 'high' },
+          { value: 'xhigh' },
+          { value: 'max' },
+        ],
+      },
+    },
+    {
+      value: 'claude-opus-5[1m]',
+      label: 'Opus 5 (1M context)',
+      description: 'Opus 5 with 1M context · Most capable for complex work',
+      effort: {
+        default: 'high',
+        values: [
+          { value: 'low' },
+          { value: 'medium' },
+          { value: 'high' },
+          { value: 'xhigh' },
+          { value: 'max' },
+        ],
+      },
+    },
+    {
       value: 'haiku',
       label: 'Haiku',
       description: 'Haiku 4.5 · Fastest for quick answers · $1/$5 per Mtok',
