@@ -129,7 +129,12 @@
   body {
     @apply bg-background text-foreground;
 
-    font-family: "Encode Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    /* 450 rather than 400: at the 13-14px the panes run at, regular Inter goes
+       thin against a dark background, which is most of what made this hard to
+       read. Still short of 500, which starts to look shouty in bulk copy. */
+    font-weight: 450;
+    line-height: 1.55;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     margin: 0;

@@ -14,7 +14,11 @@ export const PROMPT_MIN_OPTIONS = 2;
 export const TERMINAL_OPTIONS: ITerminalOptions = {
   cursorBlink: true,
   fontSize: 14,
-  fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+  // JetBrains Mono first for a taller x-height and clearly distinct 0/O and
+  // 1/l/I, which matters most in terminal output. Courier New dropped: it was
+  // the fallback that actually rendered on Linux, and it is the least legible
+  // of the set.
+  fontFamily: '"JetBrains Mono", ui-monospace, Menlo, Monaco, Consolas, "Liberation Mono", monospace',
   allowProposedApi: true,
   allowTransparency: false,
   convertEol: true,

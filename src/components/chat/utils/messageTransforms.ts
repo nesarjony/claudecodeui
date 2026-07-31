@@ -7,8 +7,8 @@ export interface DiffLine {
 export type DiffCalculator = (oldStr: string, newStr: string) => DiffLine[];
 
 export const calculateDiff = (oldStr: string, newStr: string): DiffLine[] => {
-  const oldLines = oldStr.split('\n');
-  const newLines = newStr.split('\n');
+  const oldLines = String(oldStr ?? '').split('\n');
+  const newLines = String(newStr ?? '').split('\n');
 
   // Use LCS alignment so insertions/deletions don't cascade into a full-file "changed" diff.
   const lcsTable: number[][] = Array.from({ length: oldLines.length + 1 }, () =>
