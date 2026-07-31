@@ -13,7 +13,8 @@ import type { DiffCalculator, DiffLine, DiffStats } from '@/shared/types';
  *   empty one**, which is how `diff`, `git` and every editor count lines.
  *   Without this, whether a file ends in a newline changed its line count.
  */
-const toDiffLines = (text: string): string[] => {
+const toDiffLines = (value: unknown): string[] => {
+  const text = String(value ?? '');
   if (text === '') {
     return [];
   }
