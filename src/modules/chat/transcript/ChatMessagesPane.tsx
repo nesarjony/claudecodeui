@@ -26,6 +26,8 @@ import ChatExportMenu from '@/modules/chat/transcript/ChatExportMenu';
 const INITIAL_MOUNTED_TAIL_ROWS = 30;
 
 type ChatMessagesPaneProps = {
+  /** Incremented for every explicit New Session click, including repeated clicks on a blank composer. */
+  newSessionTrigger?: number;
   scrollContainerRef: RefObject<HTMLDivElement>;
   onWheel: () => void;
   onTouchMove: () => void;
@@ -82,6 +84,7 @@ type ChatMessagesPaneProps = {
  * load-all-history overlay.
  */
 function ChatMessagesPane({
+  newSessionTrigger,
   scrollContainerRef,
   onWheel,
   onTouchMove,
@@ -198,6 +201,7 @@ function ChatMessagesPane({
         </div>
       ) : chatMessages.length === 0 ? (
         <ProviderSelectionEmptyState
+          newSessionTrigger={newSessionTrigger}
           selectedSession={selectedSession}
           currentSessionId={currentSessionId}
           provider={provider}

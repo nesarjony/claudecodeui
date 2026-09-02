@@ -48,6 +48,8 @@ function modelSearchFilter(value: string, search: string): number {
 }
 
 type ProviderSelectionEmptyStateProps = {
+  /** Incremented for every explicit New Session click so the model picker opens for that intent. */
+  newSessionTrigger?: number;
   selectedSession: ProjectSession | null;
   currentSessionId: string | null;
   provider: LLMProvider;
@@ -86,6 +88,7 @@ function getProviderDisplayName(p: LLMProvider) {
  * the user can pick a provider, model and permission mode before their first turn.
  */
 export default function ProviderSelectionEmptyState({
+  newSessionTrigger,
   selectedSession,
   currentSessionId,
   provider,
@@ -104,22 +107,36 @@ export default function ProviderSelectionEmptyState({
   const { t } = useTranslation("chat");
   const [dialogOpen, setDialogOpen] = useState(false);
   const [modelLibraryOpen, setModelLibraryOpen] = useState(false);
+  /** Last New Session request dismissed or completed by the user. */
+  const [handledNewSessionTrigger, setHandledNewSessionTrigger] = useState(0);
+
+  const hasPendingNewSessionRequest = Boolean(
+    newSessionTrigger && newSessionTrigger !== handledNewSessionTrigger,
+  );
+  const providerDialogOpen = dialogOpen || hasPendingNewSessionRequest;
 
   const [modelSearch, setModelSearch] = useState("");
 
   /**
-   * Opens and closes the picker, clearing the search on the way out.
+   * Opens and closes the picker, clearing the search on the way out and, for a
+   * pending New Session request, marking it handled so it isn't re-triggered.
    *
    * The search box is controlled, so a query left behind comes back with the
    * dialog - and brings every branch open with it, since searching expands
    * them. Reopening would undo the collapsing this picker is built around.
    */
-  const setPickerOpen = useCallback((open: boolean) => {
-    setDialogOpen(open);
-    if (!open) {
-      setModelSearch("");
-    }
-  }, []);
+  const handleProviderDialogOpenChange = useCallback(
+    (open: boolean) => {
+      if (!open && newSessionTrigger) {
+        setHandledNewSessionTrigger(newSessionTrigger);
+      }
+      setDialogOpen(open);
+      if (!open) {
+        setModelSearch("");
+      }
+    },
+    [newSessionTrigger],
+  );
 
   /** One collapsible branch per provider, in the order the picker lists them. */
   const visibleProviderGroups = useMemo<ModelGroup[]>(
@@ -151,20 +168,20 @@ export default function ProviderSelectionEmptyState({
       setProvider(providerId);
       writeSelectedProvider(providerId);
       setProviderModel(providerId, modelValue);
-      setPickerOpen(false);
+      handleProviderDialogOpenChange(false);
       setTimeout(() => textareaRef.current?.focus(), 100);
     },
-    [setProvider, setProviderModel, setPickerOpen, textareaRef],
+    [handleProviderDialogOpenChange, setProvider, setProviderModel, textareaRef],
   );
 
   const openModelLibrary = () => {
-    setPickerOpen(false);
+    handleProviderDialogOpenChange(false);
     setModelLibraryOpen(true);
   };
 
   const closeModelLibrary = () => {
     setModelLibraryOpen(false);
-    setPickerOpen(true);
+    handleProviderDialogOpenChange(true);
   };
 
   if (!selectedSession && !currentSessionId) {
@@ -180,7 +197,7 @@ export default function ProviderSelectionEmptyState({
             </p>
           </div>
 
-          <Dialog open={dialogOpen} onOpenChange={setPickerOpen}>
+          <Dialog open={providerDialogOpen} onOpenChange={handleProviderDialogOpenChange}>
             <DialogTrigger asChild>
               <Card
                 className="group mx-auto max-w-xs cursor-pointer border-border/60 transition-all duration-150 hover:border-border hover:shadow-md active:scale-[0.99]"

@@ -420,6 +420,7 @@ function ChatInterface({
     <PermissionContext.Provider value={permissionContextValue}>
       <div className="flex h-full min-h-0 flex-col">
         <ChatMessagesPane
+          newSessionTrigger={newSessionTrigger}
           scrollContainerRef={scrollContainerRef}
           // Not redundant with the `scroll` listener. A first page is 20 rows,
           // tool results fold into their calls, and the "load earlier" link is
