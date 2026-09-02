@@ -1,10 +1,10 @@
 import { useState } from 'react';
+import type { ComponentProps } from 'react';
 import { Maximize2, Menu, X } from 'lucide-react';
 
-import MainContent from '../main-content/view/MainContent';
-import MainContentTabSwitcher from '../main-content/view/subcomponents/MainContentTabSwitcher';
-import type { MainContentProps } from '../main-content/types/types';
-import type { AppTab, Project, ProjectSession } from '../../types/app';
+import WorkspaceMain from '@/modules/project-workspace/WorkspaceMain';
+import WorkspaceTabs from '@/modules/project-workspace/WorkspaceTabs';
+import type { AppTab, Project, ProjectSession } from '@/shared/types';
 
 // Everything MainContent needs that is shared across every pane (socket, session
 // protection, settings, etc.). The per-pane bits (which project/session it shows,
@@ -15,7 +15,7 @@ import type { AppTab, Project, ProjectSession } from '../../types/app';
 // slim strip — icon-only tabs (Chat/Shell/Files/Git) + pane controls. So the
 // tab bodies are fully reused, but four panes no longer stack four 53px headers.
 export type SharedPaneProps = Omit<
-  MainContentProps,
+  ComponentProps<typeof WorkspaceMain>,
   | 'selectedProject'
   | 'selectedSession'
   | 'activeTab'
@@ -23,6 +23,7 @@ export type SharedPaneProps = Omit<
   | 'onMenuClick'
   | 'onNavigateToSession'
   | 'showHeader'
+  | 'isActivePane'
 >;
 
 type SessionPaneProps = {
@@ -61,7 +62,9 @@ export default function SessionPane({
   onMenu,
   isRunning = false,
 }: SessionPaneProps) {
+  // Each pane owns its active tool tab independently from the route-level workspace.
   const [activeTab, setActiveTab] = useState<AppTab>('chat');
+  // Empty panes reveal their session chooser only after the user requests it.
   const [showList, setShowList] = useState(false);
 
   const title = session
@@ -69,6 +72,11 @@ export default function SessionPane({
     : project
       ? `New session · ${project.displayName}`
       : 'Empty pane';
+
+  const handleSessionEstablished: SharedPaneProps['onSessionEstablished'] = (sessionId, context) => {
+    shared.onSessionEstablished(sessionId, context);
+    onNavigate(sessionId);
+  };
 
   return (
     <div
@@ -104,7 +112,7 @@ export default function SessionPane({
             <span
               className={`h-1.5 w-1.5 flex-shrink-0 rounded-full ${
                 isRunning
-                  ? 'bg-emerald-500 animate-pulse'
+                  ? 'animate-pulse bg-emerald-500'
                   : isActive
                     ? 'bg-primary'
                     : 'bg-muted-foreground/40'
@@ -117,12 +125,11 @@ export default function SessionPane({
               {title}
             </span>
             <div className="flex-shrink-0">
-              <MainContentTabSwitcher
+              <WorkspaceTabs
                 activeTab={activeTab}
                 setActiveTab={setActiveTab}
                 shouldShowTasksTab={false}
                 shouldShowBrowserTab={false}
-                iconOnly
               />
             </div>
             <button
@@ -152,7 +159,8 @@ export default function SessionPane({
           </div>
 
           <div className="min-h-0 flex-1">
-            <MainContent
+            <WorkspaceMain
+              {...shared}
               selectedProject={project}
               selectedSession={session}
               activeTab={activeTab}
@@ -163,7 +171,7 @@ export default function SessionPane({
               // A new/created session inside this pane fills THIS pane rather
               // than navigating the (hidden) single view.
               onNavigateToSession={(targetSessionId) => onNavigate(targetSessionId)}
-              {...shared}
+              onSessionEstablished={handleSessionEstablished}
             />
           </div>
         </>

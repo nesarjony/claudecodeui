@@ -608,7 +608,7 @@ router.get(
   asyncHandler(async (req: Request, res: Response) => {
     const provider = parseProvider(req.params.provider);
     const sessionId = parseSessionId(req.params.sessionId);
-    const result = await providerModelsService.getCurrentActiveModel(provider, sessionId);
+    const result = await providerModelsService.resolveSessionModel(provider, { sessionId });
     res.json(createApiSuccessResponse(result));
   }),
 );

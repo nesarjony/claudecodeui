@@ -20,23 +20,23 @@ import {
   type QuickCommandInput,
   type QuickCommandSettings,
   type TriggerState,
-} from '../../hooks/useQuickCommands';
-import { useQuickCommandsVisible } from '../../hooks/useQuickCommandsVisible';
+} from '@/modules/chat/hooks/useQuickCommands';
+import { useQuickCommandsVisible } from '@/modules/chat/hooks/useQuickCommandsVisible';
 
-interface MinimalMsg {
+type MinimalMsg = {
   type?: string;
   content?: string;
   displayText?: string;
   [k: string]: unknown;
-}
+};
 
-interface QuickCommandBarProps {
+type QuickCommandBarProps = {
   setInput: React.Dispatch<React.SetStateAction<string>>;
   textareaRef: React.RefObject<HTMLTextAreaElement>;
   chatMessages: MinimalMsg[];
   isProcessing: boolean;
   onSubmit?: (event: React.FormEvent<HTMLFormElement>) => void;
-}
+};
 
 const TRIGGER_OPTIONS: { value: '' | TriggerState; label: string }[] = [
   { value: '', label: 'Always show' },
@@ -412,7 +412,7 @@ export default function QuickCommandBar({
   );
 }
 
-interface ManagerProps {
+type ManagerProps = {
   commands: QuickCommand[];
   settings: QuickCommandSettings;
   onClose: () => void;
@@ -420,7 +420,7 @@ interface ManagerProps {
   onUpdate: (id: number, input: Partial<QuickCommandInput>) => Promise<boolean>;
   onDelete: (id: number) => Promise<boolean>;
   onSaveSettings: (next: Partial<QuickCommandSettings>) => Promise<boolean>;
-}
+};
 
 function QuickCommandManager({
   commands,

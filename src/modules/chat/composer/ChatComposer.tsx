@@ -10,7 +10,7 @@ import type {
   RefObject,
   TouchEvent,
 } from 'react';
-import { PaperclipIcon, MessageSquareIcon, XIcon, Loader2, ArrowUpIcon, PencilIcon } from 'lucide-react';
+import { PaperclipIcon, MessageSquareIcon, XIcon, Loader2, ArrowUpIcon, PencilIcon, SparklesIcon } from 'lucide-react';
 
 import { useVoiceInput } from '@/modules/chat/hooks/useVoiceInput';
 import { useVoiceAvailable } from '@/modules/chat/hooks/useVoiceAvailable';
@@ -36,6 +36,7 @@ import { ScheduleMessagePopover } from '@/modules/chat/composer/ScheduleMessageP
 import { ScheduledMessageList } from '@/modules/chat/composer/ScheduledMessageList';
 import ComposerModelMenu from '@/modules/chat/composer/ComposerModelMenu';
 import ComposerPermissionMenu from '@/modules/chat/composer/ComposerPermissionMenu';
+import { useQuickCommandsVisible } from '@/modules/chat/hooks/useQuickCommandsVisible';
 
 type MentionableFile = {
   name: string;
@@ -188,6 +189,7 @@ export default function ChatComposer({
   sendByCtrlEnter,
 }: ChatComposerProps) {
   const { t } = useTranslation('chat');
+  const [quickCommandsVisible, setQuickCommandsVisible] = useQuickCommandsVisible();
   const fileDropdownRef = useRef<HTMLDivElement | null>(null);
   const selectedFileRef = useRef<HTMLDivElement | null>(null);
   const commandMenuPosition = useMemo(() => {
@@ -458,6 +460,15 @@ export default function ChatComposer({
                   {slashCommandsCount}
                 </span>
               )}
+            </PromptInputButton>
+
+            <PromptInputButton
+              tooltip={{ content: quickCommandsVisible ? 'Hide quick commands' : 'Show quick commands' }}
+              onClick={() => setQuickCommandsVisible(!quickCommandsVisible)}
+              className={quickCommandsVisible ? 'text-primary' : ''}
+              aria-pressed={quickCommandsVisible}
+            >
+              <SparklesIcon />
             </PromptInputButton>
 
             {hasInput && (

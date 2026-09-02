@@ -120,6 +120,36 @@ CREATE TABLE IF NOT EXISTS scheduled_messages (
 );
 `;
 
+/** Stores per-user composer shortcuts rendered by the Quick Commands bar. */
+export const QUICK_COMMANDS_TABLE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS quick_commands (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    label TEXT NOT NULL,
+    body TEXT NOT NULL,
+    emoji TEXT,
+    trigger_state TEXT,
+    pinned INTEGER NOT NULL DEFAULT 0,
+    prompt TEXT,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+`;
+
+/** Stores the per-user suggestion and send behavior for Quick Commands. */
+export const QUICK_COMMAND_SETTINGS_TABLE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS quick_command_settings (
+    user_id INTEGER PRIMARY KEY,
+    mode TEXT NOT NULL DEFAULT 'heuristic',
+    model TEXT NOT NULL DEFAULT 'haiku',
+    send_mode TEXT NOT NULL DEFAULT 'insert',
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+`;
+
 export const SESSIONS_TABLE_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS sessions (
     session_id TEXT NOT NULL,

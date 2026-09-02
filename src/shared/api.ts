@@ -12,6 +12,47 @@ export type ApiRequestOptions = Omit<RequestInit, 'headers'> & {
   headers?: Record<string, string>;
 };
 
+const EDGE_AUTH_RELOAD_KEY = 'auth-redirect-reload-at';
+const EDGE_AUTH_PROBE_COOLDOWN_MS = 10_000;
+let edgeAuthProbeAt = 0;
+let edgeAuthConfirmed = false;
+let edgeAuthProbe: Promise<boolean> | null = null;
+
+/** Confirms whether a failed same-origin request was redirected to an unreadable edge login page. */
+async function isEdgeAuthRedirect(): Promise<boolean> {
+  if (edgeAuthProbe) return edgeAuthProbe;
+  if (Date.now() - edgeAuthProbeAt <= EDGE_AUTH_PROBE_COOLDOWN_MS) return edgeAuthConfirmed;
+
+  edgeAuthProbe = (async () => {
+    try {
+      const token = getStoredAuthToken();
+      const response = await fetch('/api/auth/user', {
+        method: 'GET',
+        redirect: 'manual',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      return response.type === 'opaqueredirect';
+    } catch {
+      return false;
+    }
+  })();
+
+  edgeAuthConfirmed = await edgeAuthProbe;
+  edgeAuthProbeAt = Date.now();
+  edgeAuthProbe = null;
+  return edgeAuthConfirmed;
+}
+
+/** Reloads once when Cloudflare Access has expired, allowing top-level login to run again. */
+async function recoverExpiredEdgeAuth(): Promise<boolean> {
+  if (!(await isEdgeAuthRedirect())) return false;
+  const lastReload = Number(sessionStorage.getItem(EDGE_AUTH_RELOAD_KEY)) || 0;
+  if (Date.now() - lastReload <= 15_000) return false;
+  sessionStorage.setItem(EDGE_AUTH_RELOAD_KEY, String(Date.now()));
+  window.location.reload();
+  return true;
+}
+
 // Utility function for authenticated API calls
 export const authenticatedFetch = (
   url: string,
@@ -36,16 +77,23 @@ export const authenticatedFetch = (
       ...defaultHeaders,
       ...options.headers,
     },
-  }).then((response) => {
-    const refreshedToken = response.headers.get('X-Refreshed-Token');
-    if (refreshedToken) {
-      storeAuthToken(refreshedToken);
-    }
-    if (response.headers.get('X-Auth-Error')) {
-      expireAuthSession();
-    }
-    return response;
-  });
+  })
+    .then((response) => {
+      const refreshedToken = response.headers.get('X-Refreshed-Token');
+      if (refreshedToken) {
+        storeAuthToken(refreshedToken);
+      }
+      if (response.headers.get('X-Auth-Error')) {
+        expireAuthSession();
+      }
+      return response;
+    })
+    .catch(async (error: unknown) => {
+      if (error instanceof TypeError && url.startsWith('/api') && await recoverExpiredEdgeAuth()) {
+        return new Promise<Response>(() => undefined);
+      }
+      throw error;
+    });
 };
 
 // ─── Request helpers ────────────────────────────────────────────────────────

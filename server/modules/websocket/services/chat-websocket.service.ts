@@ -124,6 +124,7 @@ function sendProtocolError(
   error: string,
   sessionId?: string
 ): void {
+  console.warn(`[LIFECYCLE] protocol_error code=${code} session=${sessionId ?? 'none'} error=${JSON.stringify(error)}`);
   sendJson(ws, {
     kind: 'protocol_error',
     code,
@@ -149,10 +150,13 @@ async function handleChatSend(
   data: AnyRecord,
   dependencies: ChatWebSocketDependencies
 ): Promise<void> {
+  console.log(`[LIFECYCLE] chat.send received session=${String(data.sessionId ?? 'none')} hasContent=${typeof data.content === 'string' && data.content.length > 0}`);
   const resolved = resolveSendTarget(ws, data, dependencies, 'chat.send');
   if (!resolved) {
     return;
   }
+
+  console.log(`[LIFECYCLE] chat.send resolved session=${resolved.sessionId} provider=${resolved.provider} providerSessionId=${resolved.session.provider_session_id ?? 'none'} projectPath=${resolved.session.project_path ?? 'none'}`);
 
   await dispatchRun(ws, userId, resolved.sessionId, resolved.session, data, dependencies);
 }

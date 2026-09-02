@@ -3,20 +3,20 @@ import { useCallback, useState } from 'react';
 // Native multi-pane workspace: a grid layout (1..4) where each pane shows a
 // different session via its own <MainContent>. Persisted to localStorage.
 
-export interface WorkspacePane {
+export type WorkspacePane = {
   id: string;
   sessionId: string | null;
   // Set when the pane hosts a brand-new (not-yet-created) session for a project:
   // it renders the new-session composer. Cleared once the composer creates a
   // real session and `sessionId` is assigned.
   newProjectId?: string | null;
-}
+};
 
-interface WorkspaceState {
+type WorkspaceState = {
   layout: number;
   panes: WorkspacePane[];
   activePaneId: string;
-}
+};
 
 const STORAGE_KEY = 'web-workspace';
 const VALID_LAYOUTS = new Set([1, 2, 3, 4, 6, 8]);

@@ -26,6 +26,7 @@ import {
 import ChatMessagesPane from '@/modules/chat/transcript/ChatMessagesPane';
 import ChatComposer from '@/modules/chat/composer/ChatComposer';
 import CommandResultModal from '@/modules/chat/modals/CommandResultModal';
+import QuickCommandBar from '@/modules/chat/transcript/QuickCommandBar';
 
 type ChatInterfaceProps = {
   isActive: boolean;
@@ -486,6 +487,14 @@ function ChatInterface({
               </button>
             </div>
           )}
+
+          <QuickCommandBar
+            setInput={setInput}
+            textareaRef={textareaRef}
+            chatMessages={chatMessages}
+            isProcessing={isProcessing}
+            onSubmit={handleSubmit}
+          />
 
           <ChatComposer
           pendingPermissionRequests={pendingPermissionRequests}

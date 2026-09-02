@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { authenticatedFetch } from '../../../utils/api';
+import { authenticatedFetch } from '@/shared/api';
 
 export type TriggerState = 'done' | 'error' | 'question' | 'idle';
 
-export interface QuickCommand {
+export type QuickCommand = {
   id: number;
   label: string;
   body: string;
@@ -13,22 +13,22 @@ export interface QuickCommand {
   pinned: number;
   prompt: string | null;
   sort_order: number;
-}
+};
 
-export interface QuickCommandSettings {
+export type QuickCommandSettings = {
   mode: 'off' | 'heuristic' | 'llm';
   model: 'haiku' | 'sonnet' | 'opus';
   send_mode: 'insert' | 'direct';
-}
+};
 
-export interface QuickCommandInput {
+export type QuickCommandInput = {
   label: string;
   body: string;
   emoji?: string | null;
   trigger_state?: TriggerState | null;
   pinned?: number;
   prompt?: string | null;
-}
+};
 
 const DEFAULT_SETTINGS: QuickCommandSettings = {
   mode: 'heuristic',
@@ -46,11 +46,11 @@ const DEFAULT_SETTINGS: QuickCommandSettings = {
 // new pane/session paints the chips instantly, and a mutation in one pane
 // notifies all the others.
 // ---------------------------------------------------------------------------
-interface QuickCommandsSnapshot {
+type QuickCommandsSnapshot = {
   commands: QuickCommand[];
   settings: QuickCommandSettings;
   loading: boolean;
-}
+};
 
 let cache: QuickCommandsSnapshot = {
   commands: [],
