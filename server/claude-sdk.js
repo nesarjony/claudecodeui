@@ -13,10 +13,10 @@
  */
 
 import crypto from 'crypto';
-import { promises as fs } from 'fs';
+import { promises as fs, readFileSync } from 'fs';
 import os from 'os';
 import path from 'path';
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 
 import { query } from '@anthropic-ai/claude-agent-sdk';
 
@@ -42,6 +42,258 @@ const pendingToolApprovals = new Map();
 const abortedSessionIds = new Set();
 
 const TOOL_APPROVAL_TIMEOUT_MS = parseInt(process.env.CLAUDE_TOOL_APPROVAL_TIMEOUT_MS, 10) || 55000;
+
+// ---------------------------------------------------------------------------
+// Lifecycle tracing
+//
+// Exists to answer one question from the journal alone: when a turn's `claude`
+// child dies, what killed it, and what was still running inside it. The child is
+// spawned per turn (one `query()` per user message), so anything executing in it
+// -- notably a background subagent -- cannot outlive the turn. These traces make
+// that visible instead of inferred.
+//
+// Every line is single-line `key=value` under one prefix, so the whole story of
+// a turn is `journalctl --user | grep '\[LIFECYCLE\]'`, and one turn is
+// `... | grep 'turn=7'`. Set CLAUDE_LIFECYCLE_LOG=off to silence.
+// ---------------------------------------------------------------------------
+
+const LIFECYCLE_LOG_ENABLED = process.env.CLAUDE_LIFECYCLE_LOG !== 'off';
+const CHILD_POLL_MS = parseInt(process.env.CLAUDE_LIFECYCLE_POLL_MS, 10) || 250;
+
+let turnCounter = 0;
+
+/** Pids this process signalled, so an exit can be attributed rather than guessed. */
+const signalledPids = new Map();
+
+/** Child pids currently being watched: pid -> { turn, firstSeenAt, argv }. */
+const watchedChildren = new Map();
+
+/** Turns that have not yet ended, keeping the child watcher alive. */
+const openTurns = new Set();
+
+let childWatcherTimer = null;
+
+function trace(event, fields = {}) {
+  if (!LIFECYCLE_LOG_ENABLED) {
+    return;
+  }
+  const parts = [];
+  for (const [key, value] of Object.entries(fields)) {
+    if (value === undefined || value === null) {
+      continue;
+    }
+    const rendered = typeof value === 'string' && /[\s"]/.test(value)
+      ? JSON.stringify(value)
+      : String(value);
+    parts.push(`${key}=${rendered}`);
+  }
+  console.log(`[LIFECYCLE] ${event}${parts.length ? ' ' + parts.join(' ') : ''}`);
+}
+
+/** Direct children of this process, with a trimmed argv for identification. */
+function listChildProcesses() {
+  try {
+    const output = execFileSync('pgrep', ['-P', String(process.pid)], {
+      encoding: 'utf-8',
+      timeout: 5000
+    });
+    return output.trim().split('\n').filter(Boolean).map(Number).filter(pid => !isNaN(pid));
+  } catch {
+    // pgrep exits non-zero when there are no children.
+    return [];
+  }
+}
+
+function readArgv(pid) {
+  try {
+    return readFileSync(`/proc/${pid}/cmdline`, 'utf-8').split('\0').filter(Boolean).join(' ').slice(0, 200);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Polls the child process table and traces every appearance and disappearance.
+ *
+ * Attribution is the point: an exit is reported with whether *we* signalled the
+ * pid, and how long after its turn ended it went away. A child that vanishes
+ * with `signalled=none` right after `turn.end` is the SDK's own teardown -- the
+ * path that takes background subagents down with it, and the one no change to
+ * the abort handler can prevent.
+ */
+function pollChildProcesses() {
+  const live = new Set(listChildProcesses());
+
+  for (const pid of live) {
+    if (!watchedChildren.has(pid)) {
+      const argv = readArgv(pid);
+      // Only trace the provider children; the server spawns short-lived helpers
+      // (pgrep, git, ...) that would otherwise drown the log.
+      const isProviderChild = argv && argv.includes('claude');
+      watchedChildren.set(pid, { firstSeenAt: Date.now(), argv, traced: isProviderChild });
+      if (isProviderChild) {
+        trace('child.spawned', { pid, argv });
+      }
+    }
+  }
+
+  for (const [pid, info] of watchedChildren.entries()) {
+    if (live.has(pid)) {
+      continue;
+    }
+    watchedChildren.delete(pid);
+    if (!info.traced) {
+      continue;
+    }
+    const signal = signalledPids.get(pid);
+    trace('child.exited', {
+      pid,
+      lifetimeMs: Date.now() - info.firstSeenAt,
+      signalled: signal ? signal.signals.join('+') : 'none',
+      signalledMsAgo: signal ? Date.now() - signal.lastAt : undefined,
+      attribution: signal ? 'killed-by-server' : 'sdk-teardown-or-self-exit'
+    });
+    signalledPids.delete(pid);
+  }
+}
+
+function startChildWatcher(turnId) {
+  openTurns.add(turnId);
+  if (childWatcherTimer || !LIFECYCLE_LOG_ENABLED) {
+    return;
+  }
+  childWatcherTimer = setInterval(() => {
+    try {
+      pollChildProcesses();
+    } catch (error) {
+      trace('child.poll_failed', { error: error?.message });
+    }
+  }, CHILD_POLL_MS);
+  // Never hold the event loop open on account of tracing.
+  childWatcherTimer.unref?.();
+}
+
+/**
+ * Stops watching once the last turn has ended, after a short grace period so the
+ * exit that follows `turn.end` is still captured -- that exit is the interesting
+ * one.
+ */
+function stopChildWatcher(turnId) {
+  openTurns.delete(turnId);
+  if (openTurns.size > 0 || !childWatcherTimer) {
+    return;
+  }
+  const graceTimer = setTimeout(() => {
+    if (openTurns.size === 0 && childWatcherTimer) {
+      try {
+        pollChildProcesses();
+      } catch { /* tracing must never break a run */ }
+      clearInterval(childWatcherTimer);
+      childWatcherTimer = null;
+    }
+  }, 5000);
+  graceTimer.unref?.();
+}
+
+/** Records a signal we sent, so `child.exited` can attribute the death to us. */
+function noteSignalled(pid, signal) {
+  const existing = signalledPids.get(pid);
+  if (existing) {
+    existing.signals.push(signal);
+    existing.lastAt = Date.now();
+  } else {
+    signalledPids.set(pid, { signals: [signal], lastAt: Date.now() });
+  }
+}
+
+const SUBAGENT_TOOL_NAMES = new Set(['Task', 'Agent']);
+
+/**
+ * Extracts the content blocks of an SDK message, whichever shape it arrived in.
+ */
+function readContentBlocks(message) {
+  const content = message?.message?.content ?? message?.content;
+  return Array.isArray(content) ? content : [];
+}
+
+/**
+ * Per-turn tracker for subagent tool calls.
+ *
+ * A subagent is "open" from its `tool_use` until the matching `tool_result`.
+ * Any subagent still open at `turn.end` was killed with the turn rather than
+ * completing -- traced as `subagent.orphaned`, which is the signal to grep for.
+ */
+function createSubagentTracker(turnId) {
+  const open = new Map();
+  const finished = [];
+
+  return {
+    observe(message) {
+      for (const block of readContentBlocks(message)) {
+        if (block?.type === 'tool_use' && SUBAGENT_TOOL_NAMES.has(block.name)) {
+          const background = block.input?.run_in_background === true;
+          open.set(block.id, {
+            name: block.name,
+            background,
+            startedAt: Date.now(),
+            description: block.input?.description ?? null,
+            subagentType: block.input?.subagent_type ?? null
+          });
+          trace('subagent.started', {
+            turn: turnId,
+            toolUseId: block.id,
+            tool: block.name,
+            background,
+            subagentType: block.input?.subagent_type,
+            description: block.input?.description
+          });
+        }
+
+        if (block?.type === 'tool_result' && open.has(block.tool_use_id)) {
+          const entry = open.get(block.tool_use_id);
+          open.delete(block.tool_use_id);
+          finished.push(entry);
+          trace('subagent.finished', {
+            turn: turnId,
+            toolUseId: block.tool_use_id,
+            tool: entry.name,
+            background: entry.background,
+            durationMs: Date.now() - entry.startedAt,
+            isError: block.is_error === true
+          });
+        }
+      }
+    },
+
+    /** Traces every subagent still open, i.e. every one that died with the turn. */
+    reportOrphans(turnId_, reason) {
+      for (const [toolUseId, entry] of open.entries()) {
+        trace('subagent.orphaned', {
+          turn: turnId_,
+          toolUseId,
+          tool: entry.name,
+          background: entry.background,
+          subagentType: entry.subagentType,
+          description: entry.description,
+          openForMs: Date.now() - entry.startedAt,
+          turnEndReason: reason,
+          why: entry.background
+            ? 'background-subagent-cannot-outlive-its-turn'
+            : 'turn-ended-before-tool_result'
+        });
+      }
+      return open.size;
+    },
+
+    get openCount() {
+      return open.size;
+    },
+
+    get finishedCount() {
+      return finished.length;
+    }
+  };
+}
 
 const TOOLS_REQUIRING_INTERACTION = new Set(['AskUserQuestion', 'ExitPlanMode']);
 
@@ -463,6 +715,42 @@ async function queryClaudeSDK(command, options = {}, ws) {
   let capturedSessionId = sessionId;
   let sessionCreatedSent = false;
 
+  const turnId = ++turnCounter;
+  const turnStartedAt = Date.now();
+  const subagents = createSubagentTracker(turnId);
+  const messageCounts = {};
+  const subagentMessageCounts = {};
+
+  trace('turn.start', {
+    turn: turnId,
+    session: sessionId || 'NEW',
+    appSession: options.appSessionId,
+    resume: Boolean(options.resume),
+    cwd: options.cwd
+  });
+  startChildWatcher(turnId);
+
+  /** Single exit point for turn tracing, so no path can end a turn silently. */
+  const endTurn = (reason, extra = {}) => {
+    const orphaned = subagents.reportOrphans(turnId, reason);
+    trace('turn.end', {
+      turn: turnId,
+      session: capturedSessionId || sessionId || 'NEW',
+      reason,
+      durationMs: Date.now() - turnStartedAt,
+      messages: JSON.stringify(messageCounts),
+      subagentsFinished: subagents.finishedCount,
+      subagentsOrphaned: orphaned,
+      subagentMessages: Object.keys(subagentMessageCounts).length
+        ? JSON.stringify(subagentMessageCounts)
+        : undefined,
+      ...extra
+    });
+    // The child usually dies a beat after this line. The watcher stays up
+    // briefly to catch that exit and attribute it.
+    stopChildWatcher(turnId);
+  };
+
   const emitNotification = (event) => {
     notifyUserIfEnabled({
       userId: ws?.userId || null,
@@ -642,9 +930,39 @@ async function queryClaudeSDK(command, options = {}, ws) {
       addSession(capturedSessionId, queryInstance, ws);
     }
 
+    trace('turn.query_created', {
+      turn: turnId,
+      session: capturedSessionId || sessionId || 'NEW',
+      resume: Boolean(sdkOptions.resume),
+      model: sdkOptions.model,
+      permissionMode: sdkOptions.permissionMode
+    });
+
     // Process streaming messages
     console.log('Starting async generator loop for session:', capturedSessionId || 'NEW');
+    trace('turn.loop_start', { turn: turnId, session: capturedSessionId || sessionId || 'NEW' });
     for await (const message of queryInstance) {
+      messageCounts[message.type] = (messageCounts[message.type] || 0) + 1;
+      subagents.observe(message);
+
+      // Subagent output arrives tagged with the parent tool_use id; count it per
+      // subagent rather than tracing every message, which would flood the log.
+      if (message.parent_tool_use_id) {
+        subagentMessageCounts[message.parent_tool_use_id] =
+          (subagentMessageCounts[message.parent_tool_use_id] || 0) + 1;
+      }
+
+      if (message.type === 'system' || message.type === 'result') {
+        trace('turn.message', {
+          turn: turnId,
+          type: message.type,
+          subtype: message.subtype,
+          isError: message.is_error,
+          stopReason: message.stop_reason,
+          numTurns: message.num_turns
+        });
+      }
+
       // Capture session ID from first message
       if (message.session_id && !capturedSessionId) {
 
@@ -694,6 +1012,7 @@ async function queryClaudeSDK(command, options = {}, ws) {
     // Send the terminal completion event — skipped for aborted runs, whose
     // terminal `complete` (aborted: true) was already sent by abort-session.
     const wasAborted = capturedSessionId ? abortedSessionIds.delete(capturedSessionId) : false;
+    endTurn(wasAborted ? 'generator_end_after_abort' : 'generator_end', { wasAborted });
     if (!wasAborted) {
       ws.send(createCompleteMessage({ provider: 'claude', sessionId: capturedSessionId || sessionId || null, exitCode: 0 }));
     }
@@ -715,6 +1034,10 @@ async function queryClaudeSDK(command, options = {}, ws) {
     }
 
     const wasAborted = capturedSessionId ? abortedSessionIds.delete(capturedSessionId) : false;
+    endTurn(wasAborted ? 'threw_after_abort' : 'threw', {
+      wasAborted,
+      error: error?.message
+    });
     if (wasAborted) {
       // The abort already produced the terminal complete; a generator throw
       // caused by interrupt() is expected noise, not a user-facing error.
@@ -745,14 +1068,45 @@ async function queryClaudeSDK(command, options = {}, ws) {
  * @param {string} sessionId - Session identifier
  * @returns {boolean} True if session was aborted, false if not found
  */
+const INTERRUPT_TIMEOUT_MS = parseInt(process.env.CLAUDE_ABORT_INTERRUPT_TIMEOUT_MS, 10) || 5000;
+const SIGKILL_GRACE_MS = parseInt(process.env.CLAUDE_ABORT_SIGKILL_GRACE_MS, 10) || 3000;
+
+/** In-flight aborts, keyed by the id abort was called with. */
+const inFlightAborts = new Map();
+
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+/**
+ * Finds the `claude` child processes belonging to one session, by matching the
+ * session id in their argv (the SDK passes it as `--resume <id>`).
+ *
+ * Returns [] when the id cannot be matched, and callers must then kill nothing.
+ * There is deliberately no "any claude child" fallback: the SDK's own binary
+ * path contains "claude", so such a fallback matches *every* concurrent
+ * session's child, and aborting one session would signal all the others. A
+ * brand-new session is exactly the case that misses (no `--resume` in argv
+ * until Claude announces an id), so the fallback did the most damage precisely
+ * where it was least able to identify its target.
+ *
+ * @param {string} sessionId - Session identifier
+ * @returns {Array<number>} Matching child pids, or [] if none could be matched
+ */
 function findSessionPids(sessionId) {
+  // pgrep treats the pattern as a regex and a leading dash as a flag, so only
+  // accept plain id-shaped input. Provider and app ids are UUIDs.
+  if (typeof sessionId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(sessionId)) {
+    return [];
+  }
   try {
-    const output = execSync(
-      `pgrep -P ${process.pid} -f "${sessionId}" 2>/dev/null || pgrep -P ${process.pid} -f "claude" 2>/dev/null || true`,
-      { encoding: 'utf-8', timeout: 5000 }
-    );
+    // execFileSync, not a shell string: the id reaches here from a client
+    // message, and nothing about it should ever be parsed by a shell.
+    const output = execFileSync('pgrep', ['-P', String(process.pid), '-f', sessionId], {
+      encoding: 'utf-8',
+      timeout: 5000
+    });
     return output.trim().split('\n').filter(Boolean).map(Number).filter(n => !isNaN(n) && n !== process.pid);
   } catch {
+    // pgrep exits non-zero when nothing matched.
     return [];
   }
 }
@@ -760,10 +1114,16 @@ function findSessionPids(sessionId) {
 function killPids(pids, signal) {
   for (const pid of pids) {
     try {
+      // Read argv first: a killed process becomes a zombie with an empty
+      // cmdline, and "which process did we just kill" is the whole point.
+      const argv = readArgv(pid);
       process.kill(pid, signal);
+      noteSignalled(pid, signal);
       console.log(`[ABORT] Sent ${signal} to PID ${pid}`);
+      trace('child.signalled', { pid, signal, argv });
     } catch (err) {
       if (err.code !== 'ESRCH') console.error(`[ABORT] kill ${pid} failed:`, err.message);
+      trace('child.signal_failed', { pid, signal, error: err.code || err.message });
     }
   }
 }
@@ -772,7 +1132,48 @@ function isProcessAlive(pid) {
   try { process.kill(pid, 0); return true; } catch { return false; }
 }
 
+/**
+ * Drops every activeSessions entry pointing at one query instance.
+ *
+ * A run registers itself twice — under the app session id and under the
+ * provider-native id — so removing only the key abort was called with left the
+ * other entry behind, keeping `isClaudeSDKSessionActive` true for a dead run.
+ *
+ * @param {Object} instance - SDK query instance
+ * @param {string} sessionId - Id abort was called with (removed even if the
+ *   instance is missing, so a malformed entry cannot become permanent)
+ */
+function removeSessionsForInstance(instance, sessionId) {
+  if (instance) {
+    for (const [key, value] of activeSessions.entries()) {
+      if (value.instance === instance) {
+        activeSessions.delete(key);
+      }
+    }
+  }
+  removeSession(sessionId);
+}
+
 async function abortClaudeSDKSession(sessionId) {
+  // Stop is a button, and the abort below takes seconds. Without this, a second
+  // press ran a second escalation ladder against the same instance concurrently
+  // (the caller's `run.status === 'running'` guard cannot help: it only clears
+  // once this promise resolves).
+  trace('abort.requested', { session: sessionId });
+
+  const existing = inFlightAborts.get(sessionId);
+  if (existing) {
+    console.log(`[ABORT] Abort already in flight for ${sessionId}, joining it`);
+    trace('abort.joined_in_flight', { session: sessionId });
+    return existing;
+  }
+
+  const pending = performAbort(sessionId).finally(() => inFlightAborts.delete(sessionId));
+  inFlightAborts.set(sessionId, pending);
+  return pending;
+}
+
+async function performAbort(sessionId) {
   const session = getSession(sessionId);
 
   if (!session) {
@@ -782,48 +1183,83 @@ async function abortClaudeSDKSession(sessionId) {
 
   try {
     console.log(`[ABORT] Aborting SDK session: ${sessionId}`);
+
+    // Mark before interrupting so the run loop knows not to emit its own
+    // terminal complete (the abort handler sends the aborted one).
     abortedSessionIds.add(sessionId);
 
-    // Step 1: cooperative interrupt via SDK (5s timeout)
+    // Cooperative interrupt. The outcome has to be distinguishable: racing
+    // against a bare `setTimeout` made a 5s hang resolve exactly like a fast
+    // success, and the old code then decided whether to escalate by checking
+    // whether the child was still alive — which it always is, because the child
+    // outlives a successful interrupt by design while the turn winds down. So
+    // every Stop escalated to SIGTERM/SIGKILL.
+    const interruptStartedAt = Date.now();
+    trace('abort.interrupt_start', { session: sessionId, timeoutMs: INTERRUPT_TIMEOUT_MS });
+
+    let outcome = 'ok';
+    let interruptError = null;
     try {
-      await Promise.race([
-        session.instance.interrupt(),
-        new Promise(resolve => setTimeout(resolve, 5000))
+      outcome = await Promise.race([
+        session.instance.interrupt().then(() => 'ok'),
+        sleep(INTERRUPT_TIMEOUT_MS).then(() => 'timeout')
       ]);
-    } catch (e) {
-      console.warn(`[ABORT] interrupt() threw for ${sessionId}:`, e?.message);
+    } catch (error) {
+      outcome = 'error';
+      interruptError = error?.message ?? String(error);
+      console.warn(`[ABORT] interrupt() threw for ${sessionId}:`, error?.message);
     }
 
-    // Step 2: check if child process is still alive
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    let pids = findSessionPids(sessionId);
-    const alive = pids.filter(isProcessAlive);
+    trace('abort.interrupt_outcome', {
+      session: sessionId,
+      outcome,
+      elapsedMs: Date.now() - interruptStartedAt,
+      error: interruptError,
+      escalating: outcome !== 'ok'
+    });
 
-    if (alive.length > 0) {
-      console.warn(`[ABORT] Session ${sessionId} still alive (PIDs: ${alive}), sending SIGTERM`);
-      killPids(alive, 'SIGTERM');
+    if (outcome === 'ok') {
+      // The SDK acknowledged the interrupt and is unwinding the turn; it tears
+      // the child down itself. Nothing to signal, and nothing to verify — the
+      // child is expected to still be alive for a moment here.
+      console.log(`[ABORT] Interrupt acknowledged for ${sessionId}`);
+      trace('abort.no_escalation', {
+        session: sessionId,
+        note: 'child left alone; SDK tears it down as the turn unwinds'
+      });
+    } else {
+      // The interrupt could not complete. The usual cause is a turn stopped
+      // mid `tool_use`, which the SDK cannot always interrupt cleanly. Stop
+      // still has to stop, so signal the child directly — but only now, with an
+      // actual failure in hand.
+      const pids = findSessionPids(sessionId);
+      trace('abort.escalating', { session: sessionId, outcome, matchedPids: pids.join(',') || 'none' });
+      if (pids.length === 0) {
+        console.warn(
+          `[ABORT] interrupt ${outcome} for ${sessionId} but no child pid could be matched; signalling nothing`
+        );
+      } else {
+        console.warn(`[ABORT] interrupt ${outcome} for ${sessionId} (PIDs: ${pids}), sending SIGTERM`);
+        killPids(pids, 'SIGTERM');
 
-      await new Promise(resolve => setTimeout(resolve, 3000));
-      const stillAlive = alive.filter(isProcessAlive);
+        await sleep(SIGKILL_GRACE_MS);
+        const survivors = pids.filter(isProcessAlive);
 
-      if (stillAlive.length > 0) {
-        console.warn(`[ABORT] Session ${sessionId} survived SIGTERM (PIDs: ${stillAlive}), sending SIGKILL`);
-        killPids(stillAlive, 'SIGKILL');
+        if (survivors.length > 0) {
+          console.warn(`[ABORT] Session ${sessionId} survived SIGTERM (PIDs: ${survivors}), sending SIGKILL`);
+          killPids(survivors, 'SIGKILL');
+        }
       }
     }
 
     session.status = 'aborted';
-    removeSession(sessionId);
+    removeSessionsForInstance(session.instance, sessionId);
     return true;
   } catch (error) {
     console.error(`[ABORT] Error aborting session ${sessionId}:`, error);
-    // Last resort: kill any child claude processes
-    try {
-      const pids = findSessionPids(sessionId);
-      killPids(pids, 'SIGKILL');
-    } catch {}
+    // Leave the session registered: the run is still going and will emit its
+    // own terminal complete, which the un-marking below re-enables.
     abortedSessionIds.delete(sessionId);
-    removeSession(sessionId);
     return false;
   }
 }
@@ -891,5 +1327,9 @@ export {
   getActiveClaudeSDKSessions,
   resolveToolApproval,
   getPendingApprovalsForSession,
-  reconnectSessionWriter
+  reconnectSessionWriter,
+  __testing__
 };
+
+/** Seam for abort tests: registering a session otherwise requires a live run. */
+const __testing__ = { addSession, getSession, findSessionPids, createSubagentTracker };

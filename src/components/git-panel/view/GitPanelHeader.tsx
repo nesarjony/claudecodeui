@@ -1,11 +1,15 @@
-import { AlertCircle, Check, ChevronDown, Download, GitBranch, Plus, RefreshCw, RotateCcw, Search, Upload, X } from 'lucide-react';
+import { AlertCircle, Check, ChevronDown, Download, GitBranch, MoreHorizontal, Plus, RefreshCw, RotateCcw, Search, Upload, X } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { ConfirmationRequest, GitRemoteStatus } from '../types/types';
+import type { ConfirmationRequest, GitRemoteStatus, GitWorktree } from '../types/types';
 import NewBranchModal from './modals/NewBranchModal';
+import GitWorktreeSelector from './GitWorktreeSelector';
 
 type GitPanelHeaderProps = {
   isMobile: boolean;
   currentBranch: string;
+  worktrees: GitWorktree[];
+  selectedWorktreePath: string | null;
+  isLoadingWorktrees: boolean;
   branches: string[];
   remoteStatus: GitRemoteStatus | null;
   isLoading: boolean;
@@ -17,6 +21,7 @@ type GitPanelHeaderProps = {
   isRevertingLocalCommit: boolean;
   operationError: string | null;
   onRefresh: () => void;
+  onWorktreeChange: (path: string) => void;
   onRevertLocalCommit: () => Promise<void>;
   onSwitchBranch: (branchName: string) => Promise<boolean>;
   onCreateBranch: (branchName: string) => Promise<boolean>;
@@ -31,6 +36,9 @@ type GitPanelHeaderProps = {
 export default function GitPanelHeader({
   isMobile,
   currentBranch,
+  worktrees,
+  selectedWorktreePath,
+  isLoadingWorktrees,
   branches,
   remoteStatus,
   isLoading,
@@ -42,6 +50,7 @@ export default function GitPanelHeader({
   isRevertingLocalCommit,
   operationError,
   onRefresh,
+  onWorktreeChange,
   onRevertLocalCommit,
   onSwitchBranch,
   onCreateBranch,
@@ -53,9 +62,11 @@ export default function GitPanelHeader({
   onRequestConfirmation,
 }: GitPanelHeaderProps) {
   const [showBranchDropdown, setShowBranchDropdown] = useState(false);
+  const [showActionMenu, setShowActionMenu] = useState(false);
   const [showNewBranchModal, setShowNewBranchModal] = useState(false);
   const [branchSearchQuery, setBranchSearchQuery] = useState('');
   const dropdownRef = useRef<HTMLDivElement | null>(null);
+  const actionMenuRef = useRef<HTMLDivElement | null>(null);
   const branchSearchInputRef = useRef<HTMLInputElement | null>(null);
 
   // Focus the search box on open; drop any stale query on close.
@@ -79,6 +90,9 @@ export default function GitPanelHeader({
     const handleClickOutside = (event: MouseEvent) => {
       if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
         setShowBranchDropdown(false);
+      }
+      if (actionMenuRef.current && !actionMenuRef.current.contains(event.target as Node)) {
+        setShowActionMenu(false);
       }
     };
 
@@ -135,16 +149,26 @@ export default function GitPanelHeader({
   return (
     <>
       {/* Branch row + action buttons */}
-      <div className={`flex items-center justify-between border-b border-border/60 ${isMobile ? 'px-3 py-2' : 'px-4 py-3'}`}>
-        {/* Branch selector */}
-        <div className="relative" ref={dropdownRef}>
+      <div className={`flex items-center justify-between gap-1 border-b border-border/60 ${isMobile ? 'h-10 px-1.5' : 'px-4 py-3'}`}>
+        <div className="flex min-w-0 flex-1 items-center gap-0.5">
+          <GitWorktreeSelector
+            worktrees={worktrees}
+            selectedPath={selectedWorktreePath}
+            isLoading={isLoadingWorktrees}
+            isMobile={isMobile}
+            onChange={onWorktreeChange}
+          />
+
+          {/* Branch selector */}
+          <div className="relative min-w-0 flex-1" ref={dropdownRef}>
           <button
             onClick={() => setShowBranchDropdown((prev) => !prev)}
-            className={`flex items-center rounded-lg transition-colors hover:bg-accent ${isMobile ? 'space-x-1 px-2 py-1' : 'space-x-2 px-3 py-1.5'}`}
+            className={`flex w-full min-w-0 items-center rounded-lg transition-colors hover:bg-accent ${isMobile ? 'gap-1 px-1.5 py-1' : 'space-x-2 px-3 py-1.5'}`}
+            title={currentBranch || 'Branch'}
           >
             <GitBranch className={`text-muted-foreground ${isMobile ? 'h-3 w-3' : 'h-4 w-4'}`} />
-            <span className="flex items-center gap-1">
-              <span className={`font-medium ${isMobile ? 'text-xs' : 'text-sm'}`}>{currentBranch}</span>
+            <span className="flex min-w-0 flex-1 items-center gap-1">
+              <span className={`min-w-0 truncate font-medium ${isMobile ? 'text-xs' : 'text-sm'}`}>{currentBranch}</span>
               {remoteStatus?.hasRemote && (
                 <span className="flex items-center gap-0.5 text-xs">
                   {aheadCount > 0 && (
@@ -222,11 +246,12 @@ export default function GitPanelHeader({
               </div>
             </div>
           )}
+          </div>
         </div>
 
         {/* Action buttons */}
-        <div className={`flex items-center ${isMobile ? 'gap-1' : 'gap-2'}`}>
-          {remoteStatus?.hasRemote && (
+        <div ref={actionMenuRef} className={`relative flex shrink-0 items-center ${isMobile ? 'gap-0.5' : 'gap-2'}`}>
+          {!isMobile && remoteStatus?.hasRemote && (
             <>
               {!remoteStatus.hasUpstream ? (
                 <button
@@ -279,7 +304,7 @@ export default function GitPanelHeader({
             </>
           )}
 
-          <button
+          {!isMobile && <button
             onClick={requestRevertLocalCommitConfirmation}
             disabled={isRevertingLocalCommit}
             className={`rounded-lg transition-colors hover:bg-accent disabled:opacity-50 ${isMobile ? 'p-1' : 'p-1.5'}`}
@@ -288,7 +313,7 @@ export default function GitPanelHeader({
             <RotateCcw
               className={`text-muted-foreground ${isRevertingLocalCommit ? 'animate-pulse' : ''} ${isMobile ? 'h-3 w-3' : 'h-4 w-4'}`}
             />
-          </button>
+          </button>}
 
           <button
             onClick={onRefresh}
@@ -298,6 +323,96 @@ export default function GitPanelHeader({
           >
             <RefreshCw className={`text-muted-foreground ${isLoading ? 'animate-spin' : ''} ${isMobile ? 'h-3 w-3' : 'h-4 w-4'}`} />
           </button>
+
+          {isMobile && (
+            <>
+              <button
+                type="button"
+                onClick={() => setShowActionMenu((current) => !current)}
+                className="rounded-lg p-1.5 transition-colors hover:bg-accent"
+                title="Git actions"
+                aria-label="Git actions"
+                aria-expanded={showActionMenu}
+              >
+                <MoreHorizontal className="h-3.5 w-3.5 text-muted-foreground" />
+              </button>
+
+              {showActionMenu && (
+                <div className="absolute right-0 top-full z-[60] mt-1 w-52 overflow-hidden rounded-xl border border-border bg-card p-1.5 shadow-xl">
+                  {remoteStatus?.hasRemote && !remoteStatus.hasUpstream && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowActionMenu(false);
+                        requestPublishConfirmation();
+                      }}
+                      disabled={anyPending}
+                      className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs hover:bg-accent disabled:opacity-50"
+                    >
+                      <Upload className="h-3.5 w-3.5" />
+                      Publish branch
+                    </button>
+                  )}
+                  {remoteStatus?.hasRemote && remoteStatus.hasUpstream && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowActionMenu(false);
+                          void onFetch();
+                        }}
+                        disabled={anyPending}
+                        className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs hover:bg-accent disabled:opacity-50"
+                      >
+                        <RefreshCw className="h-3.5 w-3.5" />
+                        Fetch
+                      </button>
+                      {behindCount > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setShowActionMenu(false);
+                            requestPullConfirmation();
+                          }}
+                          disabled={anyPending}
+                          className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs hover:bg-accent disabled:opacity-50"
+                        >
+                          <Download className="h-3.5 w-3.5" />
+                          Pull {behindCount}
+                        </button>
+                      )}
+                      {aheadCount > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setShowActionMenu(false);
+                            requestPushConfirmation();
+                          }}
+                          disabled={anyPending}
+                          className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs hover:bg-accent disabled:opacity-50"
+                        >
+                          <Upload className="h-3.5 w-3.5" />
+                          Push {aheadCount}
+                        </button>
+                      )}
+                    </>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowActionMenu(false);
+                      requestRevertLocalCommitConfirmation();
+                    }}
+                    disabled={isRevertingLocalCommit}
+                    className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs hover:bg-accent disabled:opacity-50"
+                  >
+                    <RotateCcw className="h-3.5 w-3.5" />
+                    Revert latest commit
+                  </button>
+                </div>
+              )}
+            </>
+          )}
         </div>
       </div>
 

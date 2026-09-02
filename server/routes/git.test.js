@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { parseGitLogWithStats, parseGitStatusOutput } from './git.js';
+import { parseGitLogWithStats, parseGitStatusOutput, parseGitWorktreeList } from './git.js';
 
 // Builds `git status --porcelain=v1 -z` output: NUL-separated entries with a
 // trailing NUL, exactly as git emits it.
@@ -65,6 +65,50 @@ test('parseGitStatusOutput handles empty output', () => {
     untracked: [],
     staged: [],
   });
+});
+
+test('parseGitWorktreeList preserves paths and identifies branch state', () => {
+  const worktrees = parseGitWorktreeList([
+    'worktree /mnt/dev/passport',
+    'HEAD aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    'branch refs/heads/dev',
+    '',
+    'worktree /mnt/dev/passport feature',
+    'HEAD bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+    'branch refs/heads/feature-flags',
+    '',
+    'worktree /mnt/dev/passport-detached',
+    'HEAD cccccccccccccccccccccccccccccccccccccccc',
+    'detached',
+  ].join('\n'));
+
+  assert.deepEqual(worktrees, [
+    {
+      path: '/mnt/dev/passport',
+      head: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      branch: 'dev',
+      detached: false,
+      bare: false,
+    },
+    {
+      path: '/mnt/dev/passport feature',
+      head: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      branch: 'feature-flags',
+      detached: false,
+      bare: false,
+    },
+    {
+      path: '/mnt/dev/passport-detached',
+      head: 'cccccccccccccccccccccccccccccccccccccccc',
+      branch: null,
+      detached: true,
+      bare: false,
+    },
+  ]);
+});
+
+test('parseGitWorktreeList handles empty output', () => {
+  assert.deepEqual(parseGitWorktreeList(''), []);
 });
 
 // Builds one `git log --pretty=format:%H%x1f%P%x1f%D%x1f%an%x1f%ae%x1f%ad%x1f%s` line.
