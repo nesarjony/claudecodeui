@@ -207,7 +207,12 @@ function MainContent({
 
           {activeTab === 'git' && (
             <div className="h-full overflow-hidden">
-              <GitPanel selectedProject={selectedProject} isMobile={isMobile} onFileOpen={handleFileOpen} />
+              <GitPanel
+                selectedProject={selectedProject}
+                selectedSession={selectedSession}
+                isMobile={isMobile || !showHeader}
+                onFileOpen={handleFileOpen}
+              />
             </div>
           )}
 

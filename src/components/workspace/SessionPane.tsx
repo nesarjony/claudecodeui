@@ -86,7 +86,11 @@ export default function SessionPane({
               the chat, which scrolls underneath. The header costs the pane no
               height; the tab pill and buttons keep their own small backgrounds so
               they stay legible over any content. */}
-          <div className="pointer-events-none absolute inset-x-0 top-0 z-20 flex items-center gap-2 px-2 py-1 [&_button]:pointer-events-auto">
+          <div
+            className={`pointer-events-none absolute inset-x-0 top-0 z-20 flex h-8 items-center gap-2 px-2 [&_button]:pointer-events-auto ${
+              activeTab === 'chat' ? '' : 'border-b border-border/60 bg-background/95 backdrop-blur-sm'
+            }`}
+          >
             {onMenu && (
               <button
                 type="button"
@@ -151,7 +155,7 @@ export default function SessionPane({
             </button>
           </div>
 
-          <div className="min-h-0 flex-1">
+          <div className={`min-h-0 flex-1 ${activeTab === 'chat' ? '' : 'pt-8'}`}>
             <MainContent
               selectedProject={project}
               selectedSession={session}

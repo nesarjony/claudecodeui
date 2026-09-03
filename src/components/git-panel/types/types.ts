@@ -1,4 +1,4 @@
-import type { Project } from '../../../types/app';
+import type { Project, ProjectSession } from '../../../types/app';
 
 export type GitPanelView = 'changes' | 'history' | 'branches';
 export type FileStatusCode = 'M' | 'A' | 'D' | 'U';
@@ -14,8 +14,22 @@ export type FileOpenHandler = (filePath: string, diffInfo?: FileDiffInfo) => voi
 
 export type GitPanelProps = {
   selectedProject: Project | null;
+  selectedSession: ProjectSession | null;
   isMobile?: boolean;
   onFileOpen?: FileOpenHandler;
+};
+
+export type GitWorktree = {
+  path: string;
+  head: string;
+  branch: string | null;
+  detached: boolean;
+  bare: boolean;
+  isProject: boolean;
+};
+
+export type GitWorktreesResponse = GitApiErrorResponse & {
+  worktrees?: GitWorktree[];
 };
 
 export type GitStatusResponse = {
@@ -72,6 +86,7 @@ export type ConfirmationRequest = {
 
 export type UseGitPanelControllerOptions = {
   selectedProject: Project | null;
+  worktreePath: string | null;
   activeView: GitPanelView;
   onFileOpen?: FileOpenHandler;
 };
