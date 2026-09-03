@@ -119,6 +119,10 @@ function sendProtocolError(
   error: string,
   sessionId?: string
 ): void {
+  // Also log it: a rejected chat.send never reaches a provider runtime, so
+  // without this the journal shows nothing at all and the failure looks like
+  // the client never sent anything.
+  console.warn(`[LIFECYCLE] protocol_error code=${code} session=${sessionId ?? 'none'} error=${JSON.stringify(error)}`);
   sendJson(ws, {
     kind: 'protocol_error',
     code,
@@ -150,6 +154,8 @@ async function handleChatSend(
     return;
   }
 
+  console.log(`[LIFECYCLE] chat.send received session=${sessionId} hasContent=${typeof data.content === 'string' && data.content.length > 0}`);
+
   const session = sessionsDb.getSessionById(sessionId);
   if (!session) {
     sendProtocolError(
@@ -160,6 +166,8 @@ async function handleChatSend(
     );
     return;
   }
+
+  console.log(`[LIFECYCLE] chat.send resolved session=${sessionId} provider=${session.provider} providerSessionId=${session.provider_session_id ?? 'none'} projectPath=${session.project_path ?? 'none'}`);
 
   const provider = session.provider as LLMProvider;
   const spawnFn = dependencies.spawnFns[provider];
