@@ -103,6 +103,13 @@ const authenticateToken = async (req, res, next) => {
 };
 
 // Generate JWT token
+//
+// The lifetime has to outlast the gap between visits, not the length of a
+// session. Renewal only happens while a page is actually running (the
+// half-life timer and focus handler in AuthContext, and the X-Refreshed-Token
+// header below), and a mobile tab is evicted from memory minutes after it is
+// backgrounded - so none of those fire between visits. At 7 days an
+// intermittently used phone simply aged out and was told its session expired.
 const generateToken = (user) => {
   return jwt.sign(
     {
@@ -110,7 +117,7 @@ const generateToken = (user) => {
       username: user.username
     },
     JWT_SECRET,
-    { expiresIn: '7d' }
+    { expiresIn: '30d' }
   );
 };
 
