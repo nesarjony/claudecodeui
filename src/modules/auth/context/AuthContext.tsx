@@ -226,7 +226,13 @@ export function AuthProvider({ children }: AuthProviderProps) {
 
       const userResponse = await api.auth.user();
       if (!userResponse.ok) {
-        clearSession();
+        // Only the server rejecting the credential signs the user out. A 5xx
+        // from the reverse proxy - common on mobile, where the first request
+        // after a reload races the radio waking up - must leave the stored
+        // token alone so the next attempt can succeed.
+        if (userResponse.status === 401 || userResponse.status === 403) {
+          clearSession();
+        }
         return;
       }
 

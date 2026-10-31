@@ -83,7 +83,11 @@ export const authenticatedFetch = (
       if (refreshedToken) {
         storeAuthToken(refreshedToken);
       }
-      if (response.headers.get('X-Auth-Error')) {
+      // Only a genuinely expired token ends the session. The server also sends
+      // X-Auth-Error: invalid-token when the header was merely absent or the
+      // request raced a sign-out, and tearing the session down for those turns
+      // a recoverable blip into a "session expired" screen.
+      if (response.headers.get('X-Auth-Error') === 'session-expired') {
         expireAuthSession();
       }
       return response;
