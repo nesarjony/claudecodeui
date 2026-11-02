@@ -137,7 +137,7 @@ export const CLAUDE_PREDEFINED_MODELS: ProviderModelsDefinition = {
     {
       value: 'claude-opus-5',
       label: 'Opus 5',
-      description: 'Opus 5 · Most capable — latest Opus',
+      description: 'Opus 5 · Highly capable — previous Opus generation',
       effort: {
         default: 'high',
         values: [
@@ -152,7 +152,37 @@ export const CLAUDE_PREDEFINED_MODELS: ProviderModelsDefinition = {
     {
       value: 'claude-opus-5[1m]',
       label: 'Opus 5 (1M context)',
-      description: 'Opus 5 with 1M context · Most capable for complex work',
+      description: 'Opus 5 with 1M context · Previous Opus generation',
+      effort: {
+        default: 'high',
+        values: [
+          { value: 'low' },
+          { value: 'medium' },
+          { value: 'high' },
+          { value: 'xhigh' },
+          { value: 'max' },
+        ],
+      },
+    },
+    {
+      value: 'claude-opus-5-5',
+      label: 'Opus 5.5',
+      description: 'Opus 5.5 · Most capable — latest Opus',
+      effort: {
+        default: 'high',
+        values: [
+          { value: 'low' },
+          { value: 'medium' },
+          { value: 'high' },
+          { value: 'xhigh' },
+          { value: 'max' },
+        ],
+      },
+    },
+    {
+      value: 'claude-opus-5-5[1m]',
+      label: 'Opus 5.5 (1M context)',
+      description: 'Opus 5.5 with 1M context · Most capable for complex work',
       effort: {
         default: 'high',
         values: [
