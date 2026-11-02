@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import type { ReactNode } from 'react';
 
 import { IS_PLATFORM } from '@/shared/utils';
-import { api } from '@/shared/api';
+import { api, isEdgeAuthChallenge } from '@/shared/api';
 import { AUTH_SESSION_EXPIRED_EVENT, AUTH_TOKEN_REFRESHED_EVENT, getAuthTokenRefreshDelay, isValidRefreshedToken, storeAuthToken } from '@/shared/authToken';
 import { hydrateChatDrafts, resetChatDrafts } from '@/shared/chatDrafts';
 import { hydrateUserPreferences, resetUserPreferences } from '@/shared/userSettings';
@@ -229,8 +229,14 @@ export function AuthProvider({ children }: AuthProviderProps) {
         // Only the server rejecting the credential signs the user out. A 5xx
         // from the reverse proxy - common on mobile, where the first request
         // after a reload races the radio waking up - must leave the stored
-        // token alone so the next attempt can succeed.
-        if (userResponse.status === 401 || userResponse.status === 403) {
+        // token alone so the next attempt can succeed. An edge authenticator
+        // (Cloudflare Access on cloud.nesar.dev) answers an expired edge
+        // session with its own 401, which says nothing about our token and is
+        // why a phone was told "session expired" on every reload.
+        const rejectedByOurApi =
+          (userResponse.status === 401 || userResponse.status === 403) &&
+          !isEdgeAuthChallenge(userResponse);
+        if (rejectedByOurApi) {
           clearSession();
         }
         return;

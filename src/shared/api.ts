@@ -43,15 +43,38 @@ async function isEdgeAuthRedirect(): Promise<boolean> {
   return edgeAuthConfirmed;
 }
 
-/** Reloads once when Cloudflare Access has expired, allowing top-level login to run again. */
-async function recoverExpiredEdgeAuth(): Promise<boolean> {
-  if (!(await isEdgeAuthRedirect())) return false;
+/** Reloads at most once per 15s, so top-level navigation can run the edge login again. */
+function reloadForEdgeAuth(): boolean {
   const lastReload = Number(sessionStorage.getItem(EDGE_AUTH_RELOAD_KEY)) || 0;
   if (Date.now() - lastReload <= 15_000) return false;
   sessionStorage.setItem(EDGE_AUTH_RELOAD_KEY, String(Date.now()));
   window.location.reload();
   return true;
 }
+
+/** Reloads once when Cloudflare Access has expired, allowing top-level login to run again. */
+async function recoverExpiredEdgeAuth(): Promise<boolean> {
+  if (!(await isEdgeAuthRedirect())) return false;
+  return reloadForEdgeAuth();
+}
+
+// An edge authenticator in front of the app answers an expired edge session with
+// its own 401 - Cloudflare Access returns `WWW-Authenticate: Cloudflare-Access`
+// and an HTML body. That is not our API rejecting the bearer token, and treating
+// it as one throws away a perfectly valid session on every reload. Our own API
+// always answers JSON and always labels its rejections with X-Auth-Error.
+export const isEdgeAuthChallenge = (response: Response): boolean => {
+  if (response.status !== 401 && response.status !== 403) {
+    return false;
+  }
+  if (/cloudflare-access/i.test(response.headers.get('WWW-Authenticate') ?? '')) {
+    return true;
+  }
+  return (
+    !response.headers.get('X-Auth-Error') &&
+    (response.headers.get('Content-Type') ?? '').includes('text/html')
+  );
+};
 
 // Utility function for authenticated API calls
 export const authenticatedFetch = (
@@ -89,6 +112,11 @@ export const authenticatedFetch = (
       // a recoverable blip into a "session expired" screen.
       if (response.headers.get('X-Auth-Error') === 'session-expired') {
         expireAuthSession();
+      }
+      // The edge challenge is recoverable by re-running its login at the top
+      // level, so reload instead of touching the stored token.
+      if (url.startsWith('/api') && isEdgeAuthChallenge(response)) {
+        reloadForEdgeAuth();
       }
       return response;
     })

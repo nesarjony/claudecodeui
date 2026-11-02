@@ -187,6 +187,30 @@ test('an invalid-token response keeps the session', async () => {
   assert.equal(localStorage.getItem('auth-token'), token);
 });
 
+test('an edge auth challenge keeps the session and reloads instead', async () => {
+  const token = liveToken();
+  localStorage.setItem('auth-token', token);
+  let expiries = 0;
+  const onExpired = () => {
+    expiries += 1;
+  };
+  window.addEventListener(AUTH_SESSION_EXPIRED_EVENT, onExpired);
+  const reload = vi.fn();
+  vi.stubGlobal('location', { ...window.location, reload });
+  vi.stubGlobal('fetch', vi.fn(async () => new Response('<html>Access</html>', {
+    status: 401,
+    headers: { 'Content-Type': 'text/html', 'WWW-Authenticate': 'Cloudflare-Access' },
+  })));
+
+  const response = await (await loadFetch(false))('/api/auth/user');
+
+  window.removeEventListener(AUTH_SESSION_EXPIRED_EVENT, onExpired);
+  assert.equal(response.status, 401);
+  assert.equal(expiries, 0);
+  assert.equal(localStorage.getItem('auth-token'), token);
+  assert.equal(reload.mock.calls.length, 1);
+});
+
 test('an ordinary response leaves the stored token alone', async () => {
   const token = liveToken();
   localStorage.setItem('auth-token', token);
