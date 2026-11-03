@@ -103,6 +103,36 @@ export const CLAUDE_PREDEFINED_MODELS: ProviderModelsDefinition = {
       },
     },
     {
+      value: 'claude-sonnet-5-5',
+      label: 'Sonnet 5.5',
+      description: 'Sonnet 5.5 · Fast and capable — latest Sonnet',
+      effort: {
+        default: 'high',
+        values: [
+          { value: 'low' },
+          { value: 'medium' },
+          { value: 'high' },
+          { value: 'xhigh' },
+          { value: 'max' },
+        ],
+      },
+    },
+    {
+      value: 'claude-sonnet-5-5[1m]',
+      label: 'Sonnet 5.5 (1M context)',
+      description: 'Sonnet 5.5 with 1M context · Fast and capable',
+      effort: {
+        default: 'high',
+        values: [
+          { value: 'low' },
+          { value: 'medium' },
+          { value: 'high' },
+          { value: 'xhigh' },
+          { value: 'max' },
+        ],
+      },
+    },
+    {
       value: 'opus',
       label: 'Opus',
       description: 'Latest Opus model for complex reasoning and coding tasks.',
