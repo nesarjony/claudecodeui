@@ -781,7 +781,11 @@
   .chat-message {
     word-wrap: break-word;
     overflow-wrap: break-word;
-    hyphens: auto;
+    hyphens: manual;
+  }
+
+  [data-chat-scope][data-active-tab]:not([data-active-tab='chat']) [data-chat-header-actions] {
+    display: none;
   }
 
   /* Force wrap long URLs and code */
@@ -1086,6 +1090,19 @@
 }
 .pane-running {
   border-color: transparent !important;
+}
+
+/* A pane waiting on you (permission or question) or ended in an error stands
+   out in the grid; the state comes from the status chip in its header. */
+.pane-chat:has([data-pane-state='waiting']) {
+  border-color: rgb(245 158 11) !important;
+  box-shadow: 0 0 0 1px rgb(245 158 11 / 0.6);
+}
+.pane-chat:has([data-pane-state='waiting'])::after {
+  display: none;
+}
+.pane-chat:has([data-pane-state='failed']) {
+  border-color: rgb(239 68 68 / 0.8) !important;
 }
 .pane-running::after {
   content: '';

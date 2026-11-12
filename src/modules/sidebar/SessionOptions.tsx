@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
-import { Check, Edit2, GitBranch, MoreHorizontal, Trash2, X } from 'lucide-react';
+import { Check, Edit2, Eye, EyeOff, GitBranch, MoreHorizontal, Trash2, X } from 'lucide-react';
+import { useSessionVisibility } from '@/modules/sidebar/SessionVisibility';
 import type { TFunction } from 'i18next';
 
 import { ActionMenu } from '@/shared/ui';
@@ -62,6 +63,7 @@ export default function SessionOptions({
   className,
   t,
 }: SessionOptionsProps) {
+  const visibility = useSessionVisibility();
   const containerRef = useRef<HTMLDivElement>(null);
   const providerLabel = PROVIDER_LABELS[provider];
   const { copyState, copyLabel, setOptionsOpen, handleCopyAction, isCopyPending, CopyStateIcon } =
@@ -182,6 +184,18 @@ export default function SessionOptions({
               icon: GitBranch,
               onSelect: onFork,
             }] : []),
+            {
+              key: 'hide',
+              label: visibility.hiddenIds.has(sessionId) ? 'Unhide session' : 'Hide session',
+              description: visibility.hiddenIds.has(sessionId)
+                ? undefined
+                : 'Remove it from the list; "Show hidden" brings it back.',
+              icon: visibility.hiddenIds.has(sessionId) ? Eye : EyeOff,
+              onSelect: () =>
+                void (visibility.hiddenIds.has(sessionId)
+                  ? visibility.unhide([sessionId])
+                  : visibility.hide([sessionId])),
+            },
             ...(canDelete && !isProcessing ? [{
               key: 'delete',
               label: 'Archive or delete session',

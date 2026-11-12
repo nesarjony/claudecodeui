@@ -3,7 +3,7 @@ import type { ComponentProps } from 'react';
 import { Maximize2, Menu, X } from 'lucide-react';
 
 import WorkspaceMain from '@/modules/project-workspace/WorkspaceMain';
-import WorkspaceTabs from '@/modules/project-workspace/WorkspaceTabs';
+import WorkspaceTabsMenu from '@/modules/project-workspace/WorkspaceTabsMenu';
 import type { AppTab, Project, ProjectSession } from '@/shared/types';
 
 // Everything MainContent needs that is shared across every pane (socket, session
@@ -83,18 +83,22 @@ export default function SessionPane({
       className={`pane-chat group relative flex min-w-0 flex-col overflow-hidden rounded-lg border ${
         isRunning ? 'pane-running' : isActive ? 'border-primary' : 'border-border/50'
       }`}
+      data-chat-scope=""
+      data-active-tab={activeTab}
       onMouseDownCapture={onFocus}
     >
       {project ? (
         <>
-          {/* Slim shared header strip — replaces MainContent's 53px header.
-              One line: mobile menu · active dot · session title · icon tabs
-              (Chat/Shell/Files/Git) · expand to full view · close.
-              FULLY TRANSPARENT overlay — just the title + tab icons floating over
-              the chat, which scrolls underneath. The header costs the pane no
-              height; the tab pill and buttons keep their own small backgrounds so
-              they stay legible over any content. */}
-          <div className="pointer-events-none absolute inset-x-0 top-0 z-20 flex items-center gap-2 px-2 py-1 [&_button]:pointer-events-auto">
+          {/* Slim header row — replaces MainContent's 53px header. One line:
+              mobile menu · status dot · session title · chat actions · icon tabs
+              (Chat/Shell/Files/Git) · expand · close. It is a solid row in the
+              layout so it never covers the transcript; the active pane's row is
+              tinted so the focused pane is obvious at a glance. */}
+          <div
+            className={`relative z-20 flex flex-shrink-0 items-center gap-2 border-b px-2 py-1 ${
+              isActive ? 'border-primary/30 bg-primary/10' : 'border-border/50 bg-card'
+            }`}
+          >
             {onMenu && (
               <button
                 type="button"
@@ -119,18 +123,17 @@ export default function SessionPane({
               }`}
             />
             <span
-              className="min-w-0 flex-1 truncate text-xs font-bold tracking-tight text-foreground [text-shadow:0_1px_2px_hsl(var(--background)),0_0_4px_hsl(var(--background)),0_0_8px_hsl(var(--background))]"
+              className={`min-w-0 flex-1 truncate text-xs font-semibold tracking-tight ${
+                isActive ? 'text-primary' : 'text-foreground'
+              }`}
               title={title}
             >
               {title}
             </span>
+            <div data-chat-header-status="" className="flex flex-shrink-0 items-center gap-1" />
+            <div data-chat-header-actions="" className="flex flex-shrink-0 items-center" />
             <div className="flex-shrink-0">
-              <WorkspaceTabs
-                activeTab={activeTab}
-                setActiveTab={setActiveTab}
-                shouldShowTasksTab={false}
-                shouldShowBrowserTab={false}
-              />
+              <WorkspaceTabsMenu activeTab={activeTab} setActiveTab={setActiveTab} />
             </div>
             <button
               type="button"
@@ -138,7 +141,7 @@ export default function SessionPane({
                 event.stopPropagation();
                 onExpand();
               }}
-              className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-colors hover:text-foreground focus:opacity-100 group-hover:opacity-100"
+              className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-60 transition hover:text-foreground hover:opacity-100 focus:opacity-100 group-hover:opacity-100"
               title="Expand to full view"
               aria-label="Expand this pane to the full workspace"
             >
@@ -150,7 +153,7 @@ export default function SessionPane({
                 event.stopPropagation();
                 onClose();
               }}
-              className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-colors hover:text-foreground focus:opacity-100 group-hover:opacity-100"
+              className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-60 transition hover:text-foreground hover:opacity-100 focus:opacity-100 group-hover:opacity-100"
               title="Close this pane"
               aria-label="Close this pane"
             >

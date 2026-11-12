@@ -4,6 +4,8 @@ import type { TFunction } from 'i18next';
 import { Button } from '@/shared/ui';
 import type { LLMProvider, Project, ProjectSession, SessionWithProvider } from '@/shared/types';
 import SidebarSessionItem from '@/modules/sidebar/SidebarSessionItem';
+import { useSessionSelection } from '@/modules/sidebar/SessionSelection';
+import { HiddenSessionsNote } from '@/modules/sidebar/SessionVisibility';
 import { useCompactSidebar } from '@/modules/sidebar/hooks/useCompactSidebar';
 
 type SidebarProjectSessionsProps = {
@@ -78,6 +80,7 @@ export default function SidebarProjectSessions({
   t,
 }: SidebarProjectSessionsProps) {
   const isCompact = useCompactSidebar();
+  const selection = useSessionSelection();
 
   if (!isExpanded) {
     return null;
@@ -120,6 +123,19 @@ export default function SidebarProjectSessions({
         </div>
       ) : (
         <>
+          {selection.active && hasSessions && (() => {
+            const ids = sessions.map((session) => session.id);
+            const allSelected = ids.every((id) => selection.selected.has(id));
+            return (
+              <button
+                type="button"
+                onClick={() => (allSelected ? selection.deselectMany(ids) : selection.selectMany(ids))}
+                className="px-3 py-1 text-left text-xs font-medium text-primary hover:underline"
+              >
+                {allSelected ? 'Deselect all in project' : `Select all ${ids.length} in project`}
+              </button>
+            );
+          })()}
           {sessions.map((session) => (
             <SidebarSessionItem
               key={session.id}
@@ -143,6 +159,10 @@ export default function SidebarProjectSessions({
             />
           ))}
 
+          <HiddenSessionsNote
+            hiddenAutomated={Number(project.sessionMeta?.hiddenAutomated ?? 0)}
+            hiddenByUser={Number(project.sessionMeta?.hiddenByUser ?? 0)}
+          />
           {hasMoreSessions && (
             <Button
               variant="ghost"

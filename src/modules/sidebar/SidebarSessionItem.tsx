@@ -1,5 +1,5 @@
 import { memo, useState } from 'react';
-import { Check, Edit2, Loader2, MoreHorizontal, Trash2, X } from 'lucide-react';
+import { Check, Edit2, Eye, EyeOff, Loader2, MoreHorizontal, Trash2, X } from 'lucide-react';
 import type { TFunction } from 'i18next';
 
 import { Badge, Dialog, DialogContent, DialogTitle, LLMProviderLogo, Tooltip, buttonVariants } from '@/shared/ui';
@@ -9,6 +9,8 @@ import { PROVIDER_LABELS, createSessionViewModel, formatCompactAge } from '@/mod
 import { useCompactSidebar } from '@/modules/sidebar/hooks/useCompactSidebar';
 import { useProviderSessionIdCopy } from '@/modules/sidebar/hooks/useProviderSessionIdCopy';
 import SessionOptions from '@/modules/sidebar/SessionOptions';
+import { SELECTABLE_SESSION_ATTRIBUTE, useSessionSelection } from '@/modules/sidebar/SessionSelection';
+import { useSessionVisibility } from '@/modules/sidebar/SessionVisibility';
 
 type SidebarSessionItemProps = {
   project: Project;
@@ -54,6 +56,9 @@ function SidebarSessionItem({
 }: SidebarSessionItemProps) {
   const isCompact = useCompactSidebar();
   const sessionView = createSessionViewModel(session, currentTime, t);
+  const selection = useSessionSelection();
+  const visibility = useSessionVisibility();
+  const isHiddenSession = visibility.hiddenIds.has(session.id);
   const isSelected = selectedSession?.id === session.id;
   const compactSessionAge = formatCompactAge(sessionView.sessionTime, currentTime);
   const [isMobileOptionsOpen, setIsMobileOptionsOpen] = useState(false);
@@ -99,8 +104,34 @@ function SidebarSessionItem({
     setMobileOptionsOpen(false);
   };
 
+  if (selection.active) {
+    const checked = selection.selected.has(session.id);
+    return (
+      <button
+        type="button"
+        onClick={() => selection.toggle(session.id)}
+        aria-pressed={checked}
+        {...{ [SELECTABLE_SESSION_ATTRIBUTE]: session.id }}
+        className={cn(
+          'flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-left text-sm transition-colors md:py-2',
+          checked ? 'bg-primary/10 text-foreground' : 'text-foreground hover:bg-accent/60',
+        )}
+      >
+        <span
+          className={cn(
+            'flex h-4 w-4 shrink-0 items-center justify-center rounded border',
+            checked ? 'border-primary bg-primary text-primary-foreground' : 'border-muted-foreground/50',
+          )}
+        >
+          {checked && <Check className="h-3 w-3" />}
+        </span>
+        <span className="min-w-0 flex-1 truncate">{sessionView.sessionName}</span>
+      </button>
+    );
+  }
+
   return (
-    <div className="group relative">
+    <div className={cn('group relative', isHiddenSession && 'opacity-60')}>
       {(showAttentionIndicator || showRecentIndicator) && (
         <div className="absolute left-0 top-1/2 -translate-x-1 -translate-y-1/2 transform">
           <Tooltip
@@ -291,6 +322,18 @@ function SidebarSessionItem({
                       <span className="mt-0.5 block text-xs">Tap to try again.</span>
                     )}
                   </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMobileOptionsOpen(false);
+                    void (isHiddenSession ? visibility.unhide([session.id]) : visibility.hide([session.id]));
+                  }}
+                  className="flex min-h-12 w-full items-center gap-3 rounded-xl px-4 py-3 text-left text-foreground transition-colors active:bg-muted"
+                >
+                  {isHiddenSession ? <Eye className="h-5 w-5 flex-shrink-0" /> : <EyeOff className="h-5 w-5 flex-shrink-0" />}
+                  <span className="text-sm font-medium">{isHiddenSession ? 'Unhide session' : 'Hide session'}</span>
                 </button>
 
                 {!isProcessing && (

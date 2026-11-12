@@ -12,6 +12,8 @@ type WorkspaceTabsProps = {
   setActiveTab: Dispatch<SetStateAction<AppTab>>;
   shouldShowTasksTab: boolean;
   shouldShowBrowserTab: boolean;
+  /** Icon-only inactive tabs, for the slim split-pane header. */
+  compact?: boolean;
 };
 
 type BuiltInTab = {
@@ -58,6 +60,7 @@ export default function WorkspaceTabs({
   setActiveTab,
   shouldShowTasksTab,
   shouldShowBrowserTab,
+  compact = false,
 }: WorkspaceTabsProps) {
   const { t } = useTranslation();
   const { plugins } = usePlugins();
@@ -123,7 +126,7 @@ export default function WorkspaceTabs({
                 isActive={isActive}
                 onClick={() => setActiveTab(tab.id)}
                 onKeyDown={handleTabKeyDown}
-                className="h-8 max-w-44 px-2.5 py-[5px]"
+                className={compact ? 'h-7 max-w-32 px-2 py-1' : 'h-8 max-w-44 px-2.5 py-[5px]'}
               >
                 {tab.kind === 'builtin' ? (
                   <tab.icon className="h-3.5 w-3.5 shrink-0" strokeWidth={isActive ? 2.2 : 1.8} />
@@ -134,7 +137,13 @@ export default function WorkspaceTabs({
                     className="flex h-3.5 w-3.5 shrink-0 items-center justify-center [&>svg]:h-full [&>svg]:w-full"
                   />
                 )}
-                <span className={`${isActive ? 'inline max-w-28' : 'hidden'} truncate sm:max-w-36 lg:inline`}>
+                <span
+                  className={
+                    compact
+                      ? `${isActive ? 'inline max-w-20' : 'hidden'} truncate`
+                      : `${isActive ? 'inline max-w-28' : 'hidden'} truncate sm:max-w-36 lg:inline`
+                  }
+                >
                   {displayLabel}
                 </span>
               </Pill>

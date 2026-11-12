@@ -5,7 +5,9 @@ import { Button, Input, Tooltip } from '@/shared/ui';
 import { CLOUDCLI_WORDMARK_FONT_FAMILY } from '@/shared/constants';
 import { IS_PLATFORM,cn } from '@/shared/utils';
 import type { SidebarSearchMode } from '@/shared/types';
-import GitHubStarBadge from '@/modules/sidebar/GitHubStarBadge';
+import SidebarLayoutPicker from '@/modules/sidebar/SidebarLayoutPicker';
+import { SessionSelectToggle } from '@/modules/sidebar/SessionSelection';
+import { SessionVisibilityMenu } from '@/modules/sidebar/SessionVisibility';
 
 const MOD_KEY =
   typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl';
@@ -123,6 +125,9 @@ export default function SidebarHeader({
             >
               <Plus className="h-3.5 w-3.5" />
             </Button>
+            <SidebarLayoutPicker />
+            <SessionSelectToggle variant="desktop" />
+            <SessionVisibilityMenu variant="desktop" />
             <Button
               variant="ghost"
               size="sm"
@@ -134,8 +139,6 @@ export default function SidebarHeader({
             </Button>
           </div>
         </div>
-
-        <GitHubStarBadge />
 
         {/* Search bar */}
         {showSearchTools && (
@@ -262,6 +265,8 @@ export default function SidebarHeader({
           )}
 
           <div className="flex flex-shrink-0 gap-1.5">
+            <SessionVisibilityMenu variant="mobile" />
+            <SessionSelectToggle variant="mobile" />
             <button
               className="flex h-8 w-8 items-center justify-center rounded-lg bg-muted/50 transition-all active:scale-95"
               onClick={onRefresh}

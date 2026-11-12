@@ -10,6 +10,8 @@ import { usePaletteOps } from '@/modules/command-palette';
 import { useBusySessionIdSet } from '@/shared/context/SessionProtectionContext';
 import type { LLMProvider, LoadingProgress, MCPServerStatus, Project, ProjectSession, SidebarProjectListProps } from '@/shared/types';
 import SidebarCollapsed from '@/modules/sidebar/SidebarCollapsed';
+import { SessionSelectionProvider } from '@/modules/sidebar/SessionSelection';
+import { SessionVisibilityProvider } from '@/modules/sidebar/SessionVisibility';
 import SidebarContent from '@/modules/sidebar/SidebarContent';
 import SidebarModals from '@/modules/sidebar/SidebarModals';
 
@@ -224,7 +226,8 @@ function Sidebar({
   };
 
   return (
-    <>
+    <SessionVisibilityProvider onChanged={onRefresh}>
+    <SessionSelectionProvider onChanged={onRefresh}>
         <SidebarModals
           projects={projects}
         showSettings={showSettings}
@@ -250,9 +253,7 @@ function Sidebar({
         <SidebarCollapsed
           onExpand={handleExpandSidebar}
           onShowSettings={onShowSettings}
-          updateAvailable={updateAvailable}
           restartRequired={restartRequired}
-          onShowVersionModal={() => setShowVersionModal(true)}
           t={t}
         />
       ) : (
@@ -342,7 +343,8 @@ function Sidebar({
         </>
       )}
 
-    </>
+    </SessionSelectionProvider>
+    </SessionVisibilityProvider>
   );
 }
 

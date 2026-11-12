@@ -105,27 +105,7 @@ function ProjectMainRegion({
             : 'grid-cols-2 grid-rows-2';
 
   return (
-    <div className="relative h-full min-h-0">
-      {!workspace.isSolo && !isMobile && (
-        <div className="absolute right-2 top-2 z-40 flex items-center gap-0.5 rounded-lg border border-border/60 bg-card/90 p-0.5 shadow-sm backdrop-blur">
-          {[1, 2, 3, 4, 6, 8].map((layout) => (
-            <button
-              key={layout}
-              type="button"
-              onClick={() => workspace.setLayout(layout)}
-              className={`flex h-6 w-7 items-center justify-center rounded-md text-[11px] font-medium transition-colors ${
-                workspace.layout === layout
-                  ? 'bg-primary text-primary-foreground'
-                  : 'text-muted-foreground hover:text-foreground'
-              }`}
-              title={layout === 1 ? 'Single view' : `${layout} panes`}
-            >
-              {layout}
-            </button>
-          ))}
-        </div>
-      )}
-
+    <div className="relative flex h-full min-h-0 flex-col">
       {workspace.layout === 1 ? (
         <WorkspaceMain
           selectedProject={selectedProject}
@@ -146,7 +126,7 @@ function ProjectMainRegion({
           onProjectsRefresh={handleProjectsRefresh}
         />
       ) : (
-        <div className={`grid h-full min-h-0 gap-0.5 p-0.5 ${gridClass}`}>
+        <div className={`grid min-h-0 flex-1 gap-0.5 p-0.5 ${gridClass}`}>
           {workspace.panes.map((pane) => {
             const resolved = resolvePane(pane);
             return (

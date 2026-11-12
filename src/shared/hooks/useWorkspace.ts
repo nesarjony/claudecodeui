@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useSyncExternalStore } from 'react';
 
 // Native multi-pane workspace: a grid layout (1..4) where each pane shows a
 // different session via its own <MainContent>. Persisted to localStorage.
@@ -16,6 +16,8 @@ type WorkspaceState = {
   layout: number;
   panes: WorkspacePane[];
   activePaneId: string;
+  /** Panes dropped by switching to a smaller layout, restored when it grows again. */
+  hiddenPanes?: WorkspacePane[];
 };
 
 const STORAGE_KEY = 'web-workspace';
@@ -68,7 +70,8 @@ function initialState(): WorkspaceState {
       ) {
         // Seed the counter above the highest EXISTING suffix (not the count) so
         // future ids never collide with restored ones.
-        paneSeq = parsed.panes.reduce((max, p) => Math.max(max, paneIdSuffix(p.id)), 0);
+        const hiddenPanes = Array.isArray(parsed.hiddenPanes) ? parsed.hiddenPanes : [];
+        paneSeq = [...parsed.panes, ...hiddenPanes].reduce((max, p) => Math.max(max, paneIdSuffix(p.id)), 0);
         // Self-heal any already-corrupted state: a duplicate/missing id gets a
         // fresh unique id. Fixes localStorage saved by the old buggy counter
         // without forcing the user to clear anything.
@@ -83,7 +86,12 @@ function initialState(): WorkspaceState {
         const activePaneId = panes.some((p) => p.id === parsed.activePaneId)
           ? parsed.activePaneId
           : panes[0].id;
-        const healed = { layout: parsed.layout, panes, activePaneId };
+        const healed = {
+          layout: parsed.layout,
+          panes,
+          activePaneId,
+          hiddenPanes: hiddenPanes.filter((p) => p.id && !seen.has(p.id)),
+        };
         // Write the repair back so storage stops carrying the corruption
         // (otherwise it re-heals identically on every load, which is harmless
         // but leaves the bad value on disk). No-op when nothing changed.
@@ -109,19 +117,45 @@ function persist(state: WorkspaceState): WorkspaceState {
   return state;
 }
 
+// One workspace for the whole page: the pane grid and the sidebar's layout
+// picker read and change the same state.
+let sharedState: WorkspaceState | null = null;
+const listeners = new Set<() => void>();
+
+function getSharedState(): WorkspaceState {
+  if (!sharedState) sharedState = initialState();
+  return sharedState;
+}
+
+function setState(update: (prev: WorkspaceState) => WorkspaceState): void {
+  const next = update(getSharedState());
+  if (next === sharedState) return;
+  sharedState = next;
+  for (const listener of listeners) listener();
+}
+
+function subscribe(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
+
 export function useWorkspace() {
-  const [state, setState] = useState<WorkspaceState>(initialState);
+  const state = useSyncExternalStore(subscribe, getSharedState);
 
   const setLayout = useCallback((n: number) => {
     if (SOLO || !VALID_LAYOUTS.has(n)) return;
     setState((prev) => {
       let panes = prev.panes.slice();
-      while (panes.length < n) panes.push({ id: nextPaneId(), sessionId: null });
-      if (panes.length > n) panes = panes.slice(0, n);
+      let hiddenPanes = (prev.hiddenPanes ?? []).slice();
+      while (panes.length < n) panes.push(hiddenPanes.shift() ?? { id: nextPaneId(), sessionId: null });
+      if (panes.length > n) {
+        hiddenPanes = [...panes.slice(n), ...hiddenPanes];
+        panes = panes.slice(0, n);
+      }
       const activePaneId = panes.some((p) => p.id === prev.activePaneId)
         ? prev.activePaneId
         : panes[0].id;
-      return persist({ layout: n, panes, activePaneId });
+      return persist({ layout: n, panes, activePaneId, hiddenPanes });
     });
   }, []);
 
@@ -178,7 +212,8 @@ export function useWorkspace() {
   const expandPane = useCallback((id: string) => {
     setState((prev) => {
       const pane = prev.panes.find((p) => p.id === id) || prev.panes[0];
-      return persist({ layout: 1, panes: [pane], activePaneId: pane.id });
+      const others = prev.panes.filter((p) => p.id !== pane.id);
+      return persist({ layout: 1, panes: [pane], activePaneId: pane.id, hiddenPanes: [...others, ...(prev.hiddenPanes ?? [])] });
     });
   }, []);
 

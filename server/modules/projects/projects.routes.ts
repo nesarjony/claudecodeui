@@ -4,7 +4,17 @@ import { createProject, updateProjectDisplayName } from '@/modules/projects/serv
 import { startCloneProject } from '@/modules/projects/services/project-clone.service.js';
 import { getProjectTaskMaster } from '@/modules/projects/services/projects-has-taskmaster.service.js';
 import { AppError, asyncHandler, createApiSuccessResponse } from '@/shared/utils.js';
-import { getArchivedProjectsWithSessions, getProjectSessionsPage, getProjectsWithSessions } from '@/modules/projects/services/projects-with-sessions-fetch.service.js';
+import {
+  getArchivedProjectsWithSessions,
+  getProjectSessionsPage,
+  getProjectsWithSessions,
+  readSessionVisibility,
+} from '@/modules/projects/services/projects-with-sessions-fetch.service.js';
+
+const requestUserId = (req: unknown): number | null => {
+  const id = Number((req as { user?: { id?: unknown } }).user?.id);
+  return Number.isInteger(id) ? id : null;
+};
 import { deleteOrArchiveProject, restoreArchivedProject } from '@/modules/projects/services/project-delete.service.js';
 import { applyLegacyStarredProjectIds, toggleProjectStar } from '@/modules/projects/services/project-star.service.js';
 
@@ -77,6 +87,7 @@ router.get(
       skipSynchronization,
       sessionsLimit,
       sessionsOffset,
+      visibility: readSessionVisibility(requestUserId(req)),
     });
     res.json(projects);
   }),
@@ -96,7 +107,11 @@ router.get(
     const projectId = typeof req.params.projectId === 'string' ? req.params.projectId : '';
     const limit = parseNonNegativeIntQuery(req.query.limit, 'limit', 20);
     const offset = parseNonNegativeIntQuery(req.query.offset, 'offset', 0);
-    const sessionsPage = await getProjectSessionsPage(projectId, { limit, offset });
+    const sessionsPage = await getProjectSessionsPage(projectId, {
+      limit,
+      offset,
+      visibility: readSessionVisibility(requestUserId(req)),
+    });
     res.json(sessionsPage);
   }),
 );

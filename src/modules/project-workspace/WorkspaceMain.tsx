@@ -134,7 +134,7 @@ function WorkspaceMain({
   }
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex h-full flex-col" data-chat-scope="" data-active-tab={activeTab}>
       {showHeader && (
         <WorkspaceHeader
           activeTab={activeTab}
