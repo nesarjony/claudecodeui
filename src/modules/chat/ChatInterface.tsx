@@ -26,7 +26,9 @@ import {
 import ChatMessagesPane from '@/modules/chat/transcript/ChatMessagesPane';
 import ChatComposer from '@/modules/chat/composer/ChatComposer';
 import CommandResultModal from '@/modules/chat/modals/CommandResultModal';
-import QuickCommandBar from '@/modules/chat/transcript/QuickCommandBar';
+import QuickCommandsControl from '@/modules/chat/quick-commands/QuickCommandsControl';
+import AgentsBar from '@/modules/chat/agents/AgentsBar';
+import ChatHeaderStatus from '@/modules/chat/agents/ChatHeaderStatus';
 
 type ChatInterfaceProps = {
   isActive: boolean;
@@ -419,6 +421,19 @@ function ChatInterface({
   return (
     <PermissionContext.Provider value={permissionContextValue}>
       <div className="flex h-full min-h-0 flex-col">
+        <ChatHeaderStatus
+          isProcessing={isProcessing}
+          startedAt={sessionActivity?.startedAt ?? null}
+          waitingCount={pendingPermissionRequests.length}
+          lastMessageType={chatMessages[chatMessages.length - 1]?.type ?? null}
+          lastMessageAt={chatMessages[chatMessages.length - 1]?.timestamp ?? null}
+        />
+        <AgentsBar
+          sessionId={currentSessionId || selectedSession?.id || null}
+          isProcessing={isProcessing}
+          setInput={setInput}
+          onSubmit={handleSubmit}
+        />
         <ChatMessagesPane
           newSessionTrigger={newSessionTrigger}
           scrollContainerRef={scrollContainerRef}
@@ -476,12 +491,12 @@ function ChatInterface({
 
         <div className="relative flex-shrink-0">
           {isUserScrolledUp && chatMessages.length > 0 && (
-            <div className="pointer-events-none absolute -top-11 left-0 right-0 z-20 flex justify-center">
+            <div className="pointer-events-none absolute -top-11 right-3 z-20 flex justify-end">
               <button
                 type="button"
                 onClick={scrollToBottomAndReset}
                 aria-label={t('input.scrollToBottom', { defaultValue: 'Scroll to bottom' })}
-                className="pointer-events-auto flex h-8 w-8 items-center justify-center rounded-full border border-border/50 bg-card text-muted-foreground shadow-sm transition-all duration-200 hover:bg-accent hover:text-foreground"
+                className="pointer-events-auto flex h-9 w-9 items-center justify-center rounded-full border border-border bg-card text-muted-foreground shadow-md transition-all duration-200 hover:bg-accent hover:text-foreground"
                 title={t('input.scrollToBottom', { defaultValue: 'Scroll to bottom' })}
               >
                 <ArrowDownIcon className="h-4 w-4" aria-hidden />
@@ -489,15 +504,15 @@ function ChatInterface({
             </div>
           )}
 
-          <QuickCommandBar
-            setInput={setInput}
-            textareaRef={textareaRef}
-            chatMessages={chatMessages}
-            isProcessing={isProcessing}
-            onSubmit={handleSubmit}
-          />
-
           <ChatComposer
+          quickCommands={
+            <QuickCommandsControl
+              setInput={setInput}
+              textareaRef={textareaRef}
+              chatMessages={chatMessages}
+              onSubmit={handleSubmit}
+            />
+          }
           pendingPermissionRequests={pendingPermissionRequests}
           handlePermissionDecision={handlePermissionDecision}
           handleGrantToolPermission={handleGrantToolPermission}

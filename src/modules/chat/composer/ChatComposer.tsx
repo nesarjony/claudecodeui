@@ -10,7 +10,7 @@ import type {
   RefObject,
   TouchEvent,
 } from 'react';
-import { PaperclipIcon, MessageSquareIcon, XIcon, Loader2, ArrowUpIcon, PencilIcon, SparklesIcon } from 'lucide-react';
+import { PaperclipIcon, MessageSquareIcon, XIcon, Loader2, ArrowUpIcon, PencilIcon } from 'lucide-react';
 
 import { useVoiceInput } from '@/modules/chat/hooks/useVoiceInput';
 import { useVoiceAvailable } from '@/modules/chat/hooks/useVoiceAvailable';
@@ -36,7 +36,6 @@ import { ScheduleMessagePopover } from '@/modules/chat/composer/ScheduleMessageP
 import { ScheduledMessageList } from '@/modules/chat/composer/ScheduledMessageList';
 import ComposerModelMenu from '@/modules/chat/composer/ComposerModelMenu';
 import ComposerPermissionMenu from '@/modules/chat/composer/ComposerPermissionMenu';
-import { useQuickCommandsVisible } from '@/modules/chat/hooks/useQuickCommandsVisible';
 
 type MentionableFile = {
   name: string;
@@ -114,6 +113,8 @@ type ChatComposerProps = {
   placeholder: string;
   isTextareaExpanded: boolean;
   sendByCtrlEnter?: boolean;
+  /** Quick-commands control rendered in the toolbar (button, palette and pinned chips). */
+  quickCommands?: ReactNode;
 };
 
 /**
@@ -187,9 +188,9 @@ export default function ChatComposer({
   placeholder,
   isTextareaExpanded,
   sendByCtrlEnter,
+  quickCommands,
 }: ChatComposerProps) {
   const { t } = useTranslation('chat');
-  const [quickCommandsVisible, setQuickCommandsVisible] = useQuickCommandsVisible();
   const fileDropdownRef = useRef<HTMLDivElement | null>(null);
   const selectedFileRef = useRef<HTMLDivElement | null>(null);
   const commandMenuPosition = useMemo(() => {
@@ -431,7 +432,7 @@ export default function ChatComposer({
             />
         </PromptInputBody>
 
-        <PromptInputFooter className="flex-wrap gap-y-1">
+        <PromptInputFooter className="flex-wrap gap-y-1 [container-type:inline-size]">
           <PromptInputTools className="min-w-0">
             <PromptInputButton
               tooltip={{ content: t('input.attachFiles') }}
@@ -462,24 +463,17 @@ export default function ChatComposer({
               )}
             </PromptInputButton>
 
-            <PromptInputButton
-              tooltip={{ content: quickCommandsVisible ? 'Hide quick commands' : 'Show quick commands' }}
-              onClick={() => setQuickCommandsVisible(!quickCommandsVisible)}
-              className={quickCommandsVisible ? 'text-primary' : ''}
-              aria-pressed={quickCommandsVisible}
-            >
-              <SparklesIcon />
-            </PromptInputButton>
+            {quickCommands}
 
-            {hasInput && (
-              <PromptInputButton
-                tooltip={{ content: t('input.clearInput', { defaultValue: 'Clear input' }) }}
-                onClick={onClearInput}
-                className="hidden sm:flex"
-              >
-                <XIcon />
-              </PromptInputButton>
-            )}
+            <PromptInputButton
+              tooltip={{ content: t('input.clearInput', { defaultValue: 'Clear input' }) }}
+              onClick={onClearInput}
+              className={`hidden sm:flex ${hasInput ? '' : 'invisible'}`}
+              aria-hidden={!hasInput}
+              tabIndex={hasInput ? undefined : -1}
+            >
+              <XIcon />
+            </PromptInputButton>
 
           </PromptInputTools>
 
@@ -544,7 +538,7 @@ export default function ChatComposer({
           </div>
 
           <div
-            className={`order-last hidden basis-full px-2 text-center text-xs leading-4 text-muted-foreground/50 transition-opacity duration-200 lg:block ${
+            className={`order-last hidden basis-full px-2 text-center text-xs leading-4 text-muted-foreground/50 transition-opacity duration-200 [@container(min-width:720px)]:block ${
               input.trim() && !canQueueDraft ? 'opacity-0' : 'opacity-100'
             }`}
           >

@@ -1,5 +1,6 @@
 import { useTranslation } from 'react-i18next';
-import { memo, useCallback, useMemo } from 'react';
+import { memo, useCallback, useLayoutEffect, useMemo, useState } from 'react';
+import { createPortal } from 'react-dom';
 import type { Dispatch, RefObject, SetStateAction } from 'react';
 
 import type { ChatMessage,
@@ -168,6 +169,30 @@ function ChatMessagesPane({
     [messageKeyMap],
   );
 
+  // The nearest enclosing header that offers a chat-actions slot (the split
+  // pane's row, or the single view's workspace header).
+  const [headerActionsSlot, setHeaderActionsSlot] = useState<HTMLElement | null>(null);
+  useLayoutEffect(() => {
+    let scope = scrollContainerRef.current?.closest('[data-chat-scope]') ?? null;
+    let slot: HTMLElement | null = null;
+    while (scope && !slot) {
+      slot = scope.querySelector<HTMLElement>('[data-chat-header-actions]');
+      if (!slot) scope = scope.parentElement?.closest('[data-chat-scope]') ?? null;
+    }
+    setHeaderActionsSlot(slot);
+  }, [scrollContainerRef]);
+
+  const exportMenu = chatMessages.length > 0 ? (
+    <ChatExportMenu
+      messages={chatMessages}
+      sessionTitle={selectedSession?.summary || selectedSession?.title}
+      provider={provider}
+      selectedProject={selectedProject}
+      createDiff={createDiff}
+      onLoadFullTranscript={onLoadFullTranscript}
+    />
+  ) : null;
+
   return (
     <div
       ref={scrollContainerRef}
@@ -177,18 +202,10 @@ function ChatMessagesPane({
         hasActivityIndicator ? 'pb-12 sm:pb-14' : 'pb-3 sm:pb-4'
       }`}
     >
-      {chatMessages.length > 0 && (
+      {exportMenu && headerActionsSlot && createPortal(exportMenu, headerActionsSlot)}
+      {exportMenu && !headerActionsSlot && (
         <div className="pointer-events-none sticky right-4 top-3 z-10 mb-2 flex justify-end sm:px-4">
-          <div className="pointer-events-auto">
-            <ChatExportMenu
-              messages={chatMessages}
-              sessionTitle={selectedSession?.summary || selectedSession?.title}
-              provider={provider}
-              selectedProject={selectedProject}
-              createDiff={createDiff}
-              onLoadFullTranscript={onLoadFullTranscript}
-            />
-          </div>
+          <div className="pointer-events-auto">{exportMenu}</div>
         </div>
       )}
       <div className="mx-auto w-full max-w-[54.25rem] space-y-3 px-4 sm:space-y-4">

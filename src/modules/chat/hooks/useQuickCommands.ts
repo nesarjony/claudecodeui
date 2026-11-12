@@ -189,22 +189,6 @@ export function useQuickCommands() {
     return res.ok;
   }, [setSettings]);
 
-  // Opt-in native `claude -p` refine. Returns ranked command ids (best first).
-  const suggestLlm = useCallback(async (agentText: string): Promise<number[]> => {
-    try {
-      const res = await authenticatedFetch('/api/quick-commands/suggest', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ agentText }),
-      });
-      if (!res.ok) return [];
-      const data = await res.json();
-      return Array.isArray(data.rankedIds) ? data.rankedIds : [];
-    } catch {
-      return [];
-    }
-  }, []);
-
   // Per-command custom prompt: run it (native claude -p) against the agent's
   // last message and return the generated text.
   const runCommand = useCallback(
@@ -234,29 +218,6 @@ export function useQuickCommands() {
     update,
     remove,
     saveSettings,
-    suggestLlm,
     runCommand,
   };
-}
-
-// ---------------------------------------------------------------------------
-// Free, instant, client-side heuristic: classify the agent's last message into
-// a state so the matching-trigger chips can be surfaced. No model call.
-// ---------------------------------------------------------------------------
-export function detectAgentState(text: string): TriggerState | null {
-  if (!text) return null;
-  const tail = text.trim().toLowerCase().slice(-500);
-  if (/\b(error|failed|failure|exception|traceback|cannot |could not |unable to |went wrong)\b/.test(tail)) {
-    return 'error';
-  }
-  if (
-    tail.endsWith('?') ||
-    /\b(should i|which (one|option|approach)|do you want|would you like|shall i|let me know|please (confirm|clarify|provide)|\(y\/n\)|option [1-9a-c]\b)/.test(tail)
-  ) {
-    return 'question';
-  }
-  if (/\b(done|complete|completed|finished|all set|implemented|fixed|ready|success|verified|passing)\b/.test(tail)) {
-    return 'done';
-  }
-  return 'idle';
 }
