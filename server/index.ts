@@ -52,6 +52,7 @@ import { assetsRoutes } from './modules/assets/index.js';
 import { fileTreeRoutes } from './modules/file-tree/index.js';
 import { worktreesRoutes } from './modules/worktrees/index.js';
 import { quickCommandsRoutes } from './modules/quick-commands/index.js';
+import { agentsRoutes } from './modules/agents/index.js';
 import browserUseMcpRoutes from './modules/browser-use/browser-use-mcp.routes.js';
 import { browserUseService } from './modules/browser-use/browser-use.service.js';
 import { initializeDatabase, sessionsDb } from './modules/database/index.js';
@@ -172,6 +173,7 @@ app.use('/api/taskmaster', authenticateToken, taskmasterRoutes);
 // Commands API Routes (protected)
 app.use('/api/commands', authenticateToken, commandsRoutes);
 app.use('/api/quick-commands', authenticateToken, quickCommandsRoutes);
+app.use('/api/agents', authenticateToken, agentsRoutes);
 
 // Settings API Routes (protected)
 app.use('/api/settings', authenticateToken, settingsRoutes);

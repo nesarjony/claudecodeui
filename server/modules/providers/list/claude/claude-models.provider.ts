@@ -249,6 +249,24 @@ export const CLAUDE_PREDEFINED_MODELS: ProviderModelsDefinition = {
   DEFAULT: 'default',
 };
 
+/**
+ * A model value ending in this suffix runs the session on the Anthropic API key
+ * (Agent SDK billing) instead of the Claude subscription. The runtime strips it
+ * before handing the model to the SDK.
+ */
+export const CLAUDE_API_KEY_MODEL_SUFFIX = '@api';
+
+CLAUDE_PREDEFINED_MODELS.OPTIONS.push(
+  ...CLAUDE_PREDEFINED_MODELS.OPTIONS
+    .filter((option) => option.value !== 'best')
+    .map((option) => ({
+      ...option,
+      value: `${option.value}${CLAUDE_API_KEY_MODEL_SUFFIX}`,
+      label: `${option.label} · API key`,
+      description: `${option.description} Billed to the Anthropic API key.`,
+    })),
+);
+
 export const findClaudeModelOption = (model: string | undefined | null): ProviderModelOption | null => {
   const normalizedModel = typeof model === 'string' ? model.trim() : '';
   if (!normalizedModel) {
