@@ -1041,6 +1041,10 @@ test('POST /sessions/:id/permission validates the session and the body', async (
 
 type ToolPolicy = (toolName: string, input: unknown) => { decision: string; category?: string; timeoutMs?: number; timeoutMessage?: string };
 const policyOf = (turn: { options: Record<string, unknown> }) => turn.options.toolPolicy as ToolPolicy | undefined;
+type GuardHook = (input: unknown) => Promise<Record<string, any>>;
+const hookOf = (turn: { options: Record<string, unknown> }) =>
+  (turn.options.toolHooks as { PreToolUse: Array<{ matcher: string; hooks: GuardHook[] }> } | undefined)?.PreToolUse[0].hooks[0];
+const preToolUse = (toolName: string, toolInput: unknown) => ({ hook_event_name: 'PreToolUse', tool_name: toolName, tool_input: toolInput, tool_use_id: 'tu_1' });
 
 test('POST /sessions with a guard gives the run a tool policy that allows safe calls and asks about risky ones', async () => {
   await withBridge(async ({ call, world }) => {
@@ -1060,6 +1064,13 @@ test('POST /sessions with a guard gives the run a tool policy that allows safe c
     assert.equal(policy?.('Read', { file_path: '/mnt/dev/known/.env' }).category, 'secret');
     // repoRoot defaults to the project path.
     assert.equal(policy?.('Write', { file_path: '/etc/hosts', content: '' }).category, 'outside_repo');
+
+    // The same guard rides along as a PreToolUse hook, so calls the CLI would allow by itself are classified too.
+    const hook = hookOf(world.startedTurns[0]);
+    assert.equal(typeof hook, 'function');
+    assert.equal((await hook?.(preToolUse('Read', { file_path: '/mnt/dev/known/.env' })))?.hookSpecificOutput.permissionDecision, 'ask');
+    assert.equal((await hook?.(preToolUse('Glob', { pattern: '**/.env*' })))?.hookSpecificOutput.permissionDecision, 'ask');
+    assert.deepEqual(await hook?.(preToolUse('Read', { file_path: '/mnt/dev/known/src/a.ts' })), {});
 
     const listed = await call('GET', '/sessions');
     const entry = listed.body.data.sessions.find((candidate: { id: string }) => candidate.id === 'new-1');
@@ -1116,11 +1127,13 @@ test('a session started without a guard, or with a disabled one, has no tool pol
     assert.equal(plain.body.data.guarded, false);
     assert.equal('guard' in plain.body.data, false);
     assert.equal('toolPolicy' in world.startedTurns[0].options, false);
+    assert.equal('toolHooks' in world.startedTurns[0].options, false);
 
     const disabled = await call('POST', '/sessions', startBody({ permissionMode: 'acceptEdits', guard: { enabled: false } }));
     assert.equal(disabled.status, 201);
     assert.equal(disabled.body.data.guarded, false);
     assert.equal('toolPolicy' in world.startedTurns[1].options, false);
+    assert.equal('toolHooks' in world.startedTurns[1].options, false);
     assert.equal(world.startedTurns[1].options.permissionMode, 'acceptEdits');
 
     const listed = await call('GET', '/sessions');
@@ -1175,6 +1188,7 @@ test('a guarded session keeps its guard on every message, and refuses a message 
     assert.equal(accepted.status, 202);
     assert.equal(world.startedTurns[1].options.permissionMode, 'default');
     assert.equal(policyOf(world.startedTurns[1])?.('Bash', { command: 'git push' }).decision, 'ask');
+    assert.equal((await hookOf(world.startedTurns[1])?.(preToolUse('Read', { file_path: '/mnt/dev/known/.env' })))?.hookSpecificOutput.permissionDecision, 'ask');
   });
 });
 
@@ -1184,6 +1198,7 @@ test('sessions that Foreman did not start keep behaving as before: no policy, wh
     const response = await call('POST', '/sessions/ui/message', { text: 'hello', permissionMode: 'bypassPermissions' });
     assert.equal(response.status, 202);
     assert.equal('toolPolicy' in world.startedTurns[0].options, false);
+    assert.equal('toolHooks' in world.startedTurns[0].options, false);
     assert.equal(world.startedTurns[0].options.permissionMode, 'bypassPermissions');
   });
 });
@@ -1219,6 +1234,7 @@ test('after a restart a resumed Foreman session keeps its permission mode and it
     assert.equal(policyOf(resumed as never)?.('Bash', { command: 'git push' }).timeoutMs, 600_000, 'the approval window survives the restart');
     assert.equal(policyOf(resumed as never)?.('Bash', { command: 'git status' }).decision, 'allow');
     assert.equal(policyOf(resumed as never)?.('Write', { file_path: '/etc/hosts', content: '' }).category, 'outside_repo');
+    assert.equal((await hookOf(resumed as never)?.(preToolUse('Read', { file_path: '/mnt/dev/known/.env' })))?.hookSpecificOutput.permissionDecision, 'ask', 'and its hook');
   });
 });
 

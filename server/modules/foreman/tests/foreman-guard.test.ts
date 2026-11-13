@@ -7,6 +7,8 @@ import {
   classifyToolUse,
   compileGuard,
   createToolPolicy,
+  guardHooks,
+  guardRunOptions,
   parseGuardConfig,
   type ForemanGuardConfig,
 } from '@/modules/foreman/foreman-guard.service.js';
@@ -194,6 +196,143 @@ test('tool input given as a JSON string or plain text is still judged', () => {
   assert.equal(classifyToolUse({ toolName: 'Bash', input: 'git push' }, guard()).risky, true);
   assert.equal(classifyToolUse({ toolName: 'Bash', input: undefined }, guard()).risky, false);
   assert.equal(classifyToolUse({ toolName: 'Bash', input: null }, guard()).risky, false);
+});
+
+test('Glob and Grep globs that can match a secret file are classified as secret, wildcards included', () => {
+  const flagged: Array<{ toolName: string; input: Record<string, unknown> }> = [
+    { toolName: 'Glob', input: { pattern: '**/.env*' } },
+    { toolName: 'Glob', input: { pattern: '.env.*' } },
+    { toolName: 'Glob', input: { pattern: '**/.env' } },
+    { toolName: 'Glob', input: { pattern: '{.env,config.json}' } },
+    { toolName: 'Glob', input: { pattern: '**/id_rsa*' } },
+    { toolName: 'Glob', input: { pattern: '**/*.pem' } },
+    { toolName: 'Glob', input: { pattern: '*.{pem,key}' } },
+    { toolName: 'Glob', input: { pattern: '**/credentials*' } },
+    { toolName: 'Glob', input: { pattern: '**/secrets.*' } },
+    { toolName: 'Glob', input: { pattern: '**/secret*' } },
+    { toolName: 'Glob', input: { pattern: '*', path: '/home/nesar/.ssh' } },
+    { toolName: 'Glob', input: { pattern: '/home/nesar/.ssh/**' } },
+    { toolName: 'Grep', input: { pattern: 'KEY', glob: '.env*' } },
+    { toolName: 'Grep', input: { pattern: 'KEY', glob: '*.{ts,pem}' } },
+    { toolName: 'Grep', input: { pattern: 'KEY', glob: '**/.env.*' } },
+    { toolName: 'Grep', input: { pattern: 'x', path: '/home/nesar/.aws/credentials' } },
+  ];
+  for (const call of flagged) {
+    const verdict = classifyToolUse(call, guard());
+    assert.equal(verdict.risky, true, JSON.stringify(call));
+    assert.equal(verdict.risky && verdict.category, 'secret', JSON.stringify(call));
+  }
+});
+
+test('ordinary Glob and Grep calls are safe, and Grep\'s pattern is a content search, not a file name', () => {
+  const safe: Array<{ toolName: string; input: Record<string, unknown> }> = [
+    { toolName: 'Glob', input: { pattern: 'src/**/*.ts' } },
+    { toolName: 'Glob', input: { pattern: '**/*.md', path: `${REPO}/docs` } },
+    { toolName: 'Glob', input: { pattern: '**/*' } },
+    { toolName: 'Glob', input: { pattern: '**/.env.example' } },
+    { toolName: 'Glob', input: { pattern: 'docs/**/credentials-guide.md' } },
+    { toolName: 'Grep', input: { pattern: 'password', path: `${REPO}/src` } },
+    { toolName: 'Grep', input: { pattern: '.env', path: `${REPO}/src`, glob: '*.ts' } },
+    { toolName: 'Grep', input: { pattern: 'secret', glob: '**/*.{ts,tsx}' } },
+    { toolName: 'Read', input: { file_path: `${REPO}/src/env.ts` } },
+  ];
+  for (const call of safe) {
+    assert.deepEqual(classifyToolUse(call, guard()), { risky: false }, JSON.stringify(call));
+  }
+  // `pattern` is only a file glob for Glob.
+  assert.deepEqual(classifyToolUse({ toolName: 'Grep', input: { pattern: '**/.env*' } }, guard()), { risky: false });
+});
+
+// ---------------------------------------------------------------------------------------------
+// The PreToolUse hook of a guarded run
+// ---------------------------------------------------------------------------------------------
+
+const preToolUse = (toolName: unknown, toolInput: unknown) => ({
+  hook_event_name: 'PreToolUse',
+  session_id: 'prov-1',
+  transcript_path: '/tmp/t.jsonl',
+  cwd: REPO,
+  tool_name: toolName,
+  tool_input: toolInput,
+  tool_use_id: 'tu_1',
+});
+
+async function runHook(input: unknown, overrides: Partial<ForemanGuardConfig> = {}): Promise<Record<string, any>> {
+  const registered = guardHooks(guard(overrides));
+  return registered.PreToolUse[0].hooks[0](input);
+}
+
+test('the guard hook registers one PreToolUse matcher for every tool', () => {
+  const hooks = guardHooks(guard());
+  assert.deepEqual(Object.keys(hooks), ['PreToolUse']);
+  assert.equal(hooks.PreToolUse.length, 1);
+  assert.equal(hooks.PreToolUse[0].matcher, '');
+  assert.equal(hooks.PreToolUse[0].hooks.length, 1);
+  assert.equal(typeof hooks.PreToolUse[0].hooks[0], 'function');
+
+  const options = guardRunOptions(guard());
+  assert.equal(typeof options.toolPolicy, 'function');
+  assert.equal(options.toolHooks.PreToolUse.length, 1);
+});
+
+test('the hook answers ask for risky calls, including the ones the CLI would allow by itself', async () => {
+  const risky: Array<[string, unknown, RegExp]> = [
+    ['Read', { file_path: `${REPO}/.env` }, /a secret or credential path/],
+    ['Read', { file_path: '/home/nesar/.ssh/id_rsa' }, /a secret or credential path/],
+    ['Glob', { pattern: '**/.env*' }, /a secret or credential path/],
+    ['Grep', { pattern: 'KEY', glob: '.env*' }, /a secret or credential path/],
+    ['Grep', { pattern: 'KEY', path: '/home/nesar/.aws/credentials' }, /a secret or credential path/],
+    ['NotebookEdit', { notebook_path: `${REPO}/secrets.json` }, /a secret or credential path/],
+    ['Bash', { command: 'cat .env' }, /a secret or credential path/],
+    ['Bash', { command: 'git push origin main' }, /a risky command/],
+    ['Write', { file_path: '/etc/hosts', content: '' }, /a write outside the repository root/],
+  ];
+  for (const [toolName, toolInput, reason] of risky) {
+    const output = await runHook(preToolUse(toolName, toolInput));
+    assert.deepEqual(Object.keys(output), ['hookSpecificOutput'], `${toolName} ${JSON.stringify(toolInput)}`);
+    assert.equal(output.hookSpecificOutput.hookEventName, 'PreToolUse');
+    assert.equal(output.hookSpecificOutput.permissionDecision, 'ask', `${toolName} ${JSON.stringify(toolInput)}`);
+    assert.match(output.hookSpecificOutput.permissionDecisionReason, /^Foreman guard: /);
+    assert.match(output.hookSpecificOutput.permissionDecisionReason, reason);
+    assert.match(output.hookSpecificOutput.permissionDecisionReason, /a person must approve this call/);
+  }
+});
+
+test('the hook answers nothing for safe calls: it never allows anything by itself', async () => {
+  const safe: Array<[string, unknown]> = [
+    ['Read', { file_path: `${REPO}/src/app.ts` }],
+    ['Read', { file_path: `${REPO}/.env.example` }],
+    ['Glob', { pattern: 'src/**/*.ts' }],
+    ['Grep', { pattern: 'password', path: `${REPO}/src` }],
+    ['Bash', { command: 'git status' }],
+    ['Bash', { command: 'node --test' }],
+    ['Edit', { file_path: `${REPO}/src/app.ts`, old_string: 'a', new_string: 'b' }],
+    ['Write', { file_path: `${REPO}/docs/new.md`, content: 'x' }],
+    ['TodoWrite', { todos: [] }],
+    ['AskUserQuestion', { questions: [] }],
+    ['WebFetch', { url: 'https://example.com' }],
+  ];
+  for (const [toolName, toolInput] of safe) {
+    assert.deepEqual(await runHook(preToolUse(toolName, toolInput)), {}, `${toolName} ${JSON.stringify(toolInput)}`);
+  }
+});
+
+test('the hook follows the guard\'s own rules: a disabled outside-repo rule, another repo root', async () => {
+  const write = preToolUse('Write', { file_path: '/tmp/a.ts', content: '' });
+  assert.deepEqual(await runHook(write, { writeOutsideRepo: false }), {});
+  assert.equal((await runHook(write)).hookSpecificOutput.permissionDecision, 'ask');
+  const worktree = { repoRoot: '/mnt/dev/moveon/desk-wt/t1' };
+  assert.deepEqual(await runHook(preToolUse('Write', { file_path: '/mnt/dev/moveon/desk-wt/t1/a.ts', content: '' }), worktree), {});
+});
+
+test('a tool call the hook cannot read is asked about, and the hook never throws', async () => {
+  for (const input of [undefined, null, 'Read', 42, {}, { tool_name: '' }, { tool_name: 7, tool_input: {} }]) {
+    const output = await runHook(input);
+    assert.equal(output.hookSpecificOutput.permissionDecision, 'ask', JSON.stringify(input));
+    assert.match(output.hookSpecificOutput.permissionDecisionReason, /could not be read/);
+  }
+  // A tool call with no input at all is judged by its name alone: nothing risky about it.
+  assert.deepEqual(await runHook({ tool_name: 'TodoRead' }), {});
 });
 
 // ---------------------------------------------------------------------------------------------

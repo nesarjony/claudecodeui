@@ -470,3 +470,41 @@ test('a policy without a timeoutMessage still denies a timeout with the runtime\
   await runPrompt('ask', { toolPolicy }, 'app-session-policy-timeout-plain');
   assert.equal((await permissionAnswers()).at(-1)?.response.message, 'Permission request timed out');
 });
+
+// ---------------------------------------------------------------------------------------------
+// Host-supplied SDK hooks (`options.toolHooks`): merged into the run's own, never replacing them
+// ---------------------------------------------------------------------------------------------
+
+async function initializeHooks(): Promise<Record<string, Array<{ matcher?: string; hookCallbackIds: string[] }>>> {
+  const initializes = (await readFile(logFile, 'utf8'))
+    .split('\n')
+    .filter(Boolean)
+    .map((entry) => JSON.parse(entry))
+    .filter((entry) => entry.control === 'initialize');
+  return initializes.at(-1)?.request?.hooks ?? {};
+}
+
+test('a run without host hooks registers only its own hooks', async () => {
+  await runPrompt('hello', {}, 'app-session-hooks-none');
+  const hooks = await initializeHooks();
+  assert.deepEqual(Object.keys(hooks), ['Notification']);
+});
+
+test('host hooks join the run\'s own: Notification stays, PreToolUse is added', async () => {
+  const toolHooks = { PreToolUse: [{ matcher: '', hooks: [async () => ({})] }] };
+  const outcome = await runPrompt('hello', { toolHooks }, 'app-session-hooks-merge');
+  assert.ok(kinds(outcome).includes('turn_result'));
+  const hooks = await initializeHooks();
+  assert.deepEqual(Object.keys(hooks).sort(), ['Notification', 'PreToolUse']);
+  assert.equal(hooks.Notification.length, 1);
+  assert.equal(hooks.PreToolUse.length, 1);
+  assert.equal(hooks.PreToolUse[0].matcher, '');
+  assert.equal(hooks.PreToolUse[0].hookCallbackIds.length, 1);
+});
+
+test('host hooks for an event the run already hooks are appended after its own matchers', async () => {
+  const toolHooks = { Notification: [{ matcher: 'extra', hooks: [async () => ({})] }] };
+  await runPrompt('hello', { toolHooks }, 'app-session-hooks-append');
+  const hooks = await initializeHooks();
+  assert.deepEqual(hooks.Notification.map((matcher) => matcher.matcher), ['', 'extra']);
+});

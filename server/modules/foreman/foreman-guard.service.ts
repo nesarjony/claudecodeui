@@ -127,11 +127,49 @@ function textOf(input: unknown, record: Record<string, unknown>): string {
   return typeof input === 'string' ? input : JSON.stringify(input ?? '');
 }
 
+/** `{a,b}` alternatives written out (one level, bounded), so `*.{pem,key}` is seen as `*.pem` and `*.key`. */
+function expandBraces(glob: string, budget = { left: 64 }): string[] {
+  const open = glob.indexOf('{');
+  const close = open === -1 ? -1 : glob.indexOf('}', open);
+  if (open === -1 || close === -1 || budget.left <= 0) {
+    return [glob];
+  }
+  const head = glob.slice(0, open);
+  const tail = glob.slice(close + 1);
+  return glob.slice(open + 1, close).split(',').flatMap((option) => {
+    budget.left -= 1;
+    return expandBraces(head + option + tail, budget);
+  });
+}
+
 /**
- * Is this tool call one a person must approve? Pure and deterministic; the same rules as Foreman's `classifyToolUse`.
+ * The forms a file glob can take once its wildcards are filled in. The secret patterns end in a lookahead for the end of
+ * a name, so `**\/.env*` or `.env.*` would never match as written; with braces written out and each wildcard run
+ * dropped or replaced by a letter, the names such a glob can match are seen too. Character classes (`[v]`) are not
+ * expanded.
+ */
+function globVariants(glob: string): string[] {
+  return expandBraces(glob).flatMap((option) => [
+    option,
+    option.replace(/[*?]+/g, ''),
+    option.replace(/[*?]+/g, 'x'),
+  ]);
+}
+
+/** The values of a call that are file globs: `glob` (Grep's file filter) and Glob's `pattern`. Grep's `pattern` is a content regex. */
+function globValuesOf(toolName: string, record: Record<string, unknown>): string[] {
+  const values = [record.glob, toolName === 'Glob' ? record.pattern : undefined];
+  return values.filter((value): value is string => typeof value === 'string');
+}
+
+/**
+ * Is this tool call one a person must approve? Pure and deterministic; Foreman's `classifyToolUse` rules, plus the file
+ * globs of Glob and Grep (below).
  *
  * - Bash: the command matches a risky pattern, or mentions a secret path.
  * - Any tool: a path argument (`file_path`, `path`, `notebook_path`) matches a secret pattern.
+ * - Glob (`pattern`) and any tool's `glob`: the glob can match a secret file name, wildcards included. Foreman's own
+ *   classifier does not look at these; a person decides on those calls either way.
  * - Write, Edit, MultiEdit, NotebookEdit: the target is outside the repo root (when `writeOutsideRepo`).
  */
 // Consumed by createToolPolicy below and by the guard tests.
@@ -167,6 +205,16 @@ export function classifyToolUse(call: { toolName: string; input: unknown }, guar
       const target = path.resolve(root, value);
       if (target !== root && !target.startsWith(root.endsWith(path.sep) ? root : root + path.sep)) {
         return { risky: true, category: 'outside_repo', matched: target };
+      }
+    }
+  }
+
+  for (const glob of globValuesOf(call.toolName, record)) {
+    for (const variant of globVariants(glob)) {
+      for (const pattern of guard.secretPatterns) {
+        if (pattern.test(variant)) {
+          return { risky: true, category: 'secret', matched: pattern.source };
+        }
       }
     }
   }
@@ -208,6 +256,55 @@ export function createToolPolicy(guard: CompiledForemanGuard): ForemanToolPolicy
       return { decision: 'ask', category: 'command', matched: 'classifier-error', ...waiting(toolName) };
     }
   };
+}
+
+/** The SDK hooks a guarded run adds to its own (`options.toolHooks`): `{ PreToolUse: [{ matcher, hooks }] }`. */
+export type ForemanGuardHooks = {
+  PreToolUse: Array<{ matcher: string; hooks: Array<(input: unknown) => Promise<Record<string, unknown>>> }>;
+};
+
+const CATEGORY_DESCRIPTIONS: Record<ForemanGuardCategory, string> = {
+  command: 'a risky command',
+  secret: 'a secret or credential path',
+  outside_repo: 'a write outside the repository root',
+};
+
+/**
+ * The PreToolUse hook of a guarded run. The CLI settles some calls by itself (reads inside the project, read-only shell
+ * commands) and never asks `canUseTool` about them, so the guard would not see a `Read` of `.env`. This hook runs before
+ * that decision and classifies every call with the same policy `canUseTool` uses. A risky call answers
+ * `permissionDecision: 'ask'`, which sends it down the CLI's prompt path, that is to `canUseTool`, where the guard holds
+ * it for a person. A safe call answers nothing: the hook never allows anything by itself. Never throws; an input it cannot
+ * read is asked about.
+ */
+// Consumed by guardRunOptions below and by the guard tests.
+export function guardHooks(guard: CompiledForemanGuard): ForemanGuardHooks {
+  const policy = createToolPolicy(guard);
+  const ask = (reason: string) => ({
+    hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask', permissionDecisionReason: reason },
+  });
+  return {
+    PreToolUse: [{
+      matcher: '',
+      hooks: [async (input) => {
+        const record = asRecord(input);
+        if (typeof record.tool_name !== 'string' || !record.tool_name) {
+          return ask('Foreman guard: the tool call could not be read, so a person must approve it.');
+        }
+        const verdict = policy(record.tool_name, record.tool_input);
+        if (verdict.decision !== 'ask') {
+          return {};
+        }
+        return ask(`Foreman guard: ${CATEGORY_DESCRIPTIONS[verdict.category]} (${verdict.matched}); a person must approve this call.`);
+      }],
+    }],
+  };
+}
+
+/** What a guarded run hands to the Claude runtime: the policy for `canUseTool` and the hook that feeds it. */
+// Consumed by the sessions service when it starts or resumes a guarded run.
+export function guardRunOptions(guard: CompiledForemanGuard): { toolPolicy: ForemanToolPolicy; toolHooks: ForemanGuardHooks } {
+  return { toolPolicy: createToolPolicy(guard), toolHooks: guardHooks(guard) };
 }
 
 function invalid(message: string): AppError {

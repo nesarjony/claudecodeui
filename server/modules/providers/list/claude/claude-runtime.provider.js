@@ -168,6 +168,13 @@ function consultToolPolicy(policy, toolName, input) {
   }
 }
 
+// Adds host-supplied SDK hooks (`options.toolHooks`, event -> matchers) to the run's own; matchers are appended, none replaced.
+function mergeSdkHooks(base, extra) {
+  const merged = { ...base };
+  for (const [event, matchers] of Object.entries(extra)) merged[event] = [...(merged[event] || []), ...matchers];
+  return merged;
+}
+
 function waitForToolApproval(requestId, options = {}) {
   const { timeoutMs = TOOL_APPROVAL_TIMEOUT_MS, signal, onCancel, metadata } = options;
 
@@ -1203,6 +1210,9 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
       return { behavior: 'deny', message: decision.message ?? 'User denied tool use' };
     };
 
+    // A guarded run's PreToolUse hook joins the hooks above. It routes risky calls the CLI would allow by itself to canUseTool.
+    if (options.toolHooks) sdkOptions.hooks = mergeSdkHooks(sdkOptions.hooks, options.toolHooks);
+
     let heldPrompt = createHeldPromptStream(promptMessages);
     releasePromptStream = heldPrompt.release;
     pushPromptMessages = heldPrompt.push;
@@ -1212,6 +1222,7 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
         options: sdkOptions
       });
     } catch (hookError) {
+      if (options.toolHooks) throw hookError; // a guarded run must not start without its guard hook
       // Older/newer SDK versions may not accept hook shapes yet.
       // Keep notification behavior operational via runtime events even if hook registration fails.
       console.warn('Failed to initialize Claude query with hooks, retrying without hooks:', hookError?.message || hookError);

@@ -11,7 +11,7 @@ import { applyModelBilling, splitModelBilling } from '@/modules/foreman/foreman-
 import {
   assertGuardCompatiblePermissionMode,
   compileGuard,
-  createToolPolicy,
+  guardRunOptions,
   type ForemanGuardConfig,
 } from '@/modules/foreman/foreman-guard.service.js';
 import type { ForemanSessionStatus, ForemanSessionStateService } from '@/modules/foreman/foreman-session-state.service.js';
@@ -318,7 +318,7 @@ export function createForemanSessionsService(deps: ForemanBridgeDependencies) {
         effort: session.effort ?? undefined,
         permissionMode,
         sessionSummary: clipText(text, MAX_SUMMARY_LENGTH),
-        ...(guard ? { toolPolicy: createToolPolicy(compileGuard(guard, session.project_path)) } : {}),
+        ...(guard ? guardRunOptions(compileGuard(guard, session.project_path)) : {}),
       },
     });
     return { interrupted };
@@ -498,7 +498,7 @@ export function createForemanSessionsService(deps: ForemanBridgeDependencies) {
           effort: input.effort,
           permissionMode: input.permissionMode,
           sessionSummary: clipText(input.title ?? input.prompt, MAX_SUMMARY_LENGTH),
-          ...(compiledGuard ? { toolPolicy: createToolPolicy(compiledGuard) } : {}),
+          ...(compiledGuard ? guardRunOptions(compiledGuard) : {}),
         },
       });
 
