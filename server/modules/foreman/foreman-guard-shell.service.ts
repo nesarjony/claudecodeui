@@ -404,6 +404,8 @@ const INLINE_DANGER = [
   /(JSON\.stringify\(\s*process\.env|Object\.(entries|keys|values)\(\s*process\.env|console\.log\(\s*process\.env\s*\)|dict\(\s*os\.environ|os\.environ\b(\.(items|copy|keys|values)|\s*\))|print\(\s*os\.environ|\bENV\.to_h|\$_ENV|getenv\(\s*\))/,
   /\b(git\s+(-\S+\s+)*push|npm\s+publish|rm\s+-[a-z]*[rf]|DROP\s+(TABLE|DATABASE)|curl\s+[^|;]*(-d|--data|-F|-T)\b)/i,
   /\b(eval|exec)\s*\(\s*(base64|atob|Buffer\.from|b64decode|codecs\.decode|zlib|decode)/i,
+  /(__import__|\bimportlib\b|\bcompile\s*\(|\bnew\s+Function\s*\(|\bFunction\s*\(|\beval\s*\(|\bexec\s*\(|\batob\s*\(|\bb64decode\b|\bbase64\b)/,
+  /(process\.env|os\.environ|\bENV\b|getenv|System\.getenv)\W[^;\n]{0,40}(KEY|TOKEN|SECRET|PASSW|CREDENTIAL|AUTH)/i,
 ]
 
 const SQL_DANGER = /\b(DROP\s+\w+|TRUNCATE\b|DELETE\s+FROM\b|ALTER\s+(TABLE|DATABASE|ROLE|USER|SYSTEM)\b[^;]*\b(DROP|RENAME|OWNER)|GRANT\b|REVOKE\b|FLUSH(ALL|DB)\b|dropDatabase|\.drop\(\)|deleteMany\(\s*\{\s*\}\s*\)|UPDATE\s+\S+\s+SET\b(?![^;]*\bWHERE\b))/i
@@ -452,6 +454,7 @@ export function writeTargetLabel(target: string, repoRoot: string, home: string,
   const inside = abs === root || abs.startsWith(root.endsWith(path.sep) ? root : root + path.sep)
   if (inside) {
     const rel = path.relative(root, abs)
+    if (/(^|\/)(node_modules|\.venv|venv|site-packages)(\/|$)/.test(rel)) return `an installed dependency (${rel}): patching it can make any check pass`
     if (/^\.git\/(hooks|config|info\/attributes|modules)(\/|$)/.test(rel) || /^\.claude(\/|$)/.test(rel) || rel === '.mcp.json' || /^\.git\/.*\bpackedglobs?$/.test(rel)) return `a protected file of the repository (${rel})`
     return null
   }
@@ -544,6 +547,7 @@ function judgeCmd(c: Cmd, ctx: Ctx): ShellVerdict {
   const dynamicVerb = c.dynamic[i] === true || (words[i]!.includes('$') && !/^\$\{?HOME\}?/.test(words[i]!))
   let verb = base(words[i]!)
   if (dynamicVerb) return label('a command whose name is built at run time')
+  if (/[{*?]/.test(words[i]!) || /^\[.*\]/.test(words[i]!) && words[i] !== '[' && words[i] !== '[[') return label('a command name built with a wildcard or brace expansion')
   const env = new Map(assigned)
   for (;;) {
     verb = base(next() ?? '')
@@ -551,8 +555,13 @@ function judgeCmd(c: Cmd, ctx: Ctx): ShellVerdict {
     if (verb === 'env') {
       i += 1
       while (i < words.length && (words[i]!.startsWith('-') || ASSIGN.test(words[i]!))) {
-        if (ASSIGN.test(words[i]!)) env.set(words[i]!.slice(0, words[i]!.indexOf('=')), words[i]!.slice(words[i]!.indexOf('=') + 1))
-        i += 1
+        const o = words[i]!
+        if (ASSIGN.test(o)) env.set(o.slice(0, o.indexOf('=')), o.slice(o.indexOf('=') + 1))
+        // env -S "cmd args": the next word is a command line.
+        if ((o === '-S' || o === '--split-string' || /^-[A-Za-z]*S$/.test(o)) && words[i + 1] !== undefined) return nested(words[i + 1]!, ctx, 'env -S')
+        if (o.startsWith('--split-string=')) return nested(o.slice(15), ctx, 'env -S')
+        // Options that take a value: the value is not the command.
+        i += ['-u', '--unset', '-C', '--chdir', '-P'].includes(o) ? 2 : 1
       }
       if (i >= words.length) return label('env (prints every environment variable)')
       continue
@@ -565,13 +574,15 @@ function judgeCmd(c: Cmd, ctx: Ctx): ShellVerdict {
         i += 1
         if (['-I', '-L', '-n', '-P', '-d', '-s', '-E', '-a'].includes(o)) i += 1
       }
-      if (i >= words.length) return label('xargs with no command (runs echo on its input)') // harmless but cannot be judged
+      if (i >= words.length) return redirectVerdict(c, ctx)
       continue
     }
     if (WRAPPERS.has(verb)) {
       i += 1
       while (i < words.length && (words[i]!.startsWith('-') || /^\d+[smhd]?$/.test(words[i]!))) i += 1
-      if (i >= words.length) return { risky: false }
+      // flock LOCKFILE cmd: the lock file is not the command.
+      if (verb === 'flock' && i < words.length) i += 1
+      if (i >= words.length) return redirectVerdict(c, ctx)
       continue
     }
     break
@@ -587,7 +598,7 @@ function judgeCmd(c: Cmd, ctx: Ctx): ShellVerdict {
 
   // ---- script indirection and shells
   if (SHELLS.has(verb) || verb === 'source' || verb === '.' || verb === 'eval' || INTERP.test(verb) || (raw.includes('/') && !raw.startsWith('-') && !['/bin/echo', '/usr/bin/env'].includes(raw))) {
-    const v = judgeScriptRun(verb, raw, args, c, ctx)
+    const v = judgeScriptRun(verb, raw, args, c, ctx, dynArgs)
     if (v) return v
   }
 
@@ -728,6 +739,7 @@ function judgeCmd(c: Cmd, ctx: Ctx): ShellVerdict {
     case 'hcloud':
     case 'scw':
     case 'openstack':
+      if (/\b(print-access-token|print-identity-token|get-access-token|get-session-token|get-login-password|get-authorization-token|get-secret-value|get-parameters?(-by-path)?|export-credentials|configure\s+get|auth\s+(login|list|token))\b/i.test(args.join(' '))) return label(`${verb} (prints a credential or token)`)
       if (args.some(a => /^(delete|remove|rm|rb|terminate|destroy|deploy|publish|put|create|update|sync|cp|mv|push|apply|purge|drop|detach|modify|invoke|send|attach|empty|restore|rotate|revoke|grant|register|set|reset|start|stop|reboot|run|import|export|enable|disable|add|write|upload|copy|move)$/i.test(a))) return label(`${verb} with a changing subcommand`)
       return { risky: false }
     case 'vercel':
@@ -764,6 +776,67 @@ function judgeCmd(c: Cmd, ctx: Ctx): ShellVerdict {
       if (/^(upload|publish|push|yank|owner|login|logout|deploy|register|release)$/i.test(sub)) return label(`${verb} ${sub} (publishes a package)`)
       return { risky: false }
     }
+    case 'awk':
+    case 'gawk':
+    case 'mawk':
+    case 'nawk': {
+      const danger = scriptDanger(args.join(' '))
+      if (danger) return label(`${verb} program: ${danger}`)
+      break
+    }
+    case 'tar':
+      if (args.some(a => /^--(checkpoint-action|to-command|use-compress-program|rsh-command)\b/.test(a) || /^-I$/.test(a))) return label('tar option that runs a command')
+      break
+    case 'vim':
+    case 'vi':
+    case 'nvim':
+    case 'ex':
+    case 'ed':
+    case 'emacs':
+      if (args.some(a => a === '-c' || a === '--cmd' || a === '-S' || a === '--eval' || a === '--execute' || /^\+/.test(a)) || (verb === 'ed' && c.heredoc !== undefined)) return label(`${verb} with a command to run`)
+      break
+    case 'ping':
+    case 'dig':
+    case 'nslookup':
+    case 'host':
+    case 'traceroute':
+    case 'whois':
+    case 'drill':
+      if (dynArgs.some(Boolean)) return label(`${verb} with data built at run time in the name (a way to send data out)`)
+      break
+    case 'fallocate':
+    case 'mkfifo':
+    case 'mknod':
+      return label(`${verb} (fills a disk or makes device files)`)
+    case 'php':
+      if (args.includes('-S')) return label('php -S (serves files to the network)')
+      break
+    case 'caddy':
+    case 'miniserve':
+    case 'serve':
+    case 'http-server':
+    case 'live-server':
+    case 'browser-sync':
+      return label(`${verb} (serves files to the network)`)
+    case 'security':
+      if (args.some(a => /^(find-.*|dump-keychain|export|show-keychain-info|list-keychains)$/.test(a))) return label('security (reads the keychain)')
+      break
+    case 'secret-tool':
+    case 'op':
+    case 'bw':
+    case 'lpass':
+    case 'doppler':
+    case 'keyctl':
+    case 'kwallet-query':
+    case 'pass':
+      return label(`${verb} (reads a secret store)`)
+    case 'vault':
+      if (!/^(version|status|--version|-v|help)$/.test(options(args).pos[0] ?? '')) return label('vault (reads or changes secrets)')
+      return { risky: false }
+    case 'gpg':
+    case 'gpg2':
+      if (args.some(a => /^--(export-secret-keys|export-secret-subkeys|export-ownertrust|decrypt)$/.test(a) || a === '-d')) return label(`${verb} (exports or decrypts secrets)`)
+      break
     case 'ln': {
       const o = options(args)
       const target = o.pos[0]
@@ -960,9 +1033,10 @@ function judgePackageManager(verb: string, args: string[], ctx: Ctx): ShellVerdi
   }
   void o
   const sub = cleaned[0] ?? ''
-  if (verb === 'npx' || verb === 'pnpx' || verb === 'bunx') return { risky: false }
+  if (verb === 'npx' || verb === 'pnpx' || verb === 'bunx') return /^(serve|http-server|live-server|browser-sync|localtunnel|ngrok|ngrok-cli|cloudflared|local-web-server|vite-preview)$/.test(cleaned.find(a => !a.startsWith('-')) ?? '') ? label(`${verb} ${cleaned[0]} (serves files to the network)`) : { risky: false }
   if (PM_PUBLISH.has(sub)) return label(`${verb} ${sub} (publishes or changes account settings)`)
   if (sub === 'config' && /\b(set|delete|edit|fix)\b/.test(args.join(' '))) return label(`${verb} config set`)
+  if (sub === 'config' && /\b(get|list|ls)\b/.test(args.join(' ')) && /auth|token|password|_auth/i.test(args.join(' '))) return label(`${verb} config get of a credential`)
   let script: string | undefined
   if (/^(run|run-script|rum|urn)$/.test(sub)) script = cleaned[1]
   else if (/^(test|t|tst|start|stop|restart)$/.test(sub)) script = sub === 't' || sub === 'tst' ? 'test' : sub
@@ -1027,8 +1101,8 @@ function judgeMake(args: string[], ctx: Ctx): ShellVerdict {
 }
 
 /** `bash x.sh`, `./x.sh`, `source x`, `eval "..."`, `python x.py`, `node -e "..."`, `bash` with a script on stdin. Returns null when this is not a script run. */
-function judgeScriptRun(verb: string, raw: string, args: string[], c: Cmd, ctx: Ctx): ShellVerdict | null {
-  if (verb === 'eval') return nested(args.join(' '), ctx, 'eval')
+function judgeScriptRun(verb: string, raw: string, args: string[], c: Cmd, ctx: Ctx, dynArgs: boolean[]): ShellVerdict | null {
+  if (verb === 'eval') return dynArgs.some(Boolean) ? label('eval of a command built at run time') : nested(args.join(' '), ctx, 'eval')
   const isShell = SHELLS.has(verb) || verb === 'source' || verb === '.' || verb === 'busybox'
   const isInterp = INTERP.test(verb)
   const direct = !isShell && !isInterp // `./run.sh`, `scripts/ship.sh`
@@ -1038,6 +1112,7 @@ function judgeScriptRun(verb: string, raw: string, args: string[], c: Cmd, ctx: 
   const codeFlag = o.findIndex(a => (isShell ? a === '-c' || /^-[a-zA-Z]*c$/.test(a) : /^(-e|-c|-p|-r|-E|--eval|--exec|--print)$/.test(a)))
   if (codeFlag >= 0 && o[codeFlag + 1] !== undefined) {
     const code = o[codeFlag + 1]!
+    if (isShell && dynArgs[codeFlag + 1]) return label(`${verb} -c with a script built at run time`)
     if (isShell) return nested(code, ctx, `${verb} -c`)
     const danger = scriptDanger(code)
     if (danger) return label(`${verb} inline code: ${danger}`)
@@ -1052,7 +1127,7 @@ function judgeScriptRun(verb: string, raw: string, args: string[], c: Cmd, ctx: 
     for (let k = 0; k < o.length; k += 1) {
       const a = o[k]!
       if (a === '-m' || a === '-W' || a === '-X' || a === '--require' || a === '--import' || a === '-r' || a === '--loader') {
-        if (a === '-m') return { risky: false } // a module run by name
+        if (a === '-m') return /^(http\.server|SimpleHTTPServer|smtpd|pyftpdlib)$/.test(o[k + 1] ?? '') ? label(`${verb} -m ${o[k + 1]} (serves files to the network)`) : { risky: false } // a module run by name
         k += 1
         continue
       }
@@ -1071,6 +1146,7 @@ function judgeScriptRun(verb: string, raw: string, args: string[], c: Cmd, ctx: 
     if (c.pipeIn) return label(`a pipe into ${verb} (runs whatever arrives)`)
     return null
   }
+  if (/^\/dev\/fd\/\d+$/.test(file) && (isShell || direct)) return label(`${verb} runs a script produced by another command (process substitution)`)
   const abs = resolveWord(file, ctx)
   const body = readScript(file, ctx)
   if (body === null) {
@@ -1136,6 +1212,7 @@ export function bashRisk(command: string, scope: ShellScope): ShellVerdict {
   // The text of the command is judged as a whole first: secret variables and process environments need no parsing.
   if (SECRET_VAR.test(command)) return label(`the value of a secret-named variable (${SECRET_VAR.exec(command)![0]})`, 'secret')
   if (SQL_DANGER.test(command) && /\b(psql|mysql|mariadb|sqlite3?|mongosh?|redis-cli|cqlsh|clickhouse-client|duckdb)\b/i.test(command)) return label('a destructive SQL or database statement')
+  if (/:\s*\(\s*\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:/.test(command)) return label('a fork bomb')
   try {
     return judge(command, ctx)
   } catch {
