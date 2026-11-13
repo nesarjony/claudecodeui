@@ -1,3 +1,4 @@
+import { realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
 
 import {
@@ -48,6 +49,12 @@ export type ForemanGuardConfig = {
    * A guarded session defaults to 30 minutes, long enough for a person; other sessions keep the runtime's own window.
    */
   approvalTimeoutMs?: number;
+  /**
+   * Absolute directories where a Write, Edit, MultiEdit or NotebookEdit of a plain file is NOT an `outside_repo` hold: Foreman's
+   * per-task scratch directory and `/tmp`. Secrets still hold (the secret classes run first), and so does a dotfile or a file in a
+   * dot-directory below the allowed directory. Symlinks are resolved first. Absent: every write outside `repoRoot` is held.
+   */
+  allowWriteDirs?: string[];
 };
 
 /** A guard whose patterns are compiled; what the classifier runs on. */
@@ -57,6 +64,8 @@ export type CompiledForemanGuard = {
   writeOutsideRepo: boolean;
   repoRoot: string | null;
   approvalTimeoutMs: number;
+  /** Directories where a plain, non-secret, non-dotfile write outside the repo root is allowed (see `ForemanGuardConfig.allowWriteDirs`). */
+  allowWriteDirs: string[];
   /** Patterns that were not valid regular expressions and are therefore not enforced. */
   skippedPatterns: number;
   /** The home directory the built-in secret classes protect (`~/.ssh`, `~/.config/**`); captured when the guard is compiled. */
@@ -123,6 +132,59 @@ const MAX_APPROVAL_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 const MAX_PATTERNS = 200;
 const MAX_PATTERN_LENGTH = 1000;
 const MAX_REPO_ROOT_LENGTH = 4096;
+const MAX_ALLOW_WRITE_DIRS = 20;
+
+/** `target` with symlinks resolved; a path that does not exist yet resolves through its nearest existing directory. */
+function realish(target: string): string {
+  let head = path.resolve(target);
+  const tail: string[] = [];
+  for (;;) {
+    try {
+      const real = realpathSync(head);
+      return tail.length ? path.resolve(real, ...tail.reverse()) : real;
+    } catch {
+      const parent = path.dirname(head);
+      if (parent === head) {
+        return path.resolve(target);
+      }
+      tail.push(path.basename(head));
+      head = parent;
+    }
+  }
+}
+
+function isPlainFileOrMissing(target: string): boolean {
+  try {
+    return statSync(target).isFile();
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Is writing `target` allowed by one of the guard's `allowWriteDirs`? The file is strictly inside one of them (symlinks resolved),
+ * plain, and no part of its path below that directory is a dot-name. Secrets are judged before this is asked.
+ */
+function writeAllowedByDirs(target: string, dirs: readonly string[]): boolean {
+  const real = realish(target);
+  for (const dir of dirs) {
+    const root = realish(dir);
+    if (root === path.sep) {
+      continue;
+    }
+    const rel = path.relative(root, real);
+    if (rel === '' || rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
+      continue;
+    }
+    if (rel.split(path.sep).some((part) => part.startsWith('.'))) {
+      continue;
+    }
+    if (isPlainFileOrMissing(real)) {
+      return true;
+    }
+  }
+  return false;
+}
 
 function compile(patterns: readonly string[]): { compiled: RegExp[]; skipped: number } {
   const compiled: RegExp[] = [];
@@ -144,14 +206,22 @@ function compile(patterns: readonly string[]): { compiled: RegExp[]; skipped: nu
 export function compileGuard(config: ForemanGuardConfig, fallbackRepoRoot: string | null, options: { home?: string } = {}): CompiledForemanGuard {
   const risky = compile(config.riskyPatterns);
   const secret = compile(config.secretPatterns);
+  const home = path.resolve(options.home ?? resolveHome());
+  // A directory that holds the home directory would allow `~/.bashrc`: never honoured, whatever the caller sent.
+  const holdsHome = (dir: string) => {
+    const rel = path.relative(realish(dir), realish(home));
+    return rel === '' || !(rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel));
+  };
+  const allowWriteDirs = (config.allowWriteDirs ?? []).filter((dir) => path.isAbsolute(dir) && path.resolve(dir) !== path.sep && !holdsHome(dir));
   return {
     riskyPatterns: risky.compiled,
     secretPatterns: secret.compiled,
     writeOutsideRepo: config.writeOutsideRepo,
     repoRoot: config.repoRoot ?? fallbackRepoRoot,
     approvalTimeoutMs: config.approvalTimeoutMs ?? DEFAULT_GUARD_APPROVAL_TIMEOUT_MS,
+    allowWriteDirs,
     skippedPatterns: risky.skipped + secret.skipped,
-    home: path.resolve(options.home ?? resolveHome()),
+    home,
   };
 }
 
@@ -212,7 +282,8 @@ function pathValuesOf(record: Record<string, unknown>): string[] {
  * - Grep and Glob: the `path` they search from is a secrets directory or holds one (`~`, `~/.config`, `/`), or the
  *   file glob they carry (`glob`, `include`, Glob's `pattern`) can match a secret file name, wildcards included, with
  *   `path` read as the glob's base. Grep's own `pattern` is a content regex and is not judged.
- * - Write, Edit, MultiEdit, NotebookEdit: the target is outside the repo root (when `writeOutsideRepo`).
+ * - Write, Edit, MultiEdit, NotebookEdit: the target is outside the repo root (when `writeOutsideRepo`), unless it is a plain,
+ *   non-secret, non-dotfile file inside one of the guard's `allowWriteDirs` (Foreman's per-task scratch directory, `/tmp`).
  *
  * Foreman's own classifier knows only the first two points (patterns over paths and commands), so it can judge a call
  * safe that this one holds; the call is held here either way.
@@ -256,6 +327,10 @@ export function classifyToolUse(call: { toolName: string; input: unknown }, guar
       // The CLI expands `~` and `$HOME` in a path argument, so a write to `~/.bashrc` is not inside the repo.
       const target = path.resolve(root, expandHome(value, guard.home));
       if (target !== root && !target.startsWith(root.endsWith(path.sep) ? root : root + path.sep)) {
+        // A plain file in an allowed write directory (Foreman's scratch directory, /tmp) is not a write that leaves the repo's rules.
+        if (guard.allowWriteDirs.length > 0 && writeAllowedByDirs(target, guard.allowWriteDirs)) {
+          continue;
+        }
         return { risky: true, category: 'outside_repo', matched: target };
       }
     }
@@ -443,6 +518,17 @@ export function parseGuardConfig(raw: unknown): ForemanGuardConfig | undefined {
     }
     repoRoot = body.repoRoot.trim();
   }
+  let allowWriteDirs: string[] | undefined;
+  if (body.allowWriteDirs !== undefined && body.allowWriteDirs !== null) {
+    if (
+      !Array.isArray(body.allowWriteDirs)
+      || body.allowWriteDirs.length > MAX_ALLOW_WRITE_DIRS
+      || body.allowWriteDirs.some((dir) => typeof dir !== 'string' || !dir.trim().startsWith('/') || dir.length > MAX_REPO_ROOT_LENGTH)
+    ) {
+      throw invalid(`guard.allowWriteDirs must be an array of at most ${MAX_ALLOW_WRITE_DIRS} absolute paths.`);
+    }
+    allowWriteDirs = (body.allowWriteDirs as string[]).map((dir) => dir.trim());
+  }
   const approvalTimeoutMs = body.approvalTimeoutMs ?? DEFAULT_GUARD_APPROVAL_TIMEOUT_MS;
   if (
     typeof approvalTimeoutMs !== 'number'
@@ -459,6 +545,7 @@ export function parseGuardConfig(raw: unknown): ForemanGuardConfig | undefined {
     // Unspecified means the stricter choice.
     writeOutsideRepo: body.writeOutsideRepo !== false,
     ...(repoRoot ? { repoRoot } : {}),
+    ...(allowWriteDirs ? { allowWriteDirs } : {}),
     approvalTimeoutMs,
   };
 }

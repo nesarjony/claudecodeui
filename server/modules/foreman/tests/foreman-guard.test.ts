@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 
 import {
@@ -589,4 +592,76 @@ test('modes the CLI settles on its own are refused for a guarded session', () =>
   for (const mode of ['default', 'plan', undefined]) {
     assert.doesNotThrow(() => assertGuardCompatiblePermissionMode(mode));
   }
+});
+
+// ---------------------------------------------------------------------------------------------
+// allowWriteDirs: Foreman's per-task scratch directory and /tmp need no prompt
+// ---------------------------------------------------------------------------------------------
+
+test('allowWriteDirs: a plain file in an allowed directory is not an outside_repo hold; everything else outside still is', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'fm-guard-allow-'));
+  try {
+    const scratch = path.join(root, 'scratch', 'task-1');
+    const elsewhere = path.join(root, 'elsewhere');
+    mkdirSync(scratch, { recursive: true });
+    mkdirSync(elsewhere);
+    symlinkSync(elsewhere, path.join(scratch, 'link-out'));
+    writeFileSync(path.join(scratch, 'plain.md'), 'x');
+    const g = guard({ allowWriteDirs: [scratch, '/tmp'] });
+    assert.deepEqual(g.allowWriteDirs, [scratch, '/tmp']);
+
+    const verdictFor = (toolName: string, file_path: string) => classifyToolUse({ toolName, input: { file_path, content: 'x' } }, g);
+    for (const tool of ['Write', 'Edit', 'MultiEdit']) {
+      assert.deepEqual(verdictFor(tool, path.join(scratch, 'notes.md')), { risky: false }, tool);
+      assert.deepEqual(verdictFor(tool, '/tmp/desk-t1-status-filter.md'), { risky: false }, tool);
+    }
+    assert.deepEqual(classifyToolUse({ toolName: 'NotebookEdit', input: { notebook_path: path.join(scratch, 'n.ipynb') } }, g), { risky: false });
+    assert.deepEqual(verdictFor('Write', path.join(scratch, 'plain.md')), { risky: false });
+    assert.deepEqual(verdictFor('Write', path.join(scratch, 'deeper', 'new', 'f.md')), { risky: false });
+
+    const held = [
+      '/tmp/.env', '/tmp/id_rsa', '/tmp/k.pem', '/tmp/credentials.json', path.join(scratch, '.hidden'), '/tmp/.cache/x.txt',
+      '/etc/hosts', '/home/nesar/.bashrc', '/home/nesar/notes.md', '/tmp/../etc/passwd', '/tmp', scratch,
+    ];
+    for (const target of held) {
+      assert.equal(verdictFor('Write', target).risky, true, target);
+    }
+    assert.equal(verdictFor('Write', '/tmp/.env').risky && (verdictFor('Write', '/tmp/.env') as { category: string }).category, 'secret');
+    assert.equal((verdictFor('Write', '/etc/hosts') as { category: string }).category, 'outside_repo');
+    // A symlink inside the scratch directory that leads out of it is judged by where it leads (here the only allowed directory is the scratch one).
+    const scratchOnly = guard({ allowWriteDirs: [scratch] });
+    const viaLink = classifyToolUse({ toolName: 'Write', input: { file_path: path.join(scratch, 'link-out', 'x.txt'), content: 'x' } }, scratchOnly);
+    assert.equal(viaLink.risky && viaLink.category, 'outside_repo');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('allowWriteDirs: without it every write outside the repo is held, and a directory that holds the home directory is dropped', () => {
+  assert.equal(classifyToolUse({ toolName: 'Write', input: { file_path: '/tmp/a.md', content: '' } }, guard()).risky, true);
+  assert.deepEqual(guard().allowWriteDirs, []);
+  const compiled = compileGuard(config({ allowWriteDirs: ['/', '/home', '/home/nesar', 'relative/dir', '/tmp'] }), REPO, { home: '/home/nesar' });
+  assert.deepEqual(compiled.allowWriteDirs, ['/tmp']);
+  assert.equal(classifyToolUse({ toolName: 'Write', input: { file_path: '/home/nesar/notes.md', content: '' } }, compiled).risky, true);
+  assert.equal(classifyToolUse({ toolName: 'Write', input: { file_path: '/home/nesar/.bashrc', content: '' } }, compiled).risky, true);
+});
+
+test('allowWriteDirs: the tool policy and the PreToolUse hook allow a scratch write without a prompt', async () => {
+  const g = guard({ allowWriteDirs: ['/tmp/foreman-scratch/task-1', '/tmp'] });
+  const policy = createToolPolicy(g);
+  assert.deepEqual(policy('Write', { file_path: '/tmp/foreman-scratch/task-1/notes.md', content: 'x' }), { decision: 'allow' });
+  assert.equal(policy('Write', { file_path: '/home/nesar/.bashrc', content: 'x' }).decision, 'ask');
+  assert.equal(policy('Write', { file_path: '/tmp/.env', content: 'x' }).decision, 'ask');
+  const hook = guardHooks(g).PreToolUse[0].hooks[0];
+  assert.deepEqual(await hook({ tool_name: 'Write', tool_input: { file_path: '/tmp/a.md', content: 'x' }, permission_mode: 'default' }), {});
+});
+
+test('parseGuardConfig: allowWriteDirs must be a short list of absolute paths, and is optional', () => {
+  const body = { enabled: true, riskyPatterns: [], secretPatterns: [] };
+  assert.equal(parseGuardConfig(body)?.allowWriteDirs, undefined);
+  assert.deepEqual(parseGuardConfig({ ...body, allowWriteDirs: ['/tmp/foreman-scratch/t1', ' /tmp '] })?.allowWriteDirs, ['/tmp/foreman-scratch/t1', '/tmp']);
+  for (const bad of ['/tmp', ['relative'], [1], Array.from({ length: 21 }, (_, i) => `/tmp/${i}`)]) {
+    assert.throws(() => parseGuardConfig({ ...body, allowWriteDirs: bad }), (error: unknown) => error instanceof AppError && error.statusCode === 400, JSON.stringify(bad));
+  }
+  assert.equal(parseGuardConfig({ enabled: false, allowWriteDirs: ['/tmp'] })?.allowWriteDirs, undefined);
 });
