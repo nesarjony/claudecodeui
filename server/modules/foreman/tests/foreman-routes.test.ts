@@ -609,6 +609,51 @@ test('POST /sessions with subscription billing sends the plain model (no @api ma
   });
 });
 
+test('POST /sessions accepts cap billing: the @cap marker goes to the run and no API key is needed', async () => {
+  await withBridge(async ({ call, world }) => {
+    world.apiKeyAvailable = false; // cap sessions never read the key file
+    const response = await call('POST', '/sessions', {
+      projectPath: '/mnt/dev/known',
+      prompt: 'Implement the form',
+      model: 'claude-sonnet-5-5',
+      billing: 'cap',
+      permissionMode: 'acceptEdits',
+      taskId: 'task-7',
+      effort: 'high',
+    });
+    assert.equal(response.status, 201);
+    assert.equal(response.body.data.billing, 'cap');
+    assert.equal(response.body.data.model, 'claude-sonnet-5-5');
+    assert.equal(world.startedTurns.length, 1);
+    assert.equal(world.startedTurns[0].options.model, 'claude-sonnet-5-5@cap');
+    assert.equal(world.startedTurns[0].options.effort, 'high');
+    // The bridge remembers the billing, so a resume after a restart is still a cap run.
+    assert.equal(world.state.get('new-1')?.billing, 'cap');
+    assert.equal(world.stateRows.get('new-1')?.billing, 'cap');
+  });
+});
+
+test('POST /sessions: an explicit billing wins over the marker of the model, and a marked model without billing keeps its marker', async () => {
+  await withBridge(async ({ call, world }) => {
+    const base = { projectPath: '/mnt/dev/known', prompt: 'hi' };
+    // @cap alone: stays cap (it must not turn into the default api-key billing).
+    const inferred = await call('POST', '/sessions', { ...base, model: 'sonnet@cap' });
+    assert.equal(inferred.body.data.billing, 'cap');
+    assert.equal(world.startedTurns[0].options.model, 'sonnet@cap');
+    // @api alone stays api-key; an unmarked model with no billing keeps the api-key default.
+    assert.equal((await call('POST', '/sessions', { ...base, model: 'sonnet@api' })).body.data.billing, 'api-key');
+    assert.equal(world.startedTurns[1].options.model, 'sonnet@api');
+    assert.equal((await call('POST', '/sessions', { ...base, model: 'sonnet' })).body.data.billing, 'api-key');
+    // An explicit billing replaces the marker rather than stacking one.
+    assert.equal((await call('POST', '/sessions', { ...base, model: 'sonnet@api', billing: 'cap' })).body.data.billing, 'cap');
+    assert.equal(world.startedTurns[3].options.model, 'sonnet@cap');
+    assert.equal((await call('POST', '/sessions', { ...base, model: 'sonnet@cap', billing: 'subscription' })).body.data.billing, 'subscription');
+    assert.equal(world.startedTurns[4].options.model, 'sonnet');
+    assert.equal((await call('POST', '/sessions', { ...base, model: 'sonnet@cap', billing: 'api-key' })).body.data.billing, 'api-key');
+    assert.equal(world.startedTurns[5].options.model, 'sonnet@api');
+  });
+});
+
 test('POST /sessions rejects bad input without starting anything', async () => {
   await withBridge(async ({ call, world }) => {
     const valid = { projectPath: '/mnt/dev/known', prompt: 'do it' };
@@ -619,6 +664,10 @@ test('POST /sessions rejects bad input without starting anything', async () => {
       ['blank prompt', { ...valid, prompt: '   ' }, 400],
       ['non-string prompt', { ...valid, prompt: 5 }, 400],
       ['bad billing', { ...valid, billing: 'free' }, 400],
+      ['billing in the wrong case', { ...valid, billing: 'CAP' }, 400],
+      ['billing that is not a string', { ...valid, billing: ['cap'] }, 400],
+      ['two billing markers', { ...valid, model: 'sonnet@api@cap' }, 400],
+      ['unknown billing marker', { ...valid, model: 'sonnet@free' }, 400],
       ['bad permission mode', { ...valid, permissionMode: 'yolo' }, 400],
       ['bad model', { ...valid, model: 'sonnet; rm -rf /' }, 400],
       ['bad effort', { ...valid, effort: 'MAX!' }, 400],
@@ -764,6 +813,30 @@ test('POST message to an idle API-key session needs the key file', async () => {
   });
 });
 
+test('POST message to an idle cap session resumes it as a cap run, with no API key file needed', async () => {
+  await withBridge(async ({ call, world }) => {
+    world.rows.set('s1', row({ session_id: 's1', model: 'claude-sonnet-5-5@cap', effort: 'high' }));
+    world.apiKeyAvailable = false;
+    const response = await call('POST', '/sessions/s1/message', { text: 'Carry on' });
+    assert.equal(response.status, 202);
+    // The stored model still carries the marker, so the runtime builds the cap environment again.
+    assert.equal(world.startedTurns[0].options.model, 'claude-sonnet-5-5@cap');
+    assert.equal(world.state.get('s1')?.billing, 'cap');
+    const listed = await call('GET', '/sessions');
+    assert.equal(listed.body.data.sessions.find((session: { id: string }) => session.id === 's1').billing, 'cap');
+  });
+});
+
+test('GET /sessions reports cap billing and the plain model of a cap session', async () => {
+  await withBridge(async ({ call, world }) => {
+    world.rows.set('capped', row({ session_id: 'capped', model: 'claude-opus-5-5[1m]@cap' }));
+    const listed = await call('GET', '/sessions');
+    const capped = listed.body.data.sessions.find((session: { id: string }) => session.id === 'capped');
+    assert.equal(capped.billing, 'cap');
+    assert.equal(capped.model, 'claude-opus-5-5[1m]');
+  });
+});
+
 // ---------------------------------------------------------------------------------------------
 // POST /sessions/:id/interrupt
 // ---------------------------------------------------------------------------------------------
@@ -839,6 +912,28 @@ test('POST model on an idle session takes effect on the next run and keeps the b
     assert.deepEqual(response.body.data, { sessionId: 'sub', model: 'opus', billing: 'subscription', applied: 'next_run' });
     assert.deepEqual(world.modelChanges, [{ sessionId: 'sub', model: 'opus' }]);
     assert.equal(world.liveModelChanges.length, 0);
+  });
+});
+
+test('POST model keeps a cap session on cap, live or idle, whatever marker the request carries', async () => {
+  await withBridge(async ({ call, world }) => {
+    world.rows.set('c1', row({ session_id: 'c1', model: 'claude-sonnet-5-5@cap' }));
+    world.live.add('c1');
+    const live = await call('POST', '/sessions/c1/model', { model: 'claude-opus-5-5' });
+    assert.deepEqual(live.body.data, { sessionId: 'c1', model: 'claude-opus-5-5', billing: 'cap', applied: 'live' });
+    // The live process gets the plain Claude name; the row keeps the marker.
+    assert.deepEqual(world.liveModelChanges, [{ sessionId: 'c1', model: 'claude-opus-5-5' }]);
+    assert.deepEqual(world.modelChanges, [{ sessionId: 'c1', model: 'claude-opus-5-5@cap' }]);
+
+    // An @api marker (or @cap on an api-key session) in the request cannot change the session's billing.
+    world.rows.set('c2', row({ session_id: 'c2', model: 'sonnet@cap' }));
+    const idle = await call('POST', '/sessions/c2/model', { model: 'opus@api' });
+    assert.deepEqual(idle.body.data, { sessionId: 'c2', model: 'opus', billing: 'cap', applied: 'next_run' });
+    assert.deepEqual(world.modelChanges.at(-1), { sessionId: 'c2', model: 'opus@cap' });
+    world.rows.set('k1', row({ session_id: 'k1', model: 'sonnet@api' }));
+    const keyed = await call('POST', '/sessions/k1/model', { model: 'opus@cap' });
+    assert.deepEqual(keyed.body.data, { sessionId: 'k1', model: 'opus', billing: 'api-key', applied: 'next_run' });
+    assert.deepEqual(world.modelChanges.at(-1), { sessionId: 'k1', model: 'opus@api' });
   });
 });
 

@@ -93,6 +93,17 @@ test('Foreman aliases map to cloudcli model families and keep API-key billing', 
   assert.equal(foremanModelToCloudcli('api-sonnet', null), 'sonnet');
 });
 
+test('a session on the claude-cap worker profile stays on it when Foreman switches its model', () => {
+  assert.equal(foremanModelToCloudcli('api-opus', 'sonnet@cap'), 'opus@cap');
+  assert.equal(foremanModelToCloudcli('api-haiku', 'claude-opus-5-5[1m]@cap'), 'haiku@cap');
+  assert.equal(foremanModelToCloudcli('api-sonnet', 'claude-opus-5-5@cap'), 'sonnet@cap');
+  // Already on that family: nothing to switch.
+  assert.equal(foremanModelToCloudcli('api-sonnet', 'claude-sonnet-5-5@cap'), null);
+  assert.equal(foremanModelToCloudcli('api-sonnet', 'sonnet[1m]@cap'), null);
+  // A value that carries its own marker is passed through as given.
+  assert.equal(foremanModelToCloudcli('opus@api', 'sonnet@cap'), 'opus@api');
+});
+
 test('no switch when the session is already on that model, or the alias is unknown', () => {
   assert.equal(foremanModelToCloudcli('api-sonnet', 'sonnet'), null);
   assert.equal(foremanModelToCloudcli('api-sonnet', 'claude-sonnet-5-5@api'), null);

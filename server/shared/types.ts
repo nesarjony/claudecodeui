@@ -1354,11 +1354,13 @@ export type SandboxCommandService = {
 //----------------- FOREMAN BRIDGE ------------
 /**
  * How a Claude session is billed. `api-key` sessions carry the `@api` model marker and run
- * on the Anthropic API key; `subscription` sessions run on the Claude subscription.
+ * on the Anthropic API key; `cap` sessions carry the `@cap` marker and run through claude-cap's
+ * worker routing profile (MiniMax, never Anthropic, with no real credential in the CLI's
+ * environment); `subscription` sessions run on the Claude subscription.
  *
  * Used by the Foreman bridge for session listings, digests, and event payloads.
  */
-export type ForemanBilling = 'api-key' | 'subscription';
+export type ForemanBilling = 'api-key' | 'subscription' | 'cap';
 
 /**
  * Event kinds cloudcli pushes to the Foreman service. The list is the wire contract
@@ -1405,7 +1407,7 @@ export type ClaudeRuntimeEvent = { sessionId: string; projectPath: string | null
       kind: 'run_started';
       /** True when an existing provider transcript is being resumed. */
       resumed: boolean;
-      /** Model as selected for the session, including the `@api` billing marker when present. */
+      /** Model as selected for the session, including the `@api` / `@cap` billing marker when present. */
       model: string | null;
       permissionMode: string | null;
     }

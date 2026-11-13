@@ -26,9 +26,11 @@ import {
 } from '@/shared/image-attachments.js';
 import {
   CLAUDE_API_KEY_MODEL_SUFFIX,
+  CLAUDE_CAP_MODEL_SUFFIX,
   CLAUDE_PREDEFINED_MODELS,
   CLAUDE_ULTRACODE_EFFORT
 } from '@/modules/providers/list/claude/claude-models.provider.js';
+import { applyCapBilling } from '@/modules/providers/list/claude/claude-cap-billing.js';
 import { resolveClaudeCodeExecutablePath } from '@/shared/claude-cli-path.js';
 import {
   createNotificationEvent,
@@ -563,6 +565,11 @@ function mapCliOptionsToSDK(options = {}) {
   if (sdkOptions.model.endsWith(CLAUDE_API_KEY_MODEL_SUFFIX)) {
     sdkOptions.model = sdkOptions.model.slice(0, -CLAUDE_API_KEY_MODEL_SUFFIX.length);
     applyApiKeyBilling(sdkOptions);
+  } else if (sdkOptions.model.endsWith(CLAUDE_CAP_MODEL_SUFFIX)) {
+    // Through claude-cap's worker profile: the model keeps its Claude name (the profile maps it), and the session gets
+    // the proxy URL, the profile header and a placeholder key instead of any real credential.
+    sdkOptions.model = sdkOptions.model.slice(0, -CLAUDE_CAP_MODEL_SUFFIX.length);
+    applyCapBilling(sdkOptions);
   }
 
   sdkOptions.systemPrompt = {

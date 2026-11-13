@@ -8,6 +8,8 @@ import { clipText, summarizeToolInput } from '@/shared/utils.js';
 
 /** Model marker that bills a Claude session to the Anthropic API key (see claude-models.provider.ts). */
 const API_KEY_MODEL_MARKER = '@api';
+/** Model marker that runs a Claude session through claude-cap's worker profile (see claude-models.provider.ts). */
+const CAP_MODEL_MARKER = '@cap';
 
 const DEFAULT_EVENTS_URL = 'http://127.0.0.1:4111/foreman/events';
 const PUSH_TIMEOUT_MS = 2000;
@@ -31,26 +33,52 @@ const asNumber = (value: unknown): number | null =>
   typeof value === 'number' && Number.isFinite(value) ? value : null;
 
 /**
- * Splits a stored model value into the plain model and its billing mode. A model carrying the
- * `@api` marker runs on the API key; anything else (including no model) runs on the subscription.
+ * Splits a stored model value into the plain model and its billing mode. A model carrying the `@api` marker runs on the
+ * API key, one carrying `@cap` runs through claude-cap's worker profile; anything else (including no model) runs on the
+ * subscription. If a value carries more than one marker, the outermost (last) one decides and all of them are removed.
  */
 // Consumed by foreman-sessions.service.ts for listings and by foreman.module.ts for event context.
 export function splitModelBilling(model: string | null | undefined): { model: string | null; billing: ForemanBilling } {
-  const trimmed = typeof model === 'string' ? model.trim() : '';
-  if (!trimmed) {
+  let plain = typeof model === 'string' ? model.trim() : '';
+  if (!plain) {
     return { model: null, billing: 'subscription' };
   }
-  if (trimmed.endsWith(API_KEY_MODEL_MARKER)) {
-    return { model: trimmed.slice(0, -API_KEY_MODEL_MARKER.length), billing: 'api-key' };
+  let billing: ForemanBilling | null = null;
+  for (let marker = readMarker(plain); marker; marker = readMarker(plain)) {
+    billing ??= marker.billing;
+    plain = plain.slice(0, -marker.text.length);
   }
-  return { model: trimmed, billing: 'subscription' };
+  return { model: plain || null, billing: billing ?? 'subscription' };
 }
 
-/** Applies a billing mode to a plain model value: adds the `@api` marker for `api-key`, removes it otherwise. */
+function readMarker(model: string): { text: string; billing: ForemanBilling } | null {
+  if (model.endsWith(API_KEY_MODEL_MARKER)) {
+    return { text: API_KEY_MODEL_MARKER, billing: 'api-key' };
+  }
+  if (model.endsWith(CAP_MODEL_MARKER)) {
+    return { text: CAP_MODEL_MARKER, billing: 'cap' };
+  }
+  return null;
+}
+
+/** The billing a model value declares through its marker; null for a value with no marker (it declares nothing). */
+// Consumed by foreman.routes.ts: a session started with a marked model and no explicit billing keeps the marker's billing.
+export function declaredModelBilling(model: string | null | undefined): ForemanBilling | null {
+  const trimmed = typeof model === 'string' ? model.trim() : '';
+  return readMarker(trimmed)?.billing ?? null;
+}
+
+/**
+ * Applies a billing mode to a plain model value: replaces any marker by the one of `billing` (`@api` for `api-key`,
+ * `@cap` for `cap`) and adds none for `subscription`.
+ */
 // Consumed by foreman-sessions.service.ts when starting sessions and switching models.
 export function applyModelBilling(model: string, billing: ForemanBilling): string {
   const plain = splitModelBilling(model).model ?? model.trim();
-  return billing === 'api-key' ? `${plain}${API_KEY_MODEL_MARKER}` : plain;
+  if (billing === 'api-key') {
+    return `${plain}${API_KEY_MODEL_MARKER}`;
+  }
+  return billing === 'cap' ? `${plain}${CAP_MODEL_MARKER}` : plain;
 }
 
 /** What the pusher knows about a session when it stamps an event (looked up fresh for every event). */
