@@ -256,15 +256,31 @@ export const CLAUDE_PREDEFINED_MODELS: ProviderModelsDefinition = {
  */
 export const CLAUDE_API_KEY_MODEL_SUFFIX = '@api';
 
+/**
+ * A model value ending in this suffix runs the session through claude-cap's `foreman-worker`
+ * routing profile: every Claude model name is answered by the profile's upstream (MiniMax) and no
+ * Anthropic credential is ever handed to the CLI. The runtime strips the suffix before handing the
+ * model to the SDK (see claude-cap-billing.ts for the environment such a session gets).
+ */
+export const CLAUDE_CAP_MODEL_SUFFIX = '@cap';
+
+const BASE_MODEL_OPTIONS = CLAUDE_PREDEFINED_MODELS.OPTIONS.filter((option) => option.value !== 'best');
+
 CLAUDE_PREDEFINED_MODELS.OPTIONS.push(
-  ...CLAUDE_PREDEFINED_MODELS.OPTIONS
-    .filter((option) => option.value !== 'best')
-    .map((option) => ({
-      ...option,
-      value: `${option.value}${CLAUDE_API_KEY_MODEL_SUFFIX}`,
-      label: `${option.label} · API key`,
-      description: `${option.description} Billed to the Anthropic API key.`,
-    })),
+  ...BASE_MODEL_OPTIONS.map((option) => ({
+    ...option,
+    value: `${option.value}${CLAUDE_API_KEY_MODEL_SUFFIX}`,
+    label: `${option.label} · API key`,
+    description: `${option.description} Billed to the Anthropic API key.`,
+  })),
+  // Listed so a session that runs on the cap profile still resolves its effort choices and shows its own label
+  // (a model the picker does not know would be swapped for the default on the next turn typed in the UI).
+  ...BASE_MODEL_OPTIONS.map((option) => ({
+    ...option,
+    value: `${option.value}${CLAUDE_CAP_MODEL_SUFFIX}`,
+    label: `${option.label} · claude-cap profile`,
+    description: `${option.description} Answered by the claude-cap worker profile (MiniMax), never by Anthropic.`,
+  })),
 );
 
 export const findClaudeModelOption = (model: string | undefined | null): ProviderModelOption | null => {

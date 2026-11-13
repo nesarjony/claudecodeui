@@ -19,7 +19,9 @@ const log = process.env.FAKE_CLAUDE_LOG;
 const out = (message) => process.stdout.write(JSON.stringify(message) + '\n');
 const note = (entry) => log && fs.appendFileSync(log, JSON.stringify(entry) + '\n');
 // How the runtime started this process: the command line and the Foreman-controlled environment.
-note({ spawn: { argv: process.argv.slice(2), catchAll: process.env.CLAUDE_CODE_REFUSAL_FALLBACK_CATCH_ALL ?? null } });
+// The routing-relevant slice of the environment (all test values, none real): what decides where the request goes and with which credential.
+const routing = Object.fromEntries(Object.entries(process.env).filter(([name]) => /^(ANTHROPIC_|CLAUDE_AGENT_API|CLAUDE_CODE_(OAUTH|USE_|SUBAGENT))/.test(name)));
+note({ spawn: { argv: process.argv.slice(2), catchAll: process.env.CLAUDE_CODE_REFUSAL_FALLBACK_CATCH_ALL ?? null, env: routing } });
 const common = () => ({ session_id: SESSION, parent_tool_use_id: null, uuid: require('node:crypto').randomUUID() });
 
 let userUuid = null;
@@ -587,7 +589,7 @@ test('either half alone: the guard outside a Foreman repo adds only PreToolUse, 
 
 const settingsWith = (overrides: Record<string, unknown>) => ({ allowedTools: [], disallowedTools: [], skipPermissions: false, ...overrides });
 
-async function lastSpawn(): Promise<{ argv: string[]; catchAll: string | null }> {
+async function lastSpawn(): Promise<{ argv: string[]; catchAll: string | null; env: Record<string, string> }> {
   const spawns = (await readFile(logFile, 'utf8')).split('\n').filter(Boolean).map((entry) => JSON.parse(entry)).filter((entry) => entry.spawn);
   return spawns.at(-1).spawn;
 }
@@ -802,4 +804,152 @@ test('a policy that refuses an ordinary call outright is obeyed at once, even in
   const answer = (await permissionAnswers()).at(-1);
   assert.equal(answer?.response.behavior, 'deny');
   assert.equal(answer?.response.message, 'Not allowed in this session.');
+});
+
+// ---------------------------------------------------------------------------------------------
+// Billing: what the CLI child of an api-key / cap session is given
+// ---------------------------------------------------------------------------------------------
+
+const AMBIENT_ENV = {
+  ANTHROPIC_AUTH_TOKEN: 'ambient-proxy-token',
+  CLAUDE_CODE_OAUTH_TOKEN: 'ambient-oauth-token',
+  CLAUDE_CODE_OAUTH_REFRESH_TOKEN: 'ambient-oauth-refresh',
+  ANTHROPIC_BASE_URL: 'http://ambient.invalid',
+  ANTHROPIC_CUSTOM_HEADERS: 'x-claude-cap-profile: ambient',
+  ANTHROPIC_MODEL: 'ambient-non-claude-model',
+  CLAUDE_CODE_SUBAGENT_MODEL: 'ambient-subagent-model',
+  CLAUDE_CODE_USE_BEDROCK: '1',
+};
+const KEY_FILE_SECRET = 'sk-ant-test-not-a-real-key';
+
+async function withAmbientEnv<T>(extra: Record<string, string>, run: () => Promise<T>): Promise<T> {
+  const set = { ...AMBIENT_ENV, ...extra };
+  const previous = Object.fromEntries(Object.keys(set).map((name) => [name, process.env[name]]));
+  Object.assign(process.env, set);
+  try {
+    return await run();
+  } finally {
+    for (const [name, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+}
+
+const flagSettings = (argv: string[]): { env?: Record<string, string> } => JSON.parse(argValue(argv, '--settings'));
+
+test('a cap session gets the claude-cap URL, the profile header, a placeholder key and Claude model names, and no real credential', async () => {
+  await withAmbientEnv({}, async () => {
+    const outcome = await runPrompt('hello', { model: 'claude-sonnet-5-5@cap' }, 'app-session-cap');
+    assert.ok(kinds(outcome).includes('turn_result'));
+    const { argv, env } = await lastSpawn();
+
+    // The marker is stripped; the CLI is told the plain Claude name.
+    assert.equal(argValue(argv, '--model'), 'claude-sonnet-5-5');
+
+    assert.equal(env.ANTHROPIC_BASE_URL, 'http://127.0.0.1:34817');
+    assert.equal(env.ANTHROPIC_LLM_HOST, 'http://127.0.0.1:34817');
+    assert.equal(env.ANTHROPIC_API_BASE_URL, 'http://127.0.0.1:34817');
+    assert.equal(env.CLAUDE_AGENT_API_BASE_URL, 'http://127.0.0.1:34817');
+    assert.equal(env.ANTHROPIC_CUSTOM_HEADERS, 'x-claude-cap-profile: foreman-worker');
+    assert.equal(env.ANTHROPIC_API_KEY, 'sk-ant-cap-dummy-not-used');
+    assert.equal(env.ANTHROPIC_DEFAULT_OPUS_MODEL, 'claude-opus-5-5');
+    assert.equal(env.ANTHROPIC_DEFAULT_SONNET_MODEL, 'claude-sonnet-5-5');
+    assert.equal(env.ANTHROPIC_DEFAULT_HAIKU_MODEL, 'claude-haiku-4-5');
+    assert.equal(env.ANTHROPIC_SMALL_FAST_MODEL, 'claude-haiku-4-5');
+
+    // No credential of any kind survives from the ambient environment, and the key file's key is never read.
+    for (const name of ['ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CODE_OAUTH_REFRESH_TOKEN', 'ANTHROPIC_MODEL', 'CLAUDE_CODE_SUBAGENT_MODEL', 'CLAUDE_CODE_USE_BEDROCK']) {
+      assert.equal(name in env, false, `${name} must not reach a cap session`);
+    }
+    assert.equal(JSON.stringify([env, argv]).includes(KEY_FILE_SECRET), false);
+    assert.equal(JSON.stringify([env, argv]).includes('ambient-'), false);
+
+    // The user's settings.json env beats the process env (measured with the CLI), so the same values ride in the
+    // flag-level settings, which outrank it, and the settings file's own token is blanked.
+    const settings = flagSettings(argv);
+    assert.deepEqual(settings.env, {
+      ANTHROPIC_BASE_URL: 'http://127.0.0.1:34817',
+      ANTHROPIC_API_BASE_URL: 'http://127.0.0.1:34817',
+      CLAUDE_AGENT_API_BASE_URL: 'http://127.0.0.1:34817',
+      ANTHROPIC_LLM_HOST: 'http://127.0.0.1:34817',
+      ANTHROPIC_API_KEY: 'sk-ant-cap-dummy-not-used',
+      ANTHROPIC_CUSTOM_HEADERS: 'x-claude-cap-profile: foreman-worker',
+      ANTHROPIC_DEFAULT_OPUS_MODEL: 'claude-opus-5-5',
+      ANTHROPIC_DEFAULT_SONNET_MODEL: 'claude-sonnet-5-5',
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: 'claude-haiku-4-5',
+      ANTHROPIC_SMALL_FAST_MODEL: 'claude-haiku-4-5',
+      ANTHROPIC_AUTH_TOKEN: '',
+    });
+  });
+});
+
+test('the claude-cap URL and the profile of a cap session can be configured, and bad values fall back to the defaults', async () => {
+  const warnings: unknown[][] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => void warnings.push(args);
+  try {
+    await withAmbientEnv({ CLAUDE_CAP_URL: 'http://10.0.0.7:9000/', CLAUDE_CAP_PROFILE: 'night-shift' }, async () => {
+      await runPrompt('hello', { model: 'sonnet@cap' }, 'app-session-cap-config');
+      const { env, argv } = await lastSpawn();
+      assert.equal(env.ANTHROPIC_BASE_URL, 'http://10.0.0.7:9000');
+      assert.equal(env.ANTHROPIC_LLM_HOST, 'http://10.0.0.7:9000');
+      assert.equal(env.ANTHROPIC_CUSTOM_HEADERS, 'x-claude-cap-profile: night-shift');
+      assert.equal(flagSettings(argv).env?.ANTHROPIC_BASE_URL, 'http://10.0.0.7:9000');
+    });
+    await withAmbientEnv({ CLAUDE_CAP_URL: 'file:///etc/passwd', CLAUDE_CAP_PROFILE: 'a\r\nx-evil: 1' }, async () => {
+      await runPrompt('hello', { model: 'sonnet@cap' }, 'app-session-cap-bad-config');
+      const { env } = await lastSpawn();
+      assert.equal(env.ANTHROPIC_BASE_URL, 'http://127.0.0.1:34817');
+      assert.equal(env.ANTHROPIC_CUSTOM_HEADERS, 'x-claude-cap-profile: foreman-worker');
+    });
+    assert.equal(warnings.filter((args) => String(args[0]).includes('CLAUDE_CAP_')).length, 2);
+  } finally {
+    console.warn = originalWarn;
+  }
+});
+
+test('a resumed cap session stays a cap session: the stored model wins over the one the caller sends', async () => {
+  await withAmbientEnv({}, async () => {
+    const sent: Array<Record<string, unknown>> = [];
+    const writer = { userId: null, send: (message: Record<string, unknown>) => void sent.push(message), setSessionId: () => undefined };
+    await runtime.queryClaudeSDK(
+      'carry on',
+      // The caller (a UI turn, or a bridge message) names a plain model; the session row says it is a cap session.
+      { sessionId: 'app-session-cap-resume', projectPath: '/mnt/dev/repo', cwd: directory, model: 'claude-opus-5-5', permissionMode: 'default' },
+      writer,
+      {
+        resolveProviderSessionId: () => 'prov-fake-session',
+        resolveResumeModel: async () => 'claude-sonnet-5-5@cap',
+        getProviderModels: async () => ({ OPTIONS: [], DEFAULT: 'default' }),
+        normalizeMessage: () => [],
+        isProviderInstalled: async () => true,
+      },
+    );
+    const { argv, env } = await lastSpawn();
+    assert.ok(argv.includes('--resume=prov-fake-session'), 'the run resumes the provider session');
+    assert.equal(argValue(argv, '--model'), 'claude-sonnet-5-5');
+    assert.equal(env.ANTHROPIC_CUSTOM_HEADERS, 'x-claude-cap-profile: foreman-worker');
+    assert.equal(env.ANTHROPIC_API_KEY, 'sk-ant-cap-dummy-not-used');
+    assert.equal('ANTHROPIC_AUTH_TOKEN' in env, false);
+  });
+});
+
+test('an api-key session is unchanged: the key file key, Anthropic URL, no profile header', async () => {
+  await withAmbientEnv({}, async () => {
+    await runPrompt('hello', { model: 'claude-sonnet-5-5@api' }, 'app-session-api-key');
+    const { env, argv } = await lastSpawn();
+    assert.equal(env.ANTHROPIC_API_KEY, KEY_FILE_SECRET);
+    assert.equal('ANTHROPIC_AUTH_TOKEN' in env, false);
+    assert.equal(flagSettings(argv).env?.ANTHROPIC_BASE_URL, 'https://api.anthropic.com');
+    assert.equal(env.ANTHROPIC_DEFAULT_OPUS_MODEL, undefined);
+  });
+});
+
+test('a subscription session is left alone by the billing modes: no key override, no profile header, no settings override', async () => {
+  await runPrompt('hello', { model: 'claude-sonnet-5-5' }, 'app-session-subscription');
+  const { env, argv } = await lastSpawn();
+  assert.equal(env.ANTHROPIC_API_KEY, undefined);
+  assert.equal(env.ANTHROPIC_CUSTOM_HEADERS, undefined);
+  assert.equal(argv.includes('--settings'), false);
 });

@@ -117,19 +117,21 @@ const ALIAS_TO_FAMILY: Record<string, string> = {
   'api-haiku': 'haiku',
 };
 const API_KEY_MARKER = '@api';
+const CAP_MARKER = '@cap';
 
 /**
  * The cloudcli model value a Foreman `switch_model` alias stands for, or null when it is already the session's model
- * (or is not a model the card knows). The `@api` billing marker of the current model is kept, so a session on the API
- * key stays on the API key. A value that is not a Foreman alias is passed through as a cloudcli model id.
+ * (or is not a model the card knows). The billing marker of the current model (`@api` or `@cap`) is kept, so a session
+ * on the API key stays on the API key and a session on the claude-cap worker profile stays on it. A value that is not a
+ * Foreman alias is passed through as a cloudcli model id.
  */
 export function foremanModelToCloudcli(alias: string | undefined, currentModel: string | null): string | null {
   if (!alias) return null;
   const family = ALIAS_TO_FAMILY[alias] ?? (alias.startsWith('api-') ? null : alias);
   if (!family) return null;
-  const apiBilled = Boolean(currentModel?.endsWith(API_KEY_MARKER));
-  const target = family.endsWith(API_KEY_MARKER) || !apiBilled ? family : `${family}${API_KEY_MARKER}`;
-  const bare = (model: string | null) => (model ?? '').replace(API_KEY_MARKER, '').replace(/\[1m\]$/, '');
+  const marker = [API_KEY_MARKER, CAP_MARKER].find((candidate) => currentModel?.endsWith(candidate)) ?? '';
+  const target = !marker || family.endsWith(API_KEY_MARKER) || family.endsWith(CAP_MARKER) ? family : `${family}${marker}`;
+  const bare = (model: string | null) => (model ?? '').replace(API_KEY_MARKER, '').replace(CAP_MARKER, '').replace(/\[1m\]$/, '');
   // Already on that model family (e.g. `claude-opus-5-5` while Foreman says opus): nothing to switch.
   if (currentModel && (currentModel === target || bare(currentModel) === bare(target) || bare(currentModel).includes(bare(target)))) {
     return null;

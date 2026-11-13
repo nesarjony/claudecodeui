@@ -1,5 +1,6 @@
 import express, { type NextFunction, type Request, type RequestHandler, type Response } from 'express';
 
+import { declaredModelBilling } from '@/modules/foreman/foreman-events.service.js';
 import type { ForemanGitService } from '@/modules/foreman/foreman-git.service.js';
 import { parseGuardConfig } from '@/modules/foreman/foreman-guard.service.js';
 import type { createForemanSessionsService } from '@/modules/foreman/foreman-sessions.service.js';
@@ -14,8 +15,8 @@ import type { ForemanBilling } from '@/shared/types.js';
 type ForemanSessionsService = ReturnType<typeof createForemanSessionsService>;
 
 const SESSION_ID_PATTERN = /^[a-zA-Z0-9._-]{1,120}$/;
-// Model aliases and ids as the catalog spells them (`sonnet`, `claude-opus-5-5[1m]`), optionally with the `@api` marker.
-const MODEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._\-[\]]{0,99}(@api)?$/;
+// Model aliases and ids as the catalog spells them (`sonnet`, `claude-opus-5-5[1m]`), optionally with the `@api` or `@cap` marker.
+const MODEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._\-[\]]{0,99}(@api|@cap)?$/;
 const EFFORT_PATTERN = /^[a-z]{3,12}$/;
 // Foreman's own task identifiers (opaque to cloudcli): letters, digits and a few separators.
 const TASK_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$/;
@@ -24,7 +25,7 @@ const PERMISSION_MODES = ['default', 'auto', 'acceptEdits', 'bypassPermissions',
 // Permission request ids are minted by the runtime (a UUID); anything of that shape is accepted.
 const REQUEST_ID_PATTERN = /^[A-Za-z0-9._:-]{1,200}$/;
 const PERMISSION_DECISIONS = ['allow', 'deny'] as const;
-const BILLING_MODES: readonly ForemanBilling[] = ['api-key', 'subscription'];
+const BILLING_MODES: readonly ForemanBilling[] = ['api-key', 'subscription', 'cap'];
 
 const MAX_PATH_LENGTH = 4096;
 const MAX_PROMPT_LENGTH = 200_000;
@@ -182,11 +183,13 @@ export function createForemanRouter(options: {
     if (!projectPath.startsWith('/')) {
       throw invalid('projectPath must be an absolute path of a known cloudcli project.');
     }
+    const model = readModel(body.model) ?? 'default';
     const result = await sessions.startSession({
       projectPath,
       prompt: readRequiredText(body, 'prompt', MAX_PROMPT_LENGTH),
-      model: readModel(body.model) ?? 'default',
-      billing: readBilling(body.billing) ?? 'api-key',
+      model,
+      // An explicit billing wins; without one a marked model keeps its marker's billing (`@cap` must not turn into the API key).
+      billing: readBilling(body.billing) ?? declaredModelBilling(model) ?? 'api-key',
       permissionMode: readPermissionMode(body.permissionMode) ?? 'default',
       effort: readEffort(body.effort),
       title: readOptionalText(body, 'title', MAX_TITLE_LENGTH),

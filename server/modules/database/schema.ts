@@ -292,7 +292,7 @@ CREATE TABLE IF NOT EXISTS foreman_session_state (
     -- running | idle | waiting_permission | error
     status TEXT NOT NULL DEFAULT 'idle' CHECK (status IN ('running', 'idle', 'waiting_permission', 'error')),
     permission_mode TEXT,
-    -- api-key | subscription
+    -- api-key | subscription | cap
     billing TEXT,
     -- The guard (pattern lists, repoRoot) a Foreman-started session runs under; NULL when it has none.
     guard_json TEXT,

@@ -29,7 +29,7 @@ export type ForemanSessionSummary = {
   taskId: string | null;
   projectPath: string | null;
   title: string | null;
-  /** Plain model (the `@api` billing marker is reported as `billing`). */
+  /** Plain model (the `@api` / `@cap` billing marker is reported as `billing`). */
   model: string | null;
   billing: ForemanBilling;
   status: ForemanSessionStatus;
@@ -471,6 +471,7 @@ export function createForemanSessionsService(deps: ForemanBridgeDependencies) {
       if (compiledGuard) {
         ensureAllowWriteDirs(compiledGuard);
       }
+      // Only the API-key billing needs the key file: a `cap` session starts with a placeholder key and no real credential.
       if (input.billing === 'api-key' && !deps.runtime.hasApiKey()) {
         throw new AppError('API-key billing was requested, but no API key file is available.', {
           code: 'API_KEY_UNAVAILABLE',
@@ -581,8 +582,8 @@ export function createForemanSessionsService(deps: ForemanBridgeDependencies) {
 
     /**
      * Switches the model. The change is recorded on the session (so every later resume keeps it) and,
-     * when a process is live, applied to it immediately. Billing stays as the session started: it is
-     * fixed when the process starts, so an `@api` marker in `model` is ignored.
+     * when a process is live, applied to it immediately. Billing stays as the session started (`cap` stays `cap`): it is
+     * fixed when the process starts, so an `@api` or `@cap` marker in `model` is ignored.
      */
     async setModel(sessionId: string, model: string) {
       const session = requireClaudeSession(sessionId);

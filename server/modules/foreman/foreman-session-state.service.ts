@@ -120,7 +120,7 @@ export function createForemanSessionStateService(dependencies: {
       taskId: row.task_id,
       status: row.status,
       permissionMode: row.permission_mode,
-      billing: row.billing === 'api-key' || row.billing === 'subscription' ? row.billing : null,
+      billing: row.billing === 'api-key' || row.billing === 'subscription' || row.billing === 'cap' ? row.billing : null,
       guard,
       updatedAt: row.updated_at,
     };

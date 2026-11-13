@@ -90,6 +90,21 @@ test('track stores task, billing, permission mode and guard; later patches chang
   });
 });
 
+test('cap billing is stored and read back, and survives a restart', async () => {
+  await withIsolatedDatabase(() => {
+    newService().track('cap-one', { taskId: 'task-9', billing: 'cap', permissionMode: 'acceptEdits' });
+    assert.equal(foremanSessionStateDb.get('cap-one')?.billing, 'cap');
+    // A later patch that does not name the billing leaves it alone.
+    newService().track('cap-one', { permissionMode: 'plan' });
+    const restarted = newService();
+    assert.equal(restarted.get('cap-one')?.billing, 'cap');
+    assert.equal(restarted.get('cap-one')?.permissionMode, 'plan');
+    // A stored value this version does not know reads as unknown, not as one of the known modes.
+    foremanSessionStateDb.upsert({ ...(foremanSessionStateDb.get('cap-one') as NonNullable<ReturnType<typeof foremanSessionStateDb.get>>), session_id: 'odd-one', billing: 'free' });
+    assert.equal(newService().get('odd-one')?.billing, null);
+  });
+});
+
 test('after a restart a new service reads the same state: mode, guard and task survive, running becomes idle', async () => {
   await withIsolatedDatabase(() => {
     const before = newService();

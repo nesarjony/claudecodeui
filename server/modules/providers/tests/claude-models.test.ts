@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { extractClaudeEventModel } from '@/modules/providers/list/claude/claude-models.provider.js';
+import {
+  CLAUDE_API_KEY_MODEL_SUFFIX,
+  CLAUDE_CAP_MODEL_SUFFIX,
+  CLAUDE_PREDEFINED_MODELS,
+  extractClaudeEventModel,
+  findClaudeModelOption,
+} from '@/modules/providers/list/claude/claude-models.provider.js';
 
 const SESSION_ID = 'session-1';
 
@@ -84,4 +90,21 @@ test('falls back to the message model when every content hit is a placeholder', 
     ),
     'claude-sonnet-5',
   );
+});
+
+test('the catalog lists a cap variant of every model that has an API-key variant, with the same effort choices', () => {
+  const values = new Set(CLAUDE_PREDEFINED_MODELS.OPTIONS.map((option) => option.value));
+  const apiVariants = CLAUDE_PREDEFINED_MODELS.OPTIONS.filter((option) => option.value.endsWith(CLAUDE_API_KEY_MODEL_SUFFIX));
+  assert.ok(apiVariants.length > 0);
+  for (const option of apiVariants) {
+    const plain = option.value.slice(0, -CLAUDE_API_KEY_MODEL_SUFFIX.length);
+    const capValue = `${plain}${CLAUDE_CAP_MODEL_SUFFIX}`;
+    assert.ok(values.has(capValue), capValue);
+    assert.deepEqual(findClaudeModelOption(capValue)?.effort, option.effort, capValue);
+  }
+  // 'best' has no marked variants (its target depends on the account), and no value carries two markers.
+  assert.equal(values.has(`best${CLAUDE_CAP_MODEL_SUFFIX}`), false);
+  assert.equal(values.size, CLAUDE_PREDEFINED_MODELS.OPTIONS.length, 'values are unique');
+  assert.equal([...values].some((value) => /@(api|cap).*@(api|cap)/.test(value)), false);
+  assert.match(findClaudeModelOption('claude-sonnet-5-5@cap')?.label ?? '', /claude-cap profile/);
 });
