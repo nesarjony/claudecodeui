@@ -24,7 +24,7 @@ import path from 'node:path';
 /** Whose home directory is protected, and the directory relative paths are read against (the session's repo root). */
 export type SecretScope = { home: string; cwd: string };
 
-const SECRET_DIRECTORIES = ['.ssh', '.aws', '.gnupg', '.config/foreman', '.config/task-queue-mcp'];
+const SECRET_DIRECTORIES = ['.ssh', '.aws', '.gnupg', '.kube', '.docker', '.azure', '.terraform.d', '.config/foreman', '.config/task-queue-mcp', '.config/claude-api', '.config/gh', '.config/gcloud', '.config/doctl', '.config/rclone'];
 const ENV_TEMPLATE = /^\.env\.(example|sample|template)$/i;
 const CONFIG_SECRET_WORD = /token|key|secret|credentials/i;
 const DOC_EXTENSION = /\.(md|mdx|rst|adoc)$/i;
@@ -64,7 +64,7 @@ function expandClasses(glob: string, budget = { left: 64 }): string[] {
   }
   const head = glob.slice(0, match.index);
   const tail = glob.slice(match.index + match[0].length);
-  return [...match[1]].flatMap((letter) => {
+  return [...match[1]!].flatMap((letter) => {
     budget.left -= 1;
     return expandClasses(head + letter + tail, budget);
   });
@@ -104,6 +104,29 @@ function writtenBase(value: string): string {
   return base === '.' || base === '..' ? '' : base;
 }
 
+
+/** Names a wildcard is worth holding for: what it can expand to when its literal start (or end) is the start (or end) of one of these. */
+const SECRET_NAME_STARTS = ['.env', 'id_rsa', 'id_dsa', 'id_ecdsa', 'id_ed25519', 'credentials', 'secrets', '.netrc', '.npmrc', '.pgpass', '.git-credentials', '.aws', '.ssh', '.gnupg', '.kube', '.docker'];
+const SECRET_NAME_ENDS = ['.pem', '.key', '.p12', '.pfx', '.jks', '.keystore', '.kdbx', '.tfstate'];
+
+/** A glob (`.en*`, `id_*`, `*.pem`, `.*`) that can expand to a secret file. A bare `*` does not match dotfiles and is not held. */
+function wildcardSecretLabel(value: string): string | null {
+  const base = value.slice(value.lastIndexOf('/') + 1);
+  const at = base.search(/[*?[]/);
+  if (at === -1) {
+    return null;
+  }
+  const prefix = base.slice(0, at).toLowerCase();
+  const suffix = base.slice(base.search(/[^*?\]\[]*$/)).toLowerCase();
+  if (prefix === '.' || (prefix.length >= 2 && SECRET_NAME_STARTS.some((name) => name.startsWith(prefix)))) {
+    return 'a wildcard that can match a secret file';
+  }
+  if (suffix.length >= 3 && SECRET_NAME_ENDS.some((end) => end.endsWith(suffix) || suffix.endsWith(end))) {
+    return 'a wildcard that can match a key file';
+  }
+  return null;
+}
+
 /** Why one concrete path (no wildcards) is a secret, or null. */
 function labelOf(variant: string, scope: SecretScope): string | null {
   if (!variant.trim()) {
@@ -127,8 +150,23 @@ function labelOf(variant: string, scope: SecretScope): string | null {
   if (/\.pem$/i.test(base)) {
     return 'a .pem file';
   }
-  if (/^id_(rsa|ed25519)/i.test(base)) {
+  if (/^id_(rsa|dsa|ecdsa|ed25519)/i.test(base)) {
     return 'an SSH private key';
+  }
+  if (/^\.(netrc|npmrc|pypirc|pgpass|my\.cnf|git-credentials|s3cfg|boto|vault-token|claude\.json|credentials(\..*)?)$/i.test(base)) {
+    return 'a credentials file';
+  }
+  if (/^\.(bash|zsh|sh|psql|mysql|node_repl|python|rediscli)_?history$/i.test(base)) {
+    return 'a shell or client history file';
+  }
+  if (/\.tfstate(\.backup)?$/i.test(base) || /\.(p12|pfx|jks|keystore|kdbx|ovpn)$/i.test(base)) {
+    return 'a state, keystore or key file';
+  }
+  if (/(service[-_]?account|[-_.](key|keys|secret|secrets|token|tokens|credential|credentials))[^/]*\.(json|ya?ml|toml|ini|txt|cfg|conf|properties|xml)$/i.test(base) || /^(secrets?|tokens?|credentials?)\.(json|ya?ml|toml|ini|txt|cfg|conf|properties|xml)$/i.test(base)) {
+    return 'a file named like a credential';
+  }
+  if (/^\/proc\/[^/]+\/environ$/.test(absolute)) {
+    return 'a process environment (/proc/*/environ)';
   }
   if (isCredentialsFile(base)) {
     return 'a credentials file';
@@ -146,6 +184,10 @@ function labelOf(variant: string, scope: SecretScope): string | null {
  */
 // Consumed by the guard classifier for every path argument and file glob, and by the tests.
 export function secretPathLabel(value: string, scope: SecretScope): string | null {
+  const wild = wildcardSecretLabel(value)
+  if (wild) {
+    return wild
+  }
   for (const variant of globVariants(value)) {
     const label = labelOf(variant, scope);
     if (label) {
@@ -241,7 +283,7 @@ function shellCommands(input: string, depth = 0, budget = { nested: 300 }): stri
   };
 
   for (let index = 0; index < input.length; index += 1) {
-    const char = input[index];
+    const char = input[index]!;
     if (quote === "'") {
       if (char === "'") {
         quote = null;
@@ -253,7 +295,7 @@ function shellCommands(input: string, depth = 0, budget = { nested: 300 }): stri
     if (quote === '"') {
       if (char === '"') {
         quote = null;
-      } else if (char === '\\' && index + 1 < input.length && '"\\$`'.includes(input[index + 1])) {
+      } else if (char === '\\' && index + 1 < input.length && '"\\$`'.includes(input[index + 1]!)) {
         index += 1;
         word += input[index];
       } else {
@@ -315,7 +357,7 @@ function pathCandidates(word: string): string[] {
 function verbIndex(words: string[]): number {
   let wrapped = false;
   for (let index = 0; index < words.length; index += 1) {
-    const word = words[index];
+    const word = words[index]!;
     if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(word)) {
       continue;
     }
@@ -349,7 +391,7 @@ export function bashSecretLabel(command: string, scope: SecretScope): string | n
   let judged = 0;
   for (const words of shellCommands(command)) {
     const verbAt = verbIndex(words);
-    const verb = verbAt === -1 ? '' : path.basename(words[verbAt]);
+    const verb = verbAt === -1 ? '' : path.basename(words[verbAt]!);
     const here: SecretScope = { home: scope.home, cwd };
     for (const word of words) {
       judged += 1;
