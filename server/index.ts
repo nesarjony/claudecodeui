@@ -54,6 +54,7 @@ import { worktreesRoutes } from './modules/worktrees/index.js';
 import { quickCommandsRoutes } from './modules/quick-commands/index.js';
 import { agentsRoutes } from './modules/agents/index.js';
 import { createForemanModule, createForemanUiModule } from './modules/foreman/index.js';
+import { createForemanTabModule } from './modules/foreman/foreman-tab.module.js';
 import browserUseMcpRoutes from './modules/browser-use/browser-use-mcp.routes.js';
 import { browserUseService } from './modules/browser-use/browser-use.service.js';
 import { initializeDatabase, sessionsDb } from './modules/database/index.js';
@@ -103,6 +104,7 @@ const agentRoutes = createAgentModule({
 // Foreman bridge: token-protected control API plus the event push to the Foreman service.
 const foremanRoutes = createForemanModule();
 const foremanUiRoutes = createForemanUiModule();
+const foremanTabRoutes = createForemanTabModule();
 
 // Single WebSocket server that handles chat, shell, and plugin proxy paths.
 createWebSocketServer(server, {
@@ -199,6 +201,8 @@ app.use('/api/browser-use-mcp', browserUseMcpRoutes);
 app.use('/api/foreman', foremanRoutes);
 // Foreman suggestion card: the logged-in user's view of the bridge (pending suggestion, feedback)
 app.use('/api/foreman-suggestions', authenticateToken, foremanUiRoutes);
+// Foreman tab: the logged-in user's allowlisted view of Foreman (overview, decisions, spend, settings, tasks, inbox, lessons)
+app.use('/api/foreman-tab', authenticateToken, foremanTabRoutes);
 
 // Browser API Routes (protected)
 app.use('/api/browser-use', authenticateToken, browserUseRoutes);

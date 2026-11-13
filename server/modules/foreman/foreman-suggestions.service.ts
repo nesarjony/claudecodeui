@@ -128,7 +128,8 @@ type ForemanSuggestionsClientDependencies = {
   timeoutMs?: number;
 };
 
-function resolveForemanBaseUrl(explicit: string | undefined): string {
+// Consumed by the Foreman tab client (foreman-tab.service.ts), which calls Foreman the same way.
+export function resolveForemanBaseUrl(explicit: string | undefined): string {
   if (explicit) {
     return explicit.replace(/\/+$/, '');
   }

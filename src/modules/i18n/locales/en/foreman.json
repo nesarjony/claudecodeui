@@ -1,0 +1,269 @@
+{
+  "tabs": {
+    "title": "Foreman"
+  },
+  "sections": {
+    "needs": "Needs you",
+    "tasks": "Tasks",
+    "decisions": "Live decisions",
+    "spend": "Spend",
+    "lessons": "Lessons",
+    "settings": "Settings",
+    "activeCount": "{{count}} active"
+  },
+  "common": {
+    "cancel": "Cancel",
+    "working": "Working...",
+    "failed": "That did not work. Try again.",
+    "loadFailed": "Could not load this.",
+    "retry": "Retry",
+    "loading": "Loading...",
+    "openSession": "Open session"
+  },
+  "ranges": {
+    "today": "Today",
+    "7d": "7 days",
+    "30d": "30 days",
+    "all": "All time"
+  },
+  "status": {
+    "modeLabel": "Mode",
+    "mode": {
+      "shadow": "Shadow",
+      "autonomous": "Autonomous"
+    },
+    "modeConfirmTitle": "Switch to {{mode}} mode?",
+    "modeConfirmAutonomous": "Foreman will act on its own: it can start work and send messages to sessions without asking. Risky steps and low-confidence steps still come to you.",
+    "modeConfirmShadow": "Foreman goes back to suggesting only. It will not send anything to a session by itself.",
+    "modeConfirm": "Switch to {{mode}}",
+    "kill": "Stop Foreman",
+    "killConfirmTitle": "Stop everything Foreman is doing?",
+    "killConfirmBody": "The kill switch halts Foreman at once: no new work starts and no messages go to sessions until you resume it. Sessions that are already running keep running.",
+    "killConfirm": "Stop Foreman",
+    "killed": "Foreman is stopped. Nothing runs until you resume it.",
+    "resume": "Resume Foreman",
+    "resumeConfirmTitle": "Resume Foreman?",
+    "resumeConfirmBody": "Foreman will start working again in its current mode.",
+    "resumeConfirm": "Resume",
+    "today": "Today",
+    "spendOfLimit": "{{spent}} of {{limit}}",
+    "budgetLabel": "Today's spend against the daily limit",
+    "foremanSpend": "Foreman {{amount}}",
+    "workerSpend": "Workers {{amount}}",
+    "needsYou": "Needs you",
+    "activeTasks": "Active tasks",
+    "agreement": "Accepted, 7d",
+    "agreementTitle": "Share of Foreman's suggestions you used as they were, over {{count}} answered in the last 7 days",
+    "none": "-"
+  },
+  "needs": {
+    "empty": "Nothing needs you right now.",
+    "kind": {
+      "question": "Question",
+      "permission": "Permission",
+      "budget": "Budget"
+    },
+    "answerLabel": "Your answer",
+    "answerPlaceholder": "Type your answer",
+    "send": "Send answer",
+    "allow": "Allow",
+    "deny": "Deny",
+    "reasonLabel": "Reason (optional)",
+    "reasonPlaceholder": "Reason (optional)"
+  },
+  "tasks": {
+    "filterLabel": "Filter tasks",
+    "filter": {
+      "all": "All",
+      "active": "Active",
+      "finished": "Finished"
+    },
+    "empty": "No tasks yet.",
+    "emptyFiltered": "No tasks in this view.",
+    "status": {
+      "queued": "Queued",
+      "planning": "Planning",
+      "running": "Running",
+      "needs_user": "Needs you",
+      "verifying": "Verifying",
+      "done": "Done",
+      "completed": "Done",
+      "failed": "Failed",
+      "killed": "Stopped",
+      "taken_over": "Taken over",
+      "unknown": "Unknown"
+    },
+    "back": "All tasks",
+    "dod": "Definition of done",
+    "dodNone": "No definition of done yet.",
+    "met": "met",
+    "notMet": "not met",
+    "timeline": "Timeline",
+    "timelineNone": "Nothing has happened yet.",
+    "kind": {
+      "decision": "Decision",
+      "action": "Action",
+      "gate": "Gate",
+      "judge": "Judge",
+      "needs_user": "Needs you",
+      "note": "Note"
+    },
+    "takeover": "Take over",
+    "takeoverTitle": "Take this task over?",
+    "takeoverBody": "Foreman stops steering this task and the session is yours to drive. You can open the session from here."
+  },
+  "decisions": {
+    "empty": "Foreman has not decided anything yet.",
+    "auto": "automatic",
+    "confidence": "{{percent}}% sure",
+    "confidenceTitle": "How sure Foreman is",
+    "risk": {
+      "low": "Low risk",
+      "medium": "Medium risk",
+      "high": "High risk"
+    },
+    "status": {
+      "pending": "Pending",
+      "sent": "Sent",
+      "edited": "Edited",
+      "dismissed": "Dismissed",
+      "superseded": "Superseded",
+      "expired": "Expired",
+      "done": "Done",
+      "failed": "Failed"
+    },
+    "secondOpinion": "{{model}} · 2nd opinion",
+    "ids": "Decision {{id}} · session {{session}} · task {{task}}",
+    "more": "Show more",
+    "agreement": "Agreement",
+    "agreementRange": "Agreement period",
+    "agreementNone": "No suggestion has been answered in this period.",
+    "agreementSummary": "{{accepted}} used as they were, {{used}} used at all, of {{count}} answered.",
+    "agreementBucket": "{{sent}} sent, {{edited}} edited, {{dismissed}} dismissed"
+  },
+  "trace": {
+    "button": "Trace",
+    "none": "No trace",
+    "url": "Studio link",
+    "tunnel": "Tunnel command",
+    "copy": "Copy {{what}}",
+    "copyShort": "Copy",
+    "copied": "Copied"
+  },
+  "spend": {
+    "rangeLabel": "Spend period",
+    "foreman": "Foreman, {{count}} calls",
+    "workers": "Workers, {{count}} turns",
+    "empty": "No spend in this period.",
+    "foremanByRole": "Foreman by role",
+    "foremanByModel": "Foreman by model",
+    "workerByModel": "Workers by model",
+    "workerByTask": "Workers by task",
+    "workerBySession": "Workers by session",
+    "callsDetail": "{{calls}} calls · {{input}} in · {{output}} out",
+    "turnsDetail": "{{turns}} turns · {{tools}} tool calls",
+    "more": "and {{count}} more"
+  },
+  "lessons": {
+    "empty": "No lessons yet.",
+    "repo": "Repo",
+    "allRepos": "All repos",
+    "noRepo": "No repo",
+    "status": {
+      "active": "Active",
+      "candidate": "Candidate",
+      "retired": "Retired"
+    },
+    "confidence": "{{percent}} sure",
+    "confidenceTitle": "How sure Foreman is that this lesson holds",
+    "uses_one": "used {{count}} time",
+    "uses_other": "used {{count}} times",
+    "showEvidence": "Show evidence ({{count}})",
+    "hideEvidence": "Hide evidence",
+    "retire": "Retire",
+    "retireTitle": "Retire this lesson?",
+    "retireBody": "Foreman stops using this lesson. It stays on record as retired."
+  },
+  "settings": {
+    "errorsTitle_one": "1 setting needs fixing. Nothing was saved.",
+    "errorsTitle_other": "{{count}} settings need fixing. Nothing was saved.",
+    "groups": {
+      "mode": "Mode",
+      "concurrency": "Concurrency",
+      "budgets": "Budgets",
+      "thresholds": "Thresholds",
+      "sampling": "Scorer sampling",
+      "models": "Models per role",
+      "repos": "Repos Foreman works in"
+    },
+    "fields": {
+      "mode": "Mode",
+      "maxConcurrentSessions": "Sessions at once",
+      "perRepo": "Sessions per repo",
+      "budgets": {
+        "perTaskUsd": "Per task (USD)",
+        "perDayUsd": "Per day (USD)"
+      },
+      "autoAnswerConfidence": "Act on its own above",
+      "escalation": {
+        "confidenceBelow": "Second opinion below",
+        "maxSteps": "Second opinions at most",
+        "riskAtLeast": "Second opinion from risk"
+      },
+      "context": {
+        "notesAt": "Write notes at context",
+        "actAt": "Compact or hand off at context"
+      },
+      "evals": {
+        "decisionQualityRate": "Decisions graded by the judge"
+      }
+    },
+    "hints": {
+      "mode": "Shadow only suggests. Autonomous acts.",
+      "maxConcurrentSessions": "Whole numbers, at least 1.",
+      "perRepo": "Not above the total.",
+      "budgets": {
+        "perTaskUsd": "Not above the daily budget.",
+        "perDayUsd": "Foreman and workers together."
+      },
+      "autoAnswerConfidence": "0 to 1.",
+      "escalation": {
+        "confidenceBelow": "0 to 1.",
+        "maxSteps": "0 to 3.",
+        "riskAtLeast": "A bigger model re-decides from this risk up."
+      },
+      "context": {
+        "notesAt": "0 to 1 of the context window.",
+        "actAt": "0 to 1, not below the notes level."
+      },
+      "evals": {
+        "decisionQualityRate": "0 to 1. 1 grades every decision (costs a little)."
+      }
+    },
+    "roles": {
+      "planner": "Planner",
+      "strategist": "Strategist",
+      "supervisor": "Supervisor",
+      "judge": "Judge",
+      "contextKeeper": "Context keeper",
+      "researcher": "Researcher"
+    },
+    "model": "Model",
+    "effort": "Effort",
+    "roleModel": "{{role}} model",
+    "roleEffort": "{{role}} effort",
+    "efforts": {
+      "low": "Low",
+      "medium": "Medium",
+      "high": "High"
+    },
+    "escalatesTo": "Escalates to {{chain}}",
+    "repoName": "Name",
+    "repoPath": "Path on the server",
+    "removeRepo": "Remove repo",
+    "addRepo": "Add repo",
+    "save": "Save settings",
+    "reset": "Reset",
+    "saved": "Saved"
+  }
+}
