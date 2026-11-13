@@ -37,6 +37,8 @@ type UseForemanSuggestionOptions = {
 
 type FeedbackBody = { action: ForemanFeedbackAction; finalText?: string };
 
+const CLOSED_NOTES: ForemanNotesView = { phase: 'closed' };
+
 /**
  * State and actions behind the "Foreman suggests" card.
  *
@@ -65,8 +67,10 @@ export function useForemanSuggestion({
   // session the same way as `held`, so it never shows on another chat.
   const [executionState, setExecutionState] = useState<ForemanExecution | null>(null);
   const execution = enabled && executionState && executionState.suggestion.sessionId === sessionId ? executionState : null;
-  // The notes panel: closed until the user asks to view the notes, then the request's progress and result.
-  const [notesView, setNotesView] = useState<ForemanNotesView>({ phase: 'closed' });
+  // The notes panel: closed until the user asks to view the notes, then the request's progress and result. Tied to its session
+  // like `held`, so switching chats closes it without an effect.
+  const [notesState, setNotesState] = useState<{ sessionId: string | null; view: ForemanNotesView }>({ sessionId: null, view: { phase: 'closed' } });
+  const notesView: ForemanNotesView = notesState.sessionId === sessionId ? notesState.view : CLOSED_NOTES;
   // Suggestions that left the pending state, so a slow initial fetch cannot bring one back.
   const settledIdsRef = useRef(new Set<string>());
   // A suggestion the user pressed Edit on: the next message they send is reported as its outcome.
@@ -74,12 +78,12 @@ export function useForemanSuggestion({
   const sessionIdRef = useRef(sessionId);
   // Counts the suggestion frames applied so far: a fetch that started before a push must not undo that push.
   const appliedSeqRef = useRef(0);
+  const showNotes = useCallback((view: ForemanNotesView) => setNotesState({ sessionId: sessionIdRef.current, view }), []);
 
   useEffect(() => {
     sessionIdRef.current = sessionId;
     settledIdsRef.current = new Set();
     editingRef.current = null;
-    setNotesView({ phase: 'closed' });
   }, [sessionId, enabled]);
 
   const report = useCallback((id: string, body: FeedbackBody) => {
@@ -187,7 +191,7 @@ export function useForemanSuggestion({
     const { action } = plan;
     const base = { suggestion, action };
     setExecutionState({ ...base, phase: 'running' });
-    setNotesView({ phase: 'closed' });
+    showNotes(CLOSED_NOTES);
     try {
       const response = await api.foreman.executeSuggestion(suggestion.id);
       const payload = await response.json().catch(() => null);
@@ -203,35 +207,35 @@ export function useForemanSuggestion({
     } catch (error) {
       setExecutionState({ ...base, phase: 'failed', error: error instanceof Error ? error.message : String(error) });
     }
-  }, [openSession, plan, settle, suggestion]);
+  }, [openSession, plan, settle, showNotes, suggestion]);
 
   /** Loads the notes into the card's panel through the signed-in user's route (the bridge token stays server-side). */
   const viewNotes = useCallback(async () => {
     const target = sessionIdRef.current;
     if (!target) return;
-    setNotesView({ phase: 'loading' });
+    showNotes({ phase: 'loading' });
     try {
       const response = await api.foreman.notes(target);
       const payload = await response.json().catch(() => null);
       if (sessionIdRef.current !== target) return;
       if (!response.ok || !payload?.success) {
-        setNotesView({ phase: 'failed' });
+        showNotes({ phase: 'failed' });
         return;
       }
       const notes: ForemanNotes | null = payload.data?.notes ?? null;
-      setNotesView(notes && typeof notes.content === 'string' ? { phase: 'ready', notes } : { phase: 'empty' });
+      showNotes(notes && typeof notes.content === 'string' ? { phase: 'ready', notes } : { phase: 'empty' });
     } catch {
-      setNotesView({ phase: 'failed' });
+      showNotes({ phase: 'failed' });
     }
-  }, []);
+  }, [showNotes]);
 
-  const hideNotes = useCallback(() => setNotesView({ phase: 'closed' }), []);
+  const hideNotes = useCallback(() => showNotes(CLOSED_NOTES), [showNotes]);
 
   /** Closes the card that reports what Foreman did (it has already been answered, so there is nothing to report back). */
   const closeExecution = useCallback(() => {
     setExecutionState(null);
-    setNotesView({ phase: 'closed' });
-  }, []);
+    showNotes(CLOSED_NOTES);
+  }, [showNotes]);
 
   // The composer tells us every message the user submits. If it follows an Edit, report it: `edited` with the final
   // text, or `sent` when the user pressed Edit and then sent the text unchanged.
