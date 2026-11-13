@@ -1039,7 +1039,7 @@ test('POST /sessions/:id/permission validates the session and the body', async (
 // Milestone 5: the guard on Foreman-started sessions
 // ---------------------------------------------------------------------------------------------
 
-type ToolPolicy = (toolName: string, input: unknown) => { decision: string; category?: string };
+type ToolPolicy = (toolName: string, input: unknown) => { decision: string; category?: string; timeoutMs?: number; timeoutMessage?: string };
 const policyOf = (turn: { options: Record<string, unknown> }) => turn.options.toolPolicy as ToolPolicy | undefined;
 
 test('POST /sessions with a guard gives the run a tool policy that allows safe calls and asks about risky ones', async () => {
@@ -1047,7 +1047,7 @@ test('POST /sessions with a guard gives the run a tool policy that allows safe c
     const response = await call('POST', '/sessions', startBody({ guard: GUARD_BODY }));
     assert.equal(response.status, 201);
     assert.equal(response.body.data.guarded, true);
-    assert.deepEqual(response.body.data.guard, { skippedPatterns: 0 });
+    assert.deepEqual(response.body.data.guard, { skippedPatterns: 0, approvalTimeoutMs: 1_800_000 });
     assert.equal(response.body.data.permissionMode, 'default');
 
     const policy = policyOf(world.startedTurns[0]);
@@ -1074,7 +1074,7 @@ test('a guard can name its own repoRoot, switch the outside-repo rule off, and c
       guard: { ...GUARD_BODY, riskyPatterns: ['(unclosed', ...GUARD_BODY.riskyPatterns], repoRoot: '/mnt/dev/known/worktrees/t1' },
     }));
     assert.equal(response.status, 201);
-    assert.deepEqual(response.body.data.guard, { skippedPatterns: 1 });
+    assert.deepEqual(response.body.data.guard, { skippedPatterns: 1, approvalTimeoutMs: 1_800_000 });
     const policy = policyOf(world.startedTurns[0]);
     assert.equal(policy?.('Write', { file_path: '/mnt/dev/known/src/a.ts', content: '' }).category, 'outside_repo');
     assert.equal(policy?.('Write', { file_path: '/mnt/dev/known/worktrees/t1/a.ts', content: '' }).decision, 'allow');
@@ -1083,6 +1083,30 @@ test('a guard can name its own repoRoot, switch the outside-repo rule off, and c
     const open = await call('POST', '/sessions', startBody({ guard: { ...GUARD_BODY, writeOutsideRepo: false } }));
     assert.equal(policyOf(world.startedTurns[1])?.('Write', { file_path: '/etc/hosts', content: '' }).decision, 'allow');
     assert.equal(open.body.data.guarded, true);
+  });
+});
+
+test('a guarded risky call waits 30 minutes by default, or the guard\'s approvalTimeoutMs, and a timeout says so plainly', async () => {
+  await withBridge(async ({ call, world }) => {
+    const standard = await call('POST', '/sessions', startBody({ guard: GUARD_BODY }));
+    assert.equal(standard.body.data.guard.approvalTimeoutMs, 1_800_000);
+    const standardAsk = policyOf(world.startedTurns[0])?.('Bash', { command: 'git push' });
+    assert.equal(standardAsk?.decision, 'ask');
+    assert.equal(standardAsk?.timeoutMs, 1_800_000);
+    assert.match(standardAsk?.timeoutMessage ?? '', /^Timed out waiting for a person to approve this Bash call: no one answered within 30 minutes\./);
+
+    const short = await call('POST', '/sessions', startBody({ guard: { ...GUARD_BODY, approvalTimeoutMs: 120_000 } }));
+    assert.equal(short.status, 201);
+    assert.equal(short.body.data.guard.approvalTimeoutMs, 120_000);
+    const shortAsk = policyOf(world.startedTurns[1])?.('Read', { file_path: '/mnt/dev/known/.env' });
+    assert.equal(shortAsk?.timeoutMs, 120_000);
+    assert.match(shortAsk?.timeoutMessage ?? '', /within 2 minutes\./);
+    assert.deepEqual(policyOf(world.startedTurns[1])?.('Bash', { command: 'git status' }), { decision: 'allow' });
+
+    // What is stored with the guard is the window actually in force.
+    const stored = world.state.get(short.body.data.sessionId)?.guard;
+    assert.equal(stored?.approvalTimeoutMs, 120_000);
+    assert.equal(world.state.get(standard.body.data.sessionId)?.guard?.approvalTimeoutMs, 1_800_000);
   });
 });
 
@@ -1114,6 +1138,10 @@ test('POST /sessions rejects a malformed guard, and permission modes the guard c
       ['enabled without patterns', startBody({ guard: { enabled: true } }), 400, 'INVALID_REQUEST'],
       ['patterns not strings', startBody({ guard: { ...GUARD_BODY, riskyPatterns: [1] } }), 400, 'INVALID_REQUEST'],
       ['relative repoRoot', startBody({ guard: { ...GUARD_BODY, repoRoot: 'repo' } }), 400, 'INVALID_REQUEST'],
+      ['approval window too short', startBody({ guard: { ...GUARD_BODY, approvalTimeoutMs: 999 } }), 400, 'INVALID_REQUEST'],
+      ['approval window too long', startBody({ guard: { ...GUARD_BODY, approvalTimeoutMs: 86_400_001 } }), 400, 'INVALID_REQUEST'],
+      ['approval window not an integer', startBody({ guard: { ...GUARD_BODY, approvalTimeoutMs: 1500.5 } }), 400, 'INVALID_REQUEST'],
+      ['approval window a string', startBody({ guard: { ...GUARD_BODY, approvalTimeoutMs: '60000' } }), 400, 'INVALID_REQUEST'],
       ['acceptEdits', startBody({ permissionMode: 'acceptEdits', guard: GUARD_BODY }), 400, 'GUARD_INCOMPATIBLE_PERMISSION_MODE'],
       ['auto', startBody({ permissionMode: 'auto', guard: GUARD_BODY }), 400, 'GUARD_INCOMPATIBLE_PERMISSION_MODE'],
       ['bypassPermissions', startBody({ permissionMode: 'bypassPermissions', guard: GUARD_BODY }), 400, 'GUARD_INCOMPATIBLE_PERMISSION_MODE'],
@@ -1166,7 +1194,7 @@ test('sessions that Foreman did not start keep behaving as before: no policy, wh
 
 test('after a restart a resumed Foreman session keeps its permission mode and its guard', async () => {
   await withBridge(async ({ call, world, deps }) => {
-    const started = await call('POST', '/sessions', startBody({ permissionMode: 'plan', taskId: 'task-9', guard: GUARD_BODY }));
+    const started = await call('POST', '/sessions', startBody({ permissionMode: 'plan', taskId: 'task-9', guard: { ...GUARD_BODY, approvalTimeoutMs: 600_000 } }));
     const sessionId = started.body.data.sessionId as string;
     await tick();
     world.state.setStatus(sessionId, 'running');
@@ -1188,6 +1216,7 @@ test('after a restart a resumed Foreman session keeps its permission mode and it
     assert.equal(resumed?.sessionId, sessionId);
     assert.equal(resumed?.options.permissionMode, 'plan');
     assert.equal(policyOf(resumed as never)?.('Bash', { command: 'git push' }).decision, 'ask');
+    assert.equal(policyOf(resumed as never)?.('Bash', { command: 'git push' }).timeoutMs, 600_000, 'the approval window survives the restart');
     assert.equal(policyOf(resumed as never)?.('Bash', { command: 'git status' }).decision, 'allow');
     assert.equal(policyOf(resumed as never)?.('Write', { file_path: '/etc/hosts', content: '' }).category, 'outside_repo');
   });

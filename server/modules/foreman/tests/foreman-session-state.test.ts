@@ -39,6 +39,7 @@ const GUARD: ForemanGuardConfig = {
   secretPatterns: ['(^|/)\\.env$'],
   writeOutsideRepo: true,
   repoRoot: '/mnt/dev/repo',
+  approvalTimeoutMs: 120_000,
 };
 
 const base = { sessionId: 's1', projectPath: '/mnt/dev/repo' };
@@ -122,7 +123,9 @@ test('after a restart a new service reads the same state: mode, guard and task s
 
     // The guard that comes back still judges calls the same way.
     const policy = createToolPolicy(compileGuard(survivor?.guard as ForemanGuardConfig, '/mnt/dev/repo'));
-    assert.equal(policy('Bash', { command: 'git push' }).decision, 'ask');
+    const risky = policy('Bash', { command: 'git push' });
+    assert.equal(risky.decision, 'ask');
+    assert.equal(risky.decision === 'ask' && risky.timeoutMs, 120_000, 'the approval window is stored with the guard');
     assert.equal(policy('Bash', { command: 'git status' }).decision, 'allow');
 
     assert.equal(log.length, 1);
@@ -266,6 +269,22 @@ test('a failing database is logged and the bridge carries on with what it has', 
   assert.equal(state.get('s1')?.status, 'running');
   assert.ok(log.some((message) => /restart recovery failed/.test(message)));
   assert.ok(log.some((message) => /not persisted/.test(message)));
+});
+
+test('a guard stored before the approval window existed reads back with the 30 minute default', async () => {
+  await withIsolatedDatabase(() => {
+    foremanSessionStateDb.upsert({
+      session_id: 'older-guard',
+      task_id: null,
+      status: 'idle',
+      permission_mode: 'default',
+      billing: null,
+      guard_json: JSON.stringify({ enabled: true, riskyPatterns: ['\\bgit\\s+push\\b'], secretPatterns: [], writeOutsideRepo: true }),
+      updated_at: new Date().toISOString(),
+    });
+    const guard = newService().get('older-guard')?.guard;
+    assert.equal(guard?.approvalTimeoutMs, 1_800_000);
+  });
 });
 
 test('a stored guard that cannot be read asks about every shell command and path instead of waving them through', async () => {

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  DEFAULT_GUARD_APPROVAL_TIMEOUT_MS,
   assertGuardCompatiblePermissionMode,
   classifyToolUse,
   compileGuard,
@@ -203,10 +204,12 @@ test('the tool policy allows safe calls and asks for risky ones, naming the cate
   const policy = createToolPolicy(guard());
   assert.deepEqual(policy('Bash', { command: 'git status' }), { decision: 'allow' });
   assert.deepEqual(policy('Edit', { file_path: `${REPO}/src/a.ts`, old_string: 'a', new_string: 'b' }), { decision: 'allow' });
-  assert.deepEqual(policy('Bash', { command: 'git push --force' }), {
+  assert.deepEqual({ ...policy('Bash', { command: 'git push --force' }), timeoutMessage: undefined }, {
     decision: 'ask',
     category: 'command',
     matched: RISKY[1],
+    timeoutMs: DEFAULT_GUARD_APPROVAL_TIMEOUT_MS,
+    timeoutMessage: undefined,
   });
   const secret = policy('Read', { file_path: `${REPO}/.env` });
   assert.equal(secret.decision, 'ask');
@@ -219,7 +222,37 @@ test('a classifier fault is a prompt, never an allow', () => {
   const broken = guard();
   Object.defineProperty(broken, 'riskyPatterns', { get: () => { throw new Error('boom'); } });
   const policy = createToolPolicy(broken);
-  assert.deepEqual(policy('Bash', { command: 'ls' }), { decision: 'ask', category: 'command', matched: 'classifier-error' });
+  const verdict = policy('Bash', { command: 'ls' });
+  assert.equal(verdict.decision, 'ask');
+  assert.equal(verdict.decision === 'ask' && verdict.matched, 'classifier-error');
+  assert.equal(verdict.decision === 'ask' && verdict.timeoutMs, DEFAULT_GUARD_APPROVAL_TIMEOUT_MS);
+});
+
+test('a risky call waits for the guard\'s approval window, and a timeout says it timed out waiting for a person', () => {
+  assert.equal(DEFAULT_GUARD_APPROVAL_TIMEOUT_MS, 30 * 60 * 1000);
+  assert.equal(guard().approvalTimeoutMs, 30 * 60 * 1000);
+
+  const custom = createToolPolicy(guard({ approvalTimeoutMs: 90_000 }));
+  const asked = custom('Bash', { command: 'git push' });
+  assert.equal(asked.decision, 'ask');
+  if (asked.decision !== 'ask') return;
+  assert.equal(asked.timeoutMs, 90_000);
+  assert.match(asked.timeoutMessage, /^Timed out waiting for a person to approve this Bash call: no one answered within 90 seconds\./);
+  assert.match(asked.timeoutMessage, /not a decision: no person said no/);
+  assert.match(asked.timeoutMessage, /was not run/);
+  assert.doesNotMatch(asked.timeoutMessage, /denied by|refused by|user denied/i);
+
+  const standard = createToolPolicy(guard());
+  const long = standard('Read', { file_path: `${REPO}/.env` });
+  assert.equal(long.decision === 'ask' && long.timeoutMs, 1_800_000);
+  assert.match(long.decision === 'ask' ? long.timeoutMessage : '', /this Read call: no one answered within 30 minutes\./);
+  const hours = createToolPolicy(guard({ approvalTimeoutMs: 6 * 3_600_000 }))('Bash', { command: 'git push' });
+  assert.match(hours.decision === 'ask' ? hours.timeoutMessage : '', /within 6 hours\./);
+  const second = createToolPolicy(guard({ approvalTimeoutMs: 1000 }))('Bash', { command: 'git push' });
+  assert.match(second.decision === 'ask' ? second.timeoutMessage : '', /within 1 second\./);
+
+  // Safe calls have no window: they are never asked.
+  assert.deepEqual(standard('Bash', { command: 'git status' }), { decision: 'allow' });
 });
 
 // ---------------------------------------------------------------------------------------------
@@ -242,6 +275,7 @@ test('parseGuardConfig accepts a full guard and applies the defaults', () => {
     secretPatterns: [],
     writeOutsideRepo: false,
     repoRoot: '/mnt/dev/x',
+    approvalTimeoutMs: 1_800_000,
   });
   // Unspecified writeOutsideRepo means the stricter choice; no repoRoot key when none was given.
   assert.deepEqual(parseGuardConfig({ enabled: true, riskyPatterns: [], secretPatterns: [] }), {
@@ -249,8 +283,24 @@ test('parseGuardConfig accepts a full guard and applies the defaults', () => {
     riskyPatterns: [],
     secretPatterns: [],
     writeOutsideRepo: true,
+    approvalTimeoutMs: 1_800_000,
   });
   assert.equal(parseGuardConfig({ enabled: false })?.enabled, false);
+});
+
+test('parseGuardConfig takes an optional approvalTimeoutMs between one second and one day', () => {
+  const guardWith = (approvalTimeoutMs: unknown) => ({ enabled: true, riskyPatterns: [], secretPatterns: [], approvalTimeoutMs });
+  assert.equal(parseGuardConfig(guardWith(1000))?.approvalTimeoutMs, 1000);
+  assert.equal(parseGuardConfig(guardWith(120_000))?.approvalTimeoutMs, 120_000);
+  assert.equal(parseGuardConfig(guardWith(86_400_000))?.approvalTimeoutMs, 86_400_000);
+  assert.equal(parseGuardConfig(guardWith(undefined))?.approvalTimeoutMs, 1_800_000);
+  assert.equal(parseGuardConfig(guardWith(null))?.approvalTimeoutMs, 1_800_000);
+
+  for (const bad of [999, 0, -5, 86_400_001, 1500.5, '60000', Number.NaN, Infinity, true, [], {}]) {
+    rejects(guardWith(bad), /guard\.approvalTimeoutMs must be an integer between 1000 and 86400000/);
+  }
+  // A disabled guard enforces nothing, so its window is not examined.
+  assert.equal(parseGuardConfig({ enabled: false, approvalTimeoutMs: 5 })?.enabled, false);
 });
 
 test('parseGuardConfig rejects malformed guards', () => {

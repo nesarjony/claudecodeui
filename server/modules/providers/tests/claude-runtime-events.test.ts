@@ -115,6 +115,8 @@ rl.on('line', (line) => {
 rl.on('close', () => process.exit(0));
 `;
 
+const DEFAULT_APPROVAL_WINDOW_MS = 2000;
+let previousApprovalTimeout: string | undefined;
 let directory = '';
 let logFile = '';
 let runtime: typeof import('@/modules/providers/list/claude/claude-runtime.provider.js');
@@ -135,11 +137,16 @@ before(async () => {
   process.env.CLAUDE_CLI_PATH = cli;
   process.env.FAKE_CLAUDE_LOG = logFile;
   process.env.CLOUDCLI_ANTHROPIC_API_KEY_FILE = keyFile;
+  // The runtime's own approval window, read when the module loads: short, so the tests below can outlast it.
+  previousApprovalTimeout = process.env.CLAUDE_TOOL_APPROVAL_TIMEOUT_MS;
+  process.env.CLAUDE_TOOL_APPROVAL_TIMEOUT_MS = String(DEFAULT_APPROVAL_WINDOW_MS);
   runtime = await import('@/modules/providers/list/claude/claude-runtime.provider.js');
   unsubscribers.push(runtime.subscribeClaudeRuntimeEvents((event: ClaudeRuntimeEvent) => events.push(event)));
 });
 
 after(async () => {
+  if (previousApprovalTimeout === undefined) delete process.env.CLAUDE_TOOL_APPROVAL_TIMEOUT_MS;
+  else process.env.CLAUDE_TOOL_APPROVAL_TIMEOUT_MS = previousApprovalTimeout;
   unsubscribers.forEach((unsubscribe) => unsubscribe());
   await rm(directory, { recursive: true, force: true });
 });
@@ -405,4 +412,61 @@ test('an aborted guarded prompt is not reported as resolved: the run just ends',
   const outcome = await pending;
   const own = outcome.events.filter((event) => event.sessionId === 'app-session-policy-abort');
   assert.deepEqual(own.map((event) => event.kind), ['run_started', 'permission_request', 'run_ended']);
+});
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+test('an unguarded prompt keeps the runtime\'s own approval window and its plain timeout message', async () => {
+  const outcome = await runPrompt('ask', {}, 'app-session-env-timeout');
+  assert.ok(kinds(outcome).includes('turn_result'), 'the run goes on after the denial');
+  const answer = (await permissionAnswers()).at(-1);
+  assert.equal(answer?.response.behavior, 'deny');
+  assert.equal(answer?.response.message, 'Permission request timed out');
+  assert.ok(outcome.sent.some((message) => message.kind === 'permission_cancelled' && message.reason === 'timeout'));
+  assert.ok(outcome.events.some((event) => event.kind === 'permission_resolved'), 'a timeout settles the prompt too');
+});
+
+test('a policy\'s timeoutMs outlasts the runtime\'s window: still pending after it, and a later answer is honoured', async () => {
+  const toolPolicy = () => ({ decision: 'ask', category: 'command', timeoutMs: 20_000, timeoutMessage: 'Timed out waiting for a person.' });
+  const pending = runPrompt('ask', { toolPolicy }, 'app-session-policy-long-wait');
+  const request = await waitForPermissionRequest('app-session-policy-long-wait');
+
+  await sleep(DEFAULT_APPROVAL_WINDOW_MS + 700);
+  assert.deepEqual(
+    runtime.getPendingApprovalsForSession('app-session-policy-long-wait').map((entry: { requestId: string }) => entry.requestId),
+    [request.requestId],
+    'the unguarded window has passed and the guarded prompt is still waiting',
+  );
+
+  runtime.resolveToolApproval(request.requestId, { allow: true });
+  const outcome = await pending;
+  assert.equal((await permissionAnswers()).at(-1)?.response.behavior, 'allow');
+  assert.ok(kinds(outcome).includes('turn_result'));
+});
+
+test('when a guarded prompt times out the worker is told it timed out waiting for a person, and a late answer finds nothing', async () => {
+  const message = 'Timed out waiting for a person to approve this Bash call: no one answered within 1 second. This is a timeout, not a decision.';
+  const toolPolicy = () => ({ decision: 'ask', category: 'command', timeoutMs: 300, timeoutMessage: message });
+  const started = Date.now();
+  const outcome = await runPrompt('ask', { toolPolicy }, 'app-session-policy-timeout');
+  assert.ok(Date.now() - started < DEFAULT_APPROVAL_WINDOW_MS, 'the policy\'s window applied, not the longer default');
+
+  const request = outcome.events.find((event) => event.kind === 'permission_request') as Extract<ClaudeRuntimeEvent, { kind: 'permission_request' }>;
+  assert.equal(request.guarded, true);
+  const answer = (await permissionAnswers()).at(-1);
+  assert.equal(answer?.response.behavior, 'deny');
+  assert.equal(answer?.response.message, message);
+  assert.ok(outcome.sent.some((message_) => message_.kind === 'permission_cancelled' && message_.requestId === request.requestId && message_.reason === 'timeout'), 'the chat UI retracts the prompt');
+  assert.ok(outcome.events.some((event) => event.kind === 'permission_resolved' && event.requestId === request.requestId));
+  assert.deepEqual(runtime.getPendingApprovalsForSession('app-session-policy-timeout'), []);
+
+  // A late answer has nothing to resolve (the bridge reports it as 404 NO_PENDING_PERMISSION) and changes nothing.
+  assert.doesNotThrow(() => runtime.resolveToolApproval(request.requestId, { allow: true }));
+  assert.equal((await permissionAnswers()).at(-1)?.response.behavior, 'deny');
+});
+
+test('a policy without a timeoutMessage still denies a timeout with the runtime\'s plain message', async () => {
+  const toolPolicy = () => ({ decision: 'ask', category: 'command', timeoutMs: 200 });
+  await runPrompt('ask', { toolPolicy }, 'app-session-policy-timeout-plain');
+  assert.equal((await permissionAnswers()).at(-1)?.response.message, 'Permission request timed out');
 });

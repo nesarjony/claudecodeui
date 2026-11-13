@@ -12,7 +12,7 @@ import express from 'express';
 /**
  * The guard end to end inside one process: the real bridge module (router, sessions service, state service, event
  * pusher), the real database, the real Claude runtime and the real SDK, with a fake `claude` executable that asks for
- * permission to run `git push` ("risky") or `git status` ("safe"). Only Foreman's end of the event push is a stub.
+ * permission to run `git push` ("risky", or "slow" for a prompt nobody answers) or `git status` ("safe"). Only Foreman's end of the event push is a stub.
  */
 const FAKE_CLAUDE = String.raw`#!/usr/bin/env node
 const readline = require('node:readline');
@@ -54,7 +54,7 @@ rl.on('line', (line) => {
   const prompt = typeof content === 'string' ? content : (content.find((block) => block.type === 'text') || {}).text || '';
   note({ prompt });
   out({ type: 'system', subtype: 'init', model: 'claude-sonnet-5-5', tools: [], mcp_servers: [], cwd: process.cwd(), permissionMode: 'default', ...common() });
-  const command = prompt === 'risky' ? 'git push origin main' : prompt === 'safe' ? 'git status' : null;
+  const command = prompt === 'risky' ? 'git push origin main' : prompt === 'slow' ? 'git push origin slow' : prompt === 'safe' ? 'git status' : null;
   if (command) {
     asking = command;
     out({ type: 'control_request', request_id: 'perm-' + crypto.randomUUID(), request: { subtype: 'can_use_tool', tool_name: 'Bash', input: { command }, tool_use_id: 'tu_' + crypto.randomUUID() } });
@@ -270,4 +270,39 @@ test('a session started without a guard asks about everything, as before, and th
   assert.equal('category' in event.data, false);
   await api('POST', `/sessions/${sessionId}/permission`, { requestId: pending[0].requestId, decision: 'allow' });
   await until('the session to be idle', async () => (await statusOf(sessionId)) === 'idle');
+});
+
+test('a guarded prompt nobody answers in time is denied as a timeout, the worker is told so, and a late answer is a 404', async () => {
+  const started = await api('POST', '/sessions', {
+    projectPath: projectDir,
+    prompt: 'slow',
+    billing: 'subscription',
+    permissionMode: 'default',
+    guard: { ...GUARD, repoRoot: projectDir, approvalTimeoutMs: 1000 },
+  });
+  assert.equal(started.status, 201, JSON.stringify(started.body));
+  assert.equal(started.body.data.guard.approvalTimeoutMs, 1000);
+  const sessionId = started.body.data.sessionId as string;
+
+  const pending = await until('the pending permission', async () => {
+    const response = await api('GET', `/sessions/${sessionId}/permissions`);
+    return response.body.data.permissions.length > 0 ? response.body.data.permissions : null;
+  });
+  assert.equal(await statusOf(sessionId), 'waiting_permission');
+  assert.equal(JSON.parse(database.foremanSessionStateDb.get(sessionId)?.guard_json ?? 'null').approvalTimeoutMs, 1000, 'the window is stored with the guard');
+
+  // Nobody answers. After the guard's window (not the runtime's 55 s) the call is denied, and the CLI is told why.
+  const reply = await until('the timeout denial', async () => (await answers()).find((entry) => entry.tool === 'git push origin slow'));
+  assert.equal(reply.answer.behavior, 'deny');
+  assert.match(reply.answer.message, /^Timed out waiting for a person to approve this Bash call: no one answered within 1 second\./);
+  assert.match(reply.answer.message, /no person said no/);
+  assert.doesNotMatch(reply.answer.message, /denied by|refused|user denied/i);
+
+  await until('the session to be idle', async () => (await statusOf(sessionId)) === 'idle');
+  assert.deepEqual((await api('GET', `/sessions/${sessionId}/permissions`)).body.data, { permissions: [] });
+
+  // The person answers too late: nothing is pending any more.
+  const late = await api('POST', `/sessions/${sessionId}/permission`, { requestId: pending[0].requestId, decision: 'allow' });
+  assert.equal(late.status, 404);
+  assert.equal(late.body.error.code, 'NO_PENDING_PERMISSION');
 });

@@ -24,6 +24,11 @@ export type ForemanGuardConfig = {
   writeOutsideRepo: boolean;
   /** Writes outside this directory are risky; defaults to the session's project path. */
   repoRoot?: string;
+  /**
+   * How long a risky call waits for an answer before it is denied as timed out (milliseconds, 1000 to 86400000).
+   * A guarded session defaults to 30 minutes, long enough for a person; other sessions keep the runtime's own window.
+   */
+  approvalTimeoutMs?: number;
 };
 
 /** A guard whose patterns are compiled; what the classifier runs on. */
@@ -32,6 +37,7 @@ export type CompiledForemanGuard = {
   secretPatterns: RegExp[];
   writeOutsideRepo: boolean;
   repoRoot: string | null;
+  approvalTimeoutMs: number;
   /** Patterns that were not valid regular expressions and are therefore not enforced. */
   skippedPatterns: number;
 };
@@ -42,7 +48,15 @@ export type CompiledForemanGuard = {
  */
 export type ForemanToolPolicyDecision =
   | { decision: 'allow' }
-  | { decision: 'ask'; category: ForemanGuardCategory; matched: string };
+  | {
+      decision: 'ask';
+      category: ForemanGuardCategory;
+      matched: string;
+      /** How long the prompt waits for an answer before the call is denied. */
+      timeoutMs: number;
+      /** What the worker is told when that happens: it timed out waiting for a person, nobody refused. */
+      timeoutMessage: string;
+    };
 
 export type ForemanToolPolicy = (toolName: string, input: unknown) => ForemanToolPolicyDecision;
 
@@ -52,6 +66,10 @@ const PATH_KEYS = ['file_path', 'path', 'notebook_path'];
 /** Permission modes in which the CLI settles tool calls itself, so cloudcli's permission callback is never asked. */
 export const GUARD_INCOMPATIBLE_PERMISSION_MODES: readonly string[] = ['acceptEdits', 'auto', 'bypassPermissions'];
 
+/** A guarded session's prompt waits this long for a person unless the guard says otherwise. */
+export const DEFAULT_GUARD_APPROVAL_TIMEOUT_MS = 30 * 60 * 1000;
+const MIN_APPROVAL_TIMEOUT_MS = 1000;
+const MAX_APPROVAL_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 const MAX_PATTERNS = 200;
 const MAX_PATTERN_LENGTH = 1000;
 const MAX_REPO_ROOT_LENGTH = 4096;
@@ -80,6 +98,7 @@ export function compileGuard(config: ForemanGuardConfig, fallbackRepoRoot: strin
     secretPatterns: secret.compiled,
     writeOutsideRepo: config.writeOutsideRepo,
     repoRoot: config.repoRoot ?? fallbackRepoRoot,
+    approvalTimeoutMs: config.approvalTimeoutMs ?? DEFAULT_GUARD_APPROVAL_TIMEOUT_MS,
     skippedPatterns: risky.skipped + secret.skipped,
   };
 }
@@ -154,20 +173,39 @@ export function classifyToolUse(call: { toolName: string; input: unknown }, guar
   return { risky: false };
 }
 
+function describeDuration(ms: number): string {
+  const seconds = Math.round(ms / 1000);
+  if (seconds < 120) {
+    return `${seconds} second${seconds === 1 ? '' : 's'}`;
+  }
+  const minutes = Math.round(seconds / 60);
+  return minutes < 120 ? `${minutes} minutes` : `${Math.round(minutes / 60)} hours`;
+}
+
+/** The denial the worker gets when nobody answered in time: plainly a timeout, not a person's refusal. */
+function timeoutMessageFor(toolName: string, approvalTimeoutMs: number): string {
+  return `Timed out waiting for a person to approve this ${toolName} call: no one answered within ${describeDuration(approvalTimeoutMs)}. `
+    + "This is a timeout, not a decision: no person said no. The call was not run. Do not retry it; say in your reply that it still needs a person's approval.";
+}
+
 /**
  * The per-session policy a guarded run hands to the Claude runtime. It never throws: a call the classifier could not
  * judge counts as risky, so a fault routes the call to a prompt instead of waving it through.
  */
 // Consumed by the sessions service when it starts or resumes a guarded run.
 export function createToolPolicy(guard: CompiledForemanGuard): ForemanToolPolicy {
+  const waiting = (toolName: string) => ({
+    timeoutMs: guard.approvalTimeoutMs,
+    timeoutMessage: timeoutMessageFor(toolName, guard.approvalTimeoutMs),
+  });
   return (toolName, input) => {
     try {
       const verdict = classifyToolUse({ toolName, input }, guard);
       return verdict.risky
-        ? { decision: 'ask', category: verdict.category, matched: verdict.matched }
+        ? { decision: 'ask', category: verdict.category, matched: verdict.matched, ...waiting(toolName) }
         : { decision: 'allow' };
     } catch {
-      return { decision: 'ask', category: 'command', matched: 'classifier-error' };
+      return { decision: 'ask', category: 'command', matched: 'classifier-error', ...waiting(toolName) };
     }
   };
 }
@@ -193,9 +231,11 @@ function readPatternList(value: unknown, field: string): string[] {
 
 /**
  * Validates the `guard` of a start-session body. Absent or `null` means no guard (`undefined`); a present guard must be
- * an object with a boolean `enabled`. A disabled guard is accepted as-is and enforces nothing; an enabled one needs both
- * pattern lists (they may be empty), because a guard that silently has no rules would look protective and not be.
- * Invalid regular expressions are not an error here: they are skipped when the guard is compiled.
+ * an object with a boolean `enabled`. A disabled guard is accepted as-is and enforces nothing; an enabled one needs
+ * both pattern lists (they may be empty), because a guard that silently has no rules would look protective and not be.
+ * `approvalTimeoutMs` is optional (an integer, 1000 to 86400000) and defaults to 30 minutes; the result always carries
+ * it, so what is stored with the guard is the window actually in force. Invalid regular expressions are not an error
+ * here: they are skipped when the guard is compiled.
  */
 // Consumed by foreman.routes.ts for `POST /sessions`.
 export function parseGuardConfig(raw: unknown): ForemanGuardConfig | undefined {
@@ -223,6 +263,15 @@ export function parseGuardConfig(raw: unknown): ForemanGuardConfig | undefined {
     }
     repoRoot = body.repoRoot.trim();
   }
+  const approvalTimeoutMs = body.approvalTimeoutMs ?? DEFAULT_GUARD_APPROVAL_TIMEOUT_MS;
+  if (
+    typeof approvalTimeoutMs !== 'number'
+    || !Number.isInteger(approvalTimeoutMs)
+    || approvalTimeoutMs < MIN_APPROVAL_TIMEOUT_MS
+    || approvalTimeoutMs > MAX_APPROVAL_TIMEOUT_MS
+  ) {
+    throw invalid(`guard.approvalTimeoutMs must be an integer between ${MIN_APPROVAL_TIMEOUT_MS} and ${MAX_APPROVAL_TIMEOUT_MS} (milliseconds).`);
+  }
   return {
     enabled: true,
     riskyPatterns: readPatternList(body.riskyPatterns, 'riskyPatterns'),
@@ -230,6 +279,7 @@ export function parseGuardConfig(raw: unknown): ForemanGuardConfig | undefined {
     // Unspecified means the stricter choice.
     writeOutsideRepo: body.writeOutsideRepo !== false,
     ...(repoRoot ? { repoRoot } : {}),
+    approvalTimeoutMs,
   };
 }
 

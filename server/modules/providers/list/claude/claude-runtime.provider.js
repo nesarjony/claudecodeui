@@ -156,7 +156,8 @@ function createRequestId() {
 }
 
 // Asks a host-supplied per-session tool policy (`options.toolPolicy`, set by the Foreman bridge) about one tool call.
-// It answers `{ decision: 'allow' }` or `{ decision: 'ask', category }`; null means no policy. A throwing policy asks.
+// It answers `{ decision: 'allow' }` or `{ decision: 'ask', category, timeoutMs?, timeoutMessage? }`; null means no policy.
+// A throwing policy asks.
 function consultToolPolicy(policy, toolName, input) {
   if (typeof policy !== 'function') return null;
   try {
@@ -1156,7 +1157,7 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
       }));
 
       const decision = await waitForToolApproval(requestId, {
-        timeoutMs: requiresInteraction ? 0 : undefined,
+        timeoutMs: requiresInteraction ? 0 : policy?.timeoutMs,
         signal: context?.signal,
         metadata: {
           // Keyed by the app session id so `chat.subscribe` can look pending
@@ -1173,7 +1174,7 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
       // Cancelled prompts belong to a run that is being aborted, whose own end event follows.
       if (!decision?.cancelled) emitRunEvent({ kind: 'permission_resolved', requestId });
       if (!decision) {
-        return { behavior: 'deny', message: 'Permission request timed out' };
+        return { behavior: 'deny', message: policy?.timeoutMessage ?? 'Permission request timed out' };
       }
 
       if (decision.cancelled) {

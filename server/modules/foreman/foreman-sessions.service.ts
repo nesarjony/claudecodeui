@@ -513,7 +513,7 @@ export function createForemanSessionsService(deps: ForemanBridgeDependencies) {
         status: 'running' as const,
         guarded: compiledGuard !== null,
         // Patterns that are not valid regular expressions are not enforced; say so rather than hide it.
-        ...(compiledGuard ? { guard: { skippedPatterns: compiledGuard.skippedPatterns } } : {}),
+        ...(compiledGuard ? { guard: { skippedPatterns: compiledGuard.skippedPatterns, approvalTimeoutMs: compiledGuard.approvalTimeoutMs } } : {}),
       };
     },
 
