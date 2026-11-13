@@ -1,4 +1,4 @@
-import { mkdirSync, realpathSync, statSync } from 'node:fs';
+import { lstatSync, mkdirSync, readlinkSync, realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
 
 import {
@@ -140,8 +140,14 @@ const MAX_PATTERN_LENGTH = 1000;
 const MAX_REPO_ROOT_LENGTH = 4096;
 const MAX_ALLOW_WRITE_DIRS = 20;
 
-/** `target` with symlinks resolved; a path that does not exist yet resolves through its nearest existing directory. */
-function realish(target: string): string {
+/** A symlink chain longer than this is a loop, or as good as one: it resolves to the root, which is outside every allowed directory. */
+const MAX_LINKS = 40;
+
+/**
+ * `target` with symlinks resolved. A path that does not exist yet resolves through its nearest existing directory. A DANGLING symlink (one
+ * whose target does not exist yet) is followed too: a write through it creates its target, so that is where the write goes.
+ */
+function realish(target: string, links = 0): string {
   let head = path.resolve(target);
   const tail: string[] = [];
   for (;;) {
@@ -149,6 +155,17 @@ function realish(target: string): string {
       const real = realpathSync(head);
       return tail.length ? path.resolve(real, ...tail.reverse()) : real;
     } catch {
+      try {
+        if (lstatSync(head).isSymbolicLink()) {
+          if (links >= MAX_LINKS) {
+            return path.sep;
+          }
+          const linked = path.resolve(path.dirname(head), readlinkSync(head));
+          return realish(tail.length ? path.resolve(linked, ...tail.reverse()) : linked, links + 1);
+        }
+      } catch {
+        // Not a link either: it does not exist.
+      }
       const parent = path.dirname(head);
       if (parent === head) {
         return path.resolve(target);

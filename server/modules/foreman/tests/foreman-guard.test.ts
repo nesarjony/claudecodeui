@@ -631,6 +631,18 @@ test('allowWriteDirs: a plain file in an allowed directory is not an outside_rep
     assert.equal(verdictFor('Write', '/tmp/.env').risky && (verdictFor('Write', '/tmp/.env') as { category: string }).category, 'secret');
     assert.equal((verdictFor('Write', '/etc/hosts') as { category: string }).category, 'outside_repo');
     // A symlink inside the scratch directory that leads out of it is judged by where it leads (here the only allowed directory is the scratch one).
+    // ... and so is a dangling one (its target does not exist yet: a write through it creates the target), a chain of links, and a loop.
+    symlinkSync(path.join(elsewhere, 'not-yet.txt'), path.join(scratch, 'dangling-out'));
+    symlinkSync(path.join(scratch, 'made-inside.txt'), path.join(scratch, 'dangling-in'));
+    symlinkSync(path.join(scratch, 'dangling-out'), path.join(scratch, 'chain-out'));
+    symlinkSync(path.join(scratch, 'loop-b'), path.join(scratch, 'loop-a'));
+    symlinkSync(path.join(scratch, 'loop-a'), path.join(scratch, 'loop-b'));
+    const strict = guard({ allowWriteDirs: [scratch] });
+    for (const name of ['dangling-out', 'chain-out', 'loop-a']) {
+      const v = classifyToolUse({ toolName: 'Write', input: { file_path: path.join(scratch, name), content: 'x' } }, strict);
+      assert.equal(v.risky && v.category, 'outside_repo', name);
+    }
+    assert.deepEqual(classifyToolUse({ toolName: 'Write', input: { file_path: path.join(scratch, 'dangling-in'), content: 'x' } }, strict), { risky: false });
     const scratchOnly = guard({ allowWriteDirs: [scratch] });
     const viaLink = classifyToolUse({ toolName: 'Write', input: { file_path: path.join(scratch, 'link-out', 'x.txt'), content: 'x' } }, scratchOnly);
     assert.equal(viaLink.risky && viaLink.category, 'outside_repo');
