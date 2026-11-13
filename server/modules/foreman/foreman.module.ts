@@ -5,6 +5,8 @@ import {
   createRuntimeOutcomeTracker,
   splitModelBilling,
 } from '@/modules/foreman/foreman-events.service.js';
+import { createManagedSessionStore } from '@/modules/foreman/foreman-managed-sessions.service.js';
+import { createForemanRuntimeHooks } from '@/modules/foreman/foreman-runtime-hooks.service.js';
 import { createForemanSessionsService, type LiveContextUsage } from '@/modules/foreman/foreman-sessions.service.js';
 import {
   createForemanSuggestionsClient,
@@ -22,6 +24,7 @@ import {
   providerModelsService,
   providerRuntimeService,
   sessionsService,
+  setClaudeRuntimeAdditionsProvider,
   setClaudeSessionModel,
   subscribeClaudeRuntimeEvents,
 } from '@/modules/providers/index.js';
@@ -70,6 +73,24 @@ export function createForemanModule() {
     get: (key) => appConfigDb.get(key),
     set: (key, value) => appConfigDb.set(key, value),
   });
+  // Sessions started through the bridge are marked the same way, so they keep the worker autocompact threshold on resume.
+  const managed = createManagedSessionStore({
+    get: (key) => appConfigDb.get(key),
+    set: (key, value) => appConfigDb.set(key, value),
+  });
+  // Foreman's PreCompact/SessionStart hooks (Foreman repos only) and the autocompact threshold (bridge sessions only) are
+  // added to each Claude run through this provider; it never throws and a Foreman that is down just means no additions.
+  const runtimeHooks = createForemanRuntimeHooks({
+    tokenFile,
+    isManagedSession: (sessionId) => managed.has(sessionId),
+    warn: (message) => console.warn(`[Foreman bridge] ${message}`),
+    debug: (message) => {
+      if (debugEnabled) {
+        console.debug(`[Foreman bridge] ${message}`);
+      }
+    },
+  });
+  setClaudeRuntimeAdditionsProvider((session) => runtimeHooks.forSession(session));
   const pusher = createForemanEventPusher({
     tokenFile,
     describeSession: (sessionId) => {
@@ -129,6 +150,7 @@ export function createForemanModule() {
       providerModelsService.setSessionModel('claude', sessionId, model);
     },
     taskIds,
+    managed,
     announceSession: (sessionId) => broadcastSessionUpserted(sessionId),
     hasFailed: (sessionId) => outcomes.hasFailed(sessionId),
   });

@@ -334,6 +334,11 @@ export const api = {
       get(`/api/foreman-suggestions/pending${query({ sessionId })}`),
     suggestionFeedback: (suggestionId: string, body: { action: 'sent' | 'edited' | 'dismissed'; finalText?: string }) =>
       post(`/api/foreman-suggestions/${encodeURIComponent(suggestionId)}/feedback`, body),
+    // Has Foreman carry out a write_notes or handoff suggestion itself (a handoff answers the new session's id).
+    executeSuggestion: (suggestionId: string) =>
+      post(`/api/foreman-suggestions/${encodeURIComponent(suggestionId)}/execute`, {}),
+    // The task notes Foreman's context keeper last wrote for a session.
+    notes: (sessionId: string) => get(`/api/foreman-suggestions/notes${query({ sessionId })}`),
   },
 
   // Workspace file tree

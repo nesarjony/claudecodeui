@@ -68,6 +68,47 @@ export function subscribeClaudeRuntimeEvents(listener) {
   };
 }
 
+// The Foreman bridge's hook into each run: it answers with extra SDK hooks and environment variables for a session.
+// Registered once by the foreman module; the runtime knows nothing else about Foreman.
+let runtimeAdditionsProvider = null;
+
+/**
+ * Registers the provider that adds in-process hooks and environment variables to a run (Foreman's PreCompact and SessionStart
+ * hooks, and the autocompact threshold of sessions it started).
+ * @param {((session: { sessionId: string, projectPath: string | null }) => Promise<{ env?: Record<string, string>, hooks?: Record<string, unknown[]> }>) | null} provider
+ */
+export function setClaudeRuntimeAdditionsProvider(provider) {
+  runtimeAdditionsProvider = provider;
+}
+
+const RUNTIME_ADDITIONS_TIMEOUT_MS = 3000;
+
+/**
+ * Asks the registered provider what to add to a run. Never throws and never waits longer than a few seconds: a provider that
+ * is missing, slow or failing means the run goes ahead without additions.
+ * @param {{ sessionId: string | undefined, projectPath: string | null }} session
+ * @returns {Promise<{ env?: Record<string, string>, hooks?: Record<string, unknown[]> }>}
+ */
+async function resolveRuntimeAdditions(session) {
+  if (!runtimeAdditionsProvider || !session.sessionId) {
+    return {};
+  }
+  let timer;
+  try {
+    const timeout = new Promise((resolve) => {
+      timer = setTimeout(() => resolve({}), RUNTIME_ADDITIONS_TIMEOUT_MS);
+      timer.unref?.();
+    });
+    const additions = await Promise.race([runtimeAdditionsProvider(session), timeout]);
+    return additions && typeof additions === 'object' ? additions : {};
+  } catch (error) {
+    console.warn('Claude runtime additions provider failed:', error?.message || error);
+    return {};
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function emitRuntimeEvent(event) {
   for (const listener of runtimeEventListeners) {
     try {
@@ -1094,6 +1135,16 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
         }]
       }]
     };
+
+    // Foreman-managed sessions get in-process PreCompact/SessionStart hooks (project and Foreman's own repos only) and,
+    // when started through the bridge, the worker autocompact threshold. Appended to the hooks above, never replacing them.
+    const runtimeAdditions = await resolveRuntimeAdditions({ sessionId, projectPath: options.projectPath || options.cwd || null });
+    if (runtimeAdditions.env) {
+      sdkOptions.env = { ...sdkOptions.env, ...runtimeAdditions.env };
+    }
+    for (const [event, matchers] of Object.entries(runtimeAdditions.hooks ?? {})) {
+      sdkOptions.hooks[event] = [...(sdkOptions.hooks[event] ?? []), ...matchers];
+    }
 
     // Caveat: in 'auto' and 'bypassPermissions' modes the SDK resolves approval
     // at the permission-mode step and skips this callback, so interactive tools

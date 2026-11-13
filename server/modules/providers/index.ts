@@ -17,6 +17,10 @@ export { closeSessionsWatcher } from './services/sessions-watcher.service.js';
 // report and stop live subagents and background shells.
 export { getLiveAgentTasks, getLiveBackgroundTasks, stopClaudeAgentTask } from './list/claude/claude-runtime.provider.js';
 
+// setClaudeRuntimeAdditionsProvider: used by the foreman module to add its PreCompact/SessionStart hooks and the autocompact
+// threshold to the runs of Foreman-managed sessions.
+export { setClaudeRuntimeAdditionsProvider } from './list/claude/claude-runtime.provider.js';
+
 // subscribeClaudeRuntimeEvents/setClaudeSessionModel/getClaudeSessionContextUsage/hasClaudeApiKey/
 // isClaudeSDKSessionActive/getActiveClaudeSDKSessions: used by the foreman module to observe and
 // steer live Claude sessions on behalf of the Foreman service.

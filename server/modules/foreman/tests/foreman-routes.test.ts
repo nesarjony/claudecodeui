@@ -50,6 +50,7 @@ function createWorld() {
   const background = new Map<string, Array<{ ambient?: boolean }>>();
   const failed = new Set<string>();
   const taskStore = new Map<string, string>();
+  const managedMarks: string[] = [];
 
   const world = {
     rows,
@@ -64,6 +65,7 @@ function createWorld() {
     modelChanges: [] as Array<{ sessionId: string; model: string }>,
     liveModelChanges: [] as Array<{ sessionId: string; model: string }>,
     announced: [] as string[],
+    managedMarks,
     created: [] as Array<{ projectPath: string; initialMessage: string }>,
     apiKeyAvailable: true,
     claudeProjectsRoot: '',
@@ -150,6 +152,7 @@ function createWorld() {
       get: (key) => taskStore.get(key) ?? null,
       set: (key, value) => void taskStore.set(key, value),
     }),
+    managed: { mark: (sessionId) => void managedMarks.push(sessionId) },
     announceSession: async (sessionId) => {
       world.announced.push(sessionId);
     },
@@ -515,6 +518,17 @@ test('POST /sessions starts a session through the UI path and returns its id at 
     // The task link is remembered for later events and shows in listings.
     const listed = await call('GET', '/sessions');
     assert.equal(listed.body.data.sessions.find((s: { id: string }) => s.id === 'new-1').taskId, 'task-42');
+  });
+});
+
+test('POST /sessions marks the new session as started through the bridge (it gets the worker autocompact threshold)', async () => {
+  await withBridge(async ({ call, world }) => {
+    const response = await call('POST', '/sessions', { projectPath: '/mnt/dev/known', prompt: 'Do the thing' });
+    assert.equal(response.status, 201);
+    assert.deepEqual(world.managedMarks, [response.body.data.sessionId]);
+    // A rejected start (unknown project) marks nothing.
+    await call('POST', '/sessions', { projectPath: '/mnt/dev/nowhere', prompt: 'x' });
+    assert.equal(world.managedMarks.length, 1);
   });
 });
 

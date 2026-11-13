@@ -6,6 +6,8 @@ import { Button } from '@/shared/ui';
 import {
   confidencePercent,
   foremanModelLabel,
+  type ForemanExecution,
+  type ForemanNotesView,
   type ForemanRisk,
   type ForemanSuggestion,
   type SuggestionPlan,
@@ -18,6 +20,16 @@ type ForemanSuggestionCardProps = {
   onEdit: (text: string) => void;
   onSwitchModel: (model: string) => void;
   onDismiss: () => void;
+  /** Write notes / Hand off: the press in progress or its outcome, and the actions behind it. */
+  execution?: ForemanExecution | null;
+  notesView?: ForemanNotesView;
+  onExecute?: () => void;
+  onViewNotes?: () => void;
+  onHideNotes?: () => void;
+  /** Closes the card that reports what Foreman did. */
+  onCloseExecution?: () => void;
+  /** Opens a session in the chat: the fresh one a handoff started. */
+  onOpenSession?: (sessionId: string) => void;
   /** Open or folded to start with. Default: open on a desktop-width screen, folded on a phone. */
   defaultOpen?: boolean;
 };
@@ -49,6 +61,13 @@ export default function ForemanSuggestionCard({
   onEdit,
   onSwitchModel,
   onDismiss,
+  execution,
+  notesView = { phase: 'closed' },
+  onExecute,
+  onViewNotes,
+  onHideNotes,
+  onCloseExecution,
+  onOpenSession,
   defaultOpen,
 }: ForemanSuggestionCardProps) {
   const { t } = useTranslation('chat');
@@ -57,7 +76,13 @@ export default function ForemanSuggestionCard({
   const actionLabel = t(`foreman.actions.${decision.action}`, { defaultValue: decision.action });
   const modelName = foremanModelLabel(suggestion.decision.model);
 
-  const preview = plan.kind === 'switch_model'
+  const running = execution?.phase === 'running';
+  const done = execution?.phase === 'done' ? execution : null;
+  const preview = done
+    ? done.action === 'write_notes'
+      ? t('foreman.notesWritten', { version: done.notesVersion ?? '?' })
+      : t('foreman.handedOff')
+    : plan.kind === 'switch_model'
     ? t('foreman.switchTo', { model: foremanModelLabel(plan.alias), defaultValue: 'Switch to {{model}}' })
     : plan.text || decision.reason;
 
@@ -90,7 +115,8 @@ export default function ForemanSuggestionCard({
         {!open && (
           <button
             type="button"
-            onClick={onDismiss}
+            onClick={done ? onCloseExecution : onDismiss}
+            disabled={running}
             aria-label={t('foreman.dismiss', { defaultValue: 'Dismiss' })}
             title={t('foreman.dismiss', { defaultValue: 'Dismiss' })}
             className="mr-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
@@ -115,6 +141,11 @@ export default function ForemanSuggestionCard({
               })}
             </p>
           )}
+          {plan.kind === 'execute' && (
+            <p className="max-h-36 overflow-y-auto whitespace-pre-wrap break-words text-sm leading-5 text-foreground" data-testid="foreman-message">
+              {plan.text}
+            </p>
+          )}
           {plan.kind === 'info' && (
             <>
               <p className="max-h-36 overflow-y-auto whitespace-pre-wrap break-words text-sm leading-5 text-foreground" data-testid="foreman-message">
@@ -128,7 +159,7 @@ export default function ForemanSuggestionCard({
             </>
           )}
 
-          {decision.reason && plan.kind !== 'info' && (
+          {decision.reason && plan.kind !== 'info' && plan.kind !== 'execute' && (
             <p className="line-clamp-3 break-words text-xs text-muted-foreground" data-testid="foreman-reason">
               <span className="font-medium text-foreground/70">{t('foreman.why', { defaultValue: 'Why' })}:</span> {decision.reason}
             </p>
@@ -153,26 +184,77 @@ export default function ForemanSuggestionCard({
             </span>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2 pt-0.5">
-            {plan.kind === 'send' && (
-              <>
-                <Button size="sm" onClick={() => onSend(plan.text)}>
-                  {t('foreman.send', { defaultValue: 'Send' })}
+          {done ? (
+            <div className="space-y-2" data-testid="foreman-execution-done">
+              <p className="text-sm leading-5 text-foreground" data-testid="foreman-execution-result">
+                {done.action === 'write_notes' ? t('foreman.notesWritten', { version: done.notesVersion ?? '?' }) : t('foreman.handedOff')}
+              </p>
+              {done.action === 'write_notes' && (
+                <button
+                  type="button"
+                  onClick={notesView.phase === 'closed' ? onViewNotes : onHideNotes}
+                  className="text-xs font-medium text-primary underline underline-offset-2 hover:text-primary/80 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  data-testid="foreman-view-notes"
+                >
+                  {notesView.phase === 'closed' ? t('foreman.viewNotes', { defaultValue: 'View notes' }) : t('foreman.hideNotes', { defaultValue: 'Hide notes' })}
+                </button>
+              )}
+              {notesView.phase === 'loading' && <p className="text-xs text-muted-foreground">{t('foreman.notesLoading', { defaultValue: 'Loading the notes…' })}</p>}
+              {notesView.phase === 'empty' && <p className="text-xs text-muted-foreground">{t('foreman.notesEmpty', { defaultValue: 'No notes found for this session.' })}</p>}
+              {notesView.phase === 'failed' && <p className="text-xs text-red-600 dark:text-red-400">{t('foreman.notesFailed', { defaultValue: 'The notes could not be loaded.' })}</p>}
+              {notesView.phase === 'ready' && (
+                <pre
+                  className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md border border-border/60 bg-muted/30 p-2 font-sans text-xs leading-5 text-foreground"
+                  data-testid="foreman-notes"
+                >
+                  {notesView.notes.content}
+                </pre>
+              )}
+              <div className="flex flex-wrap items-center gap-2 pt-0.5">
+                {done.action === 'handoff' && done.newSessionId && onOpenSession && (
+                  <Button size="sm" onClick={() => onOpenSession(done.newSessionId!)}>
+                    {t('foreman.openSession', { defaultValue: 'Open the new session' })}
+                  </Button>
+                )}
+                <Button size="sm" variant="ghost" onClick={onCloseExecution}>
+                  {t('foreman.close', { defaultValue: 'Close' })}
                 </Button>
-                <Button size="sm" variant="outline" onClick={() => onEdit(plan.text)}>
-                  {t('foreman.edit', { defaultValue: 'Edit' })}
+              </div>
+            </div>
+          ) : (
+            <>
+              {execution?.phase === 'failed' && (
+                <p role="alert" className="text-xs text-red-600 dark:text-red-400" data-testid="foreman-execution-error">
+                  {t('foreman.execute.failed', { message: execution.error, defaultValue: 'That did not work: {{message}}' })}
+                </p>
+              )}
+              <div className="flex flex-wrap items-center gap-2 pt-0.5">
+                {plan.kind === 'send' && (
+                  <>
+                    <Button size="sm" onClick={() => onSend(plan.text)}>
+                      {t('foreman.send', { defaultValue: 'Send' })}
+                    </Button>
+                    <Button size="sm" variant="outline" onClick={() => onEdit(plan.text)}>
+                      {t('foreman.edit', { defaultValue: 'Edit' })}
+                    </Button>
+                  </>
+                )}
+                {plan.kind === 'switch_model' && (
+                  <Button size="sm" onClick={() => onSwitchModel(plan.model)}>
+                    {t('foreman.switchTo', { model: foremanModelLabel(plan.alias), defaultValue: 'Switch to {{model}}' })}
+                  </Button>
+                )}
+                {plan.kind === 'execute' && (
+                  <Button size="sm" onClick={onExecute} disabled={running} data-testid="foreman-execute">
+                    {running ? t('foreman.execute.working', { defaultValue: 'Working…' }) : t(`foreman.execute.${plan.action}`, { defaultValue: plan.action })}
+                  </Button>
+                )}
+                <Button size="sm" variant="ghost" onClick={onDismiss} disabled={running}>
+                  {t('foreman.dismiss', { defaultValue: 'Dismiss' })}
                 </Button>
-              </>
-            )}
-            {plan.kind === 'switch_model' && (
-              <Button size="sm" onClick={() => onSwitchModel(plan.model)}>
-                {t('foreman.switchTo', { model: foremanModelLabel(plan.alias), defaultValue: 'Switch to {{model}}' })}
-              </Button>
-            )}
-            <Button size="sm" variant="ghost" onClick={onDismiss}>
-              {t('foreman.dismiss', { defaultValue: 'Dismiss' })}
-            </Button>
-          </div>
+              </div>
+            </>
+          )}
         </div>
       )}
     </section>
