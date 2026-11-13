@@ -1,5 +1,15 @@
 import path from 'node:path';
 
+import {
+  bashSecretLabel,
+  coversSecretDirectories,
+  expandHome,
+  globVariants,
+  resolveHome,
+  searchTargetLabel,
+  secretPathLabel,
+  type SecretScope,
+} from '@/modules/foreman/foreman-guard-secrets.service.js';
 import { AppError } from '@/shared/utils.js';
 
 /**
@@ -8,6 +18,11 @@ import { AppError } from '@/shared/utils.js';
  * `classifyToolUse` is a port of Foreman's own rules (`src/tasks/risk.ts`): cloudcli judges every tool call of a
  * guarded session with the patterns Foreman handed over, allows the safe ones without asking anybody, and only
  * routes the risky ones to a prompt. Foreman then runs the same rules again on the request it receives.
+ *
+ * On top of the patterns Foreman hands over, the built-in secret classes of `foreman-guard-secrets.service.ts` always
+ * apply to a guarded session: `.env*`, `*.pem`, SSH keys, `credentials*`, token/key/secret files under `~/.config`, and
+ * the secret directories. They are checked for every path argument, for the file globs and search roots of Grep and
+ * Glob, and for every word of a Bash command.
  */
 
 export type ForemanGuardCategory = 'command' | 'secret' | 'outside_repo';
@@ -40,6 +55,8 @@ export type CompiledForemanGuard = {
   approvalTimeoutMs: number;
   /** Patterns that were not valid regular expressions and are therefore not enforced. */
   skippedPatterns: number;
+  /** The home directory the built-in secret classes protect (`~/.ssh`, `~/.config/**`); captured when the guard is compiled. */
+  home: string;
 };
 
 /**
@@ -61,7 +78,11 @@ export type ForemanToolPolicyDecision =
 export type ForemanToolPolicy = (toolName: string, input: unknown) => ForemanToolPolicyDecision;
 
 const WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit']);
-const PATH_KEYS = ['file_path', 'path', 'notebook_path'];
+// The arguments that name a file or directory a tool reads or writes (Read, Edit, Write, MultiEdit, NotebookEdit, Grep, Glob, LS, ...).
+const PATH_KEYS = ['file_path', 'path', 'notebook_path', 'filePath', 'notebookPath', 'directory', 'dir', 'cwd'];
+// Arguments that hold several of them.
+const PATH_LIST_KEYS = ['paths', 'file_paths', 'filePaths'];
+const SEARCH_TOOLS = new Set(['Grep', 'Glob']);
 
 /** Permission modes in which the CLI settles tool calls itself, so cloudcli's permission callback is never asked. */
 export const GUARD_INCOMPATIBLE_PERMISSION_MODES: readonly string[] = ['acceptEdits', 'auto', 'bypassPermissions'];
@@ -90,7 +111,8 @@ function compile(patterns: readonly string[]): { compiled: RegExp[]; skipped: nu
 
 /** Compiles a guard's patterns once; `fallbackRepoRoot` (the session's project path) is used when it names no `repoRoot`. */
 // Consumed by the sessions service, which compiles a guard per started or resumed session, and by the tests.
-export function compileGuard(config: ForemanGuardConfig, fallbackRepoRoot: string | null): CompiledForemanGuard {
+// `options.home` replaces the process's home directory (tests).
+export function compileGuard(config: ForemanGuardConfig, fallbackRepoRoot: string | null, options: { home?: string } = {}): CompiledForemanGuard {
   const risky = compile(config.riskyPatterns);
   const secret = compile(config.secretPatterns);
   return {
@@ -100,6 +122,7 @@ export function compileGuard(config: ForemanGuardConfig, fallbackRepoRoot: strin
     repoRoot: config.repoRoot ?? fallbackRepoRoot,
     approvalTimeoutMs: config.approvalTimeoutMs ?? DEFAULT_GUARD_APPROVAL_TIMEOUT_MS,
     skippedPatterns: risky.skipped + secret.skipped,
+    home: path.resolve(options.home ?? resolveHome()),
   };
 }
 
@@ -127,55 +150,50 @@ function textOf(input: unknown, record: Record<string, unknown>): string {
   return typeof input === 'string' ? input : JSON.stringify(input ?? '');
 }
 
-/** `{a,b}` alternatives written out (one level, bounded), so `*.{pem,key}` is seen as `*.pem` and `*.key`. */
-function expandBraces(glob: string, budget = { left: 64 }): string[] {
-  const open = glob.indexOf('{');
-  const close = open === -1 ? -1 : glob.indexOf('}', open);
-  if (open === -1 || close === -1 || budget.left <= 0) {
-    return [glob];
-  }
-  const head = glob.slice(0, open);
-  const tail = glob.slice(close + 1);
-  return glob.slice(open + 1, close).split(',').flatMap((option) => {
-    budget.left -= 1;
-    return expandBraces(head + option + tail, budget);
-  });
-}
-
 /**
- * The forms a file glob can take once its wildcards are filled in. The secret patterns end in a lookahead for the end of
- * a name, so `**\/.env*` or `.env.*` would never match as written; with braces written out and each wildcard run
- * dropped or replaced by a letter, the names such a glob can match are seen too. Character classes (`[v]`) are not
- * expanded.
+ * The values of a call that are file globs: `glob` and `include` (Grep's file filters) and Glob's `pattern`. Grep's
+ * `pattern` is a content regex, not a file name, and is not one of them.
  */
-function globVariants(glob: string): string[] {
-  return expandBraces(glob).flatMap((option) => [
-    option,
-    option.replace(/[*?]+/g, ''),
-    option.replace(/[*?]+/g, 'x'),
-  ]);
+function globValuesOf(toolName: string, record: Record<string, unknown>): string[] {
+  const values = [record.glob, record.include, toolName === 'Glob' ? record.pattern : undefined];
+  return values.filter((value): value is string => typeof value === 'string' && value.length > 0);
 }
 
-/** The values of a call that are file globs: `glob` (Grep's file filter) and Glob's `pattern`. Grep's `pattern` is a content regex. */
-function globValuesOf(toolName: string, record: Record<string, unknown>): string[] {
-  const values = [record.glob, toolName === 'Glob' ? record.pattern : undefined];
-  return values.filter((value): value is string => typeof value === 'string');
+/** The string values of the arguments that name a path (a list argument contributes each of its strings). */
+function pathValuesOf(record: Record<string, unknown>): string[] {
+  const values: unknown[] = PATH_KEYS.map((key) => record[key]);
+  for (const key of PATH_LIST_KEYS) {
+    const list = record[key];
+    if (Array.isArray(list)) {
+      values.push(...list);
+    }
+  }
+  return values.filter((value): value is string => typeof value === 'string' && value.length > 0);
 }
 
 /**
- * Is this tool call one a person must approve? Pure and deterministic; Foreman's `classifyToolUse` rules, plus the file
- * globs of Glob and Grep (below).
+ * Is this tool call one a person must approve? Pure and deterministic; Foreman's `classifyToolUse` rules, plus the
+ * built-in secret classes and the file globs of Glob and Grep (see `foreman-guard-secrets.service.ts`).
  *
- * - Bash: the command matches a risky pattern, or mentions a secret path.
- * - Any tool: a path argument (`file_path`, `path`, `notebook_path`) matches a secret pattern.
- * - Glob (`pattern`) and any tool's `glob`: the glob can match a secret file name, wildcards included. Foreman's own
- *   classifier does not look at these; a person decides on those calls either way.
+ * - Bash: the command matches a risky pattern, or mentions a secret: the session's secret patterns match its text, or
+ *   a word of it is a built-in secret path (`cat`, `grep`, `cp`, `source`, `< file`, `$(cat file)`, `curl -d @file`, a pipe
+ *   out of any of those, ...), or a directory walker is pointed at `~` or `~/.config`.
+ * - Any tool: a path argument (`file_path`, `path`, `notebook_path`, ...) matches a secret pattern or is a built-in
+ *   secret path (Read, Edit, Write, MultiEdit, NotebookEdit, Grep, Glob, LS, ...); `~` and `$HOME` are expanded.
+ * - Grep and Glob: the `path` they search from is a secrets directory or holds one (`~`, `~/.config`, `/`), or the
+ *   file glob they carry (`glob`, `include`, Glob's `pattern`) can match a secret file name, wildcards included, with
+ *   `path` read as the glob's base. Grep's own `pattern` is a content regex and is not judged.
  * - Write, Edit, MultiEdit, NotebookEdit: the target is outside the repo root (when `writeOutsideRepo`).
+ *
+ * Foreman's own classifier knows only the first two points (patterns over paths and commands), so it can judge a call
+ * safe that this one holds; the call is held here either way.
  */
 // Consumed by createToolPolicy below and by the guard tests.
 export function classifyToolUse(call: { toolName: string; input: unknown }, guard: CompiledForemanGuard): ForemanGuardVerdict {
   const record = asRecord(call.input);
   const text = textOf(call.input, record);
+  const scope: SecretScope = { home: guard.home, cwd: path.resolve(guard.repoRoot ?? '/') };
+  const secret = (matched: string): ForemanGuardVerdict => ({ risky: true, category: 'secret', matched });
 
   if (call.toolName === 'Bash') {
     for (const pattern of guard.riskyPatterns) {
@@ -185,38 +203,52 @@ export function classifyToolUse(call: { toolName: string; input: unknown }, guar
     }
     for (const pattern of guard.secretPatterns) {
       if (pattern.test(text)) {
-        return { risky: true, category: 'secret', matched: pattern.source };
+        return secret(pattern.source);
       }
+    }
+    const reads = bashSecretLabel(text, scope);
+    if (reads) {
+      return secret(reads);
     }
   }
 
-  for (const key of PATH_KEYS) {
-    const value = record[key];
-    if (typeof value !== 'string') {
-      continue;
-    }
+  for (const value of pathValuesOf(record)) {
     for (const pattern of guard.secretPatterns) {
       if (pattern.test(value)) {
-        return { risky: true, category: 'secret', matched: pattern.source };
+        return secret(pattern.source);
       }
+    }
+    const label = secretPathLabel(value, scope);
+    if (label) {
+      return secret(label);
     }
     if (guard.writeOutsideRepo && WRITE_TOOLS.has(call.toolName) && guard.repoRoot) {
       const root = path.resolve(guard.repoRoot);
-      const target = path.resolve(root, value);
+      // The CLI expands `~` and `$HOME` in a path argument, so a write to `~/.bashrc` is not inside the repo.
+      const target = path.resolve(root, expandHome(value, guard.home));
       if (target !== root && !target.startsWith(root.endsWith(path.sep) ? root : root + path.sep)) {
         return { risky: true, category: 'outside_repo', matched: target };
       }
     }
   }
 
-  for (const glob of globValuesOf(call.toolName, record)) {
+  const globs = globValuesOf(call.toolName, record);
+  for (const glob of globs) {
     for (const variant of globVariants(glob)) {
       for (const pattern of guard.secretPatterns) {
         if (pattern.test(variant)) {
-          return { risky: true, category: 'secret', matched: pattern.source };
+          return secret(pattern.source);
         }
       }
     }
+  }
+  const searchRoot = typeof record.path === 'string' && record.path ? record.path : undefined;
+  const searched = searchTargetLabel(searchRoot, globs, scope);
+  if (searched) {
+    return secret(searched);
+  }
+  if (SEARCH_TOOLS.has(call.toolName) && searchRoot && coversSecretDirectories(searchRoot, scope, true)) {
+    return secret('a search from a directory that holds secrets (~, ~/.config, /)');
   }
   return { risky: false };
 }
@@ -272,30 +304,40 @@ const CATEGORY_DESCRIPTIONS: Record<ForemanGuardCategory, string> = {
 /**
  * The PreToolUse hook of a guarded run. The CLI settles some calls by itself (reads inside the project, read-only shell
  * commands) and never asks `canUseTool` about them, so the guard would not see a `Read` of `.env`. This hook runs before
- * that decision and classifies every call with the same policy `canUseTool` uses. A risky call answers
- * `permissionDecision: 'ask'`, which sends it down the CLI's prompt path, that is to `canUseTool`, where the guard holds
- * it for a person. A safe call answers nothing: the hook never allows anything by itself. Never throws; an input it cannot
- * read is asked about.
+ * that decision, for every tool call whatever the permission rules say, and classifies the call with the same policy
+ * `canUseTool` uses. A risky call answers `permissionDecision: 'ask'`, which sends it down the CLI's prompt path, that is
+ * to `canUseTool`, where the guard holds it for a person. A safe call answers nothing: the hook never allows anything by
+ * itself. Never throws; an input it cannot read is asked about.
+ *
+ * `ask` only works when the CLI really prompts. In a permission mode that settles calls without asking
+ * (`GUARD_INCOMPATIBLE_PERMISSION_MODES`, which the hook input reports as `permission_mode`, for example after a person
+ * switched the session's mode in the chat), nobody could hold the call, so a risky call is denied outright with a reason
+ * that says why: failing closed rather than letting it through.
  */
 // Consumed by guardRunOptions below and by the guard tests.
 export function guardHooks(guard: CompiledForemanGuard): ForemanGuardHooks {
   const policy = createToolPolicy(guard);
-  const ask = (reason: string) => ({
-    hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask', permissionDecisionReason: reason },
+  const answer = (decision: 'ask' | 'deny', reason: string) => ({
+    hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: decision, permissionDecisionReason: reason },
   });
   return {
     PreToolUse: [{
       matcher: '',
       hooks: [async (input) => {
         const record = asRecord(input);
+        const mode = typeof record.permission_mode === 'string' ? record.permission_mode : '';
+        const cannotHold = GUARD_INCOMPATIBLE_PERMISSION_MODES.includes(mode);
+        const hold = (subject: string) => cannotHold
+          ? answer('deny', `Foreman guard: ${subject}. The session is in permission mode "${mode}", which settles calls without asking a person, so the guard cannot hold this call: it was denied. A person can switch the session to "default" and ask again.`)
+          : answer('ask', `Foreman guard: ${subject}; a person must approve this call.`);
         if (typeof record.tool_name !== 'string' || !record.tool_name) {
-          return ask('Foreman guard: the tool call could not be read, so a person must approve it.');
+          return hold('the tool call could not be read');
         }
         const verdict = policy(record.tool_name, record.tool_input);
         if (verdict.decision !== 'ask') {
           return {};
         }
-        return ask(`Foreman guard: ${CATEGORY_DESCRIPTIONS[verdict.category]} (${verdict.matched}); a person must approve this call.`);
+        return hold(`${CATEGORY_DESCRIPTIONS[verdict.category]} (${verdict.matched})`);
       }],
     }],
   };
