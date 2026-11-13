@@ -165,6 +165,7 @@
     "progressLabel": "Tasks done",
     "progress": "{{done}} of {{total}} tasks",
     "noPlan": "No plan yet",
+    "noTasksRan": "No tasks ran",
     "budgetLabel": "Spend of the goal's budget",
     "spendOfBudget": "{{spent}} of {{budget}}",
     "overdue": "Overdue",

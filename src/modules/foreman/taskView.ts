@@ -12,7 +12,8 @@ export type DodItem = { text: string; met: boolean | null };
 
 /**
  * The Definition of Done, whatever shape the planner stored it in: a list of strings, a list of objects
- * (`text`/`title`/`description`/`criterion`, with `met`/`done`/`passed`), or one multi-line string.
+ * (`text`/`title`/`description`/`criterion`, with `met`/`done`/`passed`), one multi-line string, or the planner's own object
+ * (`{ goal, acceptanceCriteria, gateCommands, ... }`, what Foreman's `GET /foreman/tasks/:id` returns).
  */
 export function dodItems(dod: unknown): DodItem[] {
   if (typeof dod === 'string') {
@@ -36,7 +37,7 @@ export function dodItems(dod: unknown): DodItem[] {
       .filter((item): item is DodItem => item !== null);
   }
   if (isRecord(dod)) {
-    const inner = dod.criteria ?? dod.items ?? dod.checks;
+    const inner = dod.acceptanceCriteria ?? dod.criteria ?? dod.items ?? dod.checks;
     if (inner !== undefined) return dodItems(inner);
   }
   return [];

@@ -55,15 +55,15 @@ function Meter({ label, figure, width, tone, testId }: { label: string; figure: 
   );
 }
 
-/** "3 of 7 tasks" and its bar; "No plan yet" before the plan exists. */
-export function TaskProgress({ goal }: { goal: Pick<GoalListItem, 'tasksDone' | 'tasksTotal'> }) {
+/** "3 of 7 tasks" and its bar; "No plan yet" before the plan exists; "No tasks ran" when a goal with a plan ended before any task was started (a rejected plan, a cancelled goal). */
+export function TaskProgress({ goal }: { goal: Pick<GoalListItem, 'tasksDone' | 'tasksTotal' | 'playbook'> }) {
   const { t } = useTranslation('foreman');
   const progress = goalProgress(goal);
   return (
     <Meter
       testId="foreman-goal-progress"
       label={t('goals.progressLabel')}
-      figure={progress.total === 0 ? t('goals.noPlan') : t('goals.progress', { done: progress.done, total: progress.total })}
+      figure={progress.total === 0 ? t(goal.playbook ? 'goals.noTasksRan' : 'goals.noPlan') : t('goals.progress', { done: progress.done, total: progress.total })}
       width={progress.percent}
       tone={progress.total > 0 && progress.done === progress.total ? 'good' : 'neutral'}
     />
