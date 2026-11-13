@@ -32,6 +32,8 @@ const INITIAL_TAIL_BYTES = 1024 * 1024;
 const MAX_TAIL_BYTES = 32 * 1024 * 1024;
 
 const FILE_EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
+// The tool that launches a subagent: `Agent` in current CLIs, `Task` in older ones.
+const SUBAGENT_TOOLS = new Set(['Agent', 'Task']);
 
 /** One parsed transcript line. Transcript rows are loosely typed JSON; readers narrow field by field. */
 export type TranscriptEntry = RecordValue;
@@ -42,6 +44,8 @@ export type DigestToolCall = {
   isError: boolean;
   /** Last ~600 characters of the call's result text; null when the transcript has no result for it (yet). */
   resultTail: string | null;
+  /** Only on a call that launches a subagent (`Agent`, or `Task` in older CLIs): its `subagent_type`, null when none was named. */
+  subagentType?: string | null;
 };
 export type DigestTodo = { content: string; status: string };
 export type DigestCompactBoundary = {
@@ -71,6 +75,13 @@ export type SessionDigestBody = {
   toolCallCount: number;
   toolErrorCount: number;
   toolCounts: Record<string, number>;
+  /**
+   * Tool calls made inside subagents in the digested turns (not part of `toolCalls` or `toolCallCount`). Counted from the
+   * subagents' own rows when the transcript holds them inline (`isSidechain` / `parent_tool_use_id`, older CLIs); otherwise
+   * from the `totalToolUseCount` the CLI reports with each finished subagent (current CLIs keep a subagent's rows in a file of
+   * their own). A subagent still running in the background has not reported yet and counts 0.
+   */
+  subagentToolCalls: number;
   filesEdited: string[];
   filesEditedCount: number;
   todos: DigestTodo[] | null;
@@ -106,6 +117,36 @@ type AssistantMessageRecord = {
 };
 
 type ToolCallRecord = { id: string; name: string; input: RecordValue | null };
+
+/** A row written by a subagent rather than the main thread. */
+const isSubagentRow = (entry: TranscriptEntry): boolean =>
+  entry.isSidechain === true || (typeof entry.parent_tool_use_id === 'string' && entry.parent_tool_use_id.length > 0);
+
+/**
+ * Tool calls made inside subagents from `windowStart` (a row of `rows`) on: the tool_use blocks of inline subagent rows when
+ * there are any, else the `totalToolUseCount` of the subagent results (`toolUseResult` of an `Agent`/`Task` tool_result).
+ */
+function countSubagentToolCalls(rows: TranscriptEntry[], windowStart: TranscriptEntry | undefined, subagentCallIds: Set<string>): number {
+  const from = windowStart ? Math.max(0, rows.indexOf(windowStart)) : 0;
+  const inline = new Set<string>();
+  let anonymous = 0;
+  let reported = 0;
+  for (const entry of rows.slice(from)) {
+    const blocks = asArray(asRecord(entry.message)?.content).map(asRecord);
+    if (isSubagentRow(entry)) {
+      for (const block of blocks) {
+        if (entry.type === 'assistant' && block?.type === 'tool_use') {
+          inline.add(typeof block.id === 'string' ? block.id : `anonymous-${(anonymous += 1)}`);
+        }
+      }
+      continue;
+    }
+    if (entry.type === 'user' && blocks.some((block) => block?.type === 'tool_result' && subagentCallIds.has(String(block.tool_use_id)))) {
+      reported += asNumber(asRecord(entry.toolUseResult)?.totalToolUseCount) ?? 0;
+    }
+  }
+  return inline.size > 0 ? inline.size : reported;
+}
 
 function isTurnStart(entry: TranscriptEntry): boolean {
   if (entry.type !== 'user' || entry.isMeta === true || entry.isCompactSummary === true || entry.isSidechain === true) {
@@ -397,8 +438,10 @@ export function buildSessionDigest(
       shortInput: summarizeToolInput(call.input, MAX_TOOL_INPUT),
       isError,
       resultTail: toolResultTails.get(call.id) ?? null,
+      ...(SUBAGENT_TOOLS.has(call.name) ? { subagentType: asString(call.input?.subagent_type) ?? null } : {}),
     };
   });
+  const subagentCallIds = new Set(toolCalls.filter((call) => SUBAGENT_TOOLS.has(call.name)).map((call) => call.id));
 
   const filesEdited: string[] = [];
   for (const call of toolCalls) {
@@ -429,6 +472,7 @@ export function buildSessionDigest(
     toolCallCount: callList.length,
     toolErrorCount,
     toolCounts,
+    subagentToolCalls: countSubagentToolCalls(rows, turnStarts.length > 0 ? entries[windowStart] : undefined, subagentCallIds),
     filesEdited: filesEdited.slice(0, MAX_FILES_LISTED),
     filesEditedCount: filesEdited.length,
     todos: readLatestTodos(rows),
