@@ -216,6 +216,44 @@ test('permission_request carries the tool name, the request id and a short input
   assert.ok(!input.includes('\n'));
 });
 
+test('a guarded permission_request adds its category and the guarded flag, and carries a longer input', () => {
+  const command = `git push origin main && ${'echo hi '.repeat(100)}`;
+  const event = translate({
+    ...base,
+    kind: 'permission_request',
+    requestId: 'req-10',
+    toolName: 'Bash',
+    input: { command },
+    guarded: true,
+    category: 'command',
+  });
+  assert.equal(event?.type, 'permission_request');
+  assert.deepEqual(
+    { requestId: event?.data.requestId, toolName: event?.data.toolName, category: event?.data.category, guarded: event?.data.guarded },
+    { requestId: 'req-10', toolName: 'Bash', category: 'command', guarded: true },
+  );
+  const input = String(event?.data.input);
+  assert.ok(input.startsWith('git push origin main && echo hi'));
+  assert.ok(input.length > 200 && input.length <= 1000, `guarded input is ${input.length} characters`);
+});
+
+test('an unguarded permission_request has neither category nor guarded', () => {
+  const event = translate({ ...base, kind: 'permission_request', requestId: 'r', toolName: 'Bash', input: { command: 'ls' } });
+  assert.ok(event);
+  assert.equal('category' in (event?.data ?? {}), false);
+  assert.equal('guarded' in (event?.data ?? {}), false);
+});
+
+test('a guarded request whose category is unknown reports null', () => {
+  const event = translate({ ...base, kind: 'permission_request', requestId: 'r', toolName: 'Bash', input: {}, guarded: true });
+  assert.equal(event?.data.category, null);
+  assert.equal(event?.data.guarded, true);
+});
+
+test('a permission prompt ending is internal: Foreman gets no event for it', () => {
+  assert.equal(translate({ ...base, kind: 'permission_resolved', requestId: 'req-10' }), null);
+});
+
 test('refusal from a stop reason carries the category and request id', () => {
   const event = translate({
     ...base,

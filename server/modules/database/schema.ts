@@ -280,6 +280,26 @@ CREATE TABLE IF NOT EXISTS superseded_provider_sessions (
 );
 `;
 
+/**
+ * What the Foreman bridge remembers about the sessions it started or drives, so a cloudcli restart does not forget
+ * their status, permission mode or risky-action guard. Keyed by the app session id. No foreign key to `sessions`:
+ * the sessions table can be rebuilt by migrations, and a rebuild must not cascade-delete these rows.
+ */
+export const FOREMAN_SESSION_STATE_TABLE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS foreman_session_state (
+    session_id TEXT PRIMARY KEY NOT NULL,
+    task_id TEXT,
+    -- running | idle | waiting_permission | error
+    status TEXT NOT NULL DEFAULT 'idle' CHECK (status IN ('running', 'idle', 'waiting_permission', 'error')),
+    permission_mode TEXT,
+    -- api-key | subscription
+    billing TEXT,
+    -- The guard (pattern lists, repoRoot) a Foreman-started session runs under; NULL when it has none.
+    guard_json TEXT,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+`;
+
 export const INIT_SCHEMA_SQL = `
 -- Initialize authentication database
 PRAGMA foreign_keys = ON;
@@ -333,4 +353,6 @@ ${USER_PREFERENCES_TABLE_SCHEMA_SQL}
 ${SESSION_DRAFTS_TABLE_SCHEMA_SQL}
 
 ${SUPERSEDED_PROVIDER_SESSIONS_TABLE_SCHEMA_SQL}
+
+${FOREMAN_SESSION_STATE_TABLE_SCHEMA_SQL}
 `;

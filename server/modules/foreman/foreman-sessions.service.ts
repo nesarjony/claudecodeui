@@ -8,12 +8,19 @@ import {
   type SessionDigestBody,
 } from '@/modules/foreman/foreman-digest.service.js';
 import { applyModelBilling, splitModelBilling } from '@/modules/foreman/foreman-events.service.js';
+import {
+  assertGuardCompatiblePermissionMode,
+  compileGuard,
+  guardRunOptions,
+  type ForemanGuardConfig,
+} from '@/modules/foreman/foreman-guard.service.js';
+import type { ForemanSessionStatus, ForemanSessionStateService } from '@/modules/foreman/foreman-session-state.service.js';
 import type { ForemanBilling } from '@/shared/types.js';
-import { AppError, clipText, normalizeProjectPath } from '@/shared/utils.js';
+import { AppError, clipText, normalizeProjectPath, summarizeToolInput } from '@/shared/utils.js';
 
 type SessionRow = NonNullable<ReturnType<typeof sessionsDb.getSessionById>>;
 
-export type ForemanSessionStatus = 'running' | 'idle' | 'waiting_permission' | 'error';
+export type { ForemanSessionStatus } from '@/modules/foreman/foreman-session-state.service.js';
 
 export type ForemanSessionSummary = {
   id: string;
@@ -25,6 +32,10 @@ export type ForemanSessionSummary = {
   model: string | null;
   billing: ForemanBilling;
   status: ForemanSessionStatus;
+  /** The permission mode Foreman chose for the session (kept across restarts); null when it never chose one. */
+  permissionMode: string | null;
+  /** True when the session runs under a risky-action guard (Foreman-started with `guard.enabled`). */
+  guarded: boolean;
   /** True when a Claude process or an active run exists for the session right now. */
   live: boolean;
   lastActivity: string | null;
@@ -91,6 +102,8 @@ export type ForemanBridgeDependencies = {
     isLive(sessionId: string): boolean;
     liveSessionIds(): string[];
     pendingApprovals(sessionId: string): unknown[];
+    /** Answers a pending permission prompt, exactly like the chat UI's `chat.permission-response`. */
+    resolvePermission(requestId: string, decision: { allow: boolean; message?: string }): void;
     backgroundTasks(sessionId: string): Array<{ ambient?: boolean }> | null;
     setModel(sessionId: string, model: string): Promise<boolean>;
     contextUsage(sessionId: string): Promise<LiveContextUsage | null>;
@@ -98,6 +111,8 @@ export type ForemanBridgeDependencies = {
   };
   /** Records the model a session runs with (so resumed runs keep it). */
   setSessionModel(sessionId: string, model: string): void;
+  /** Status, permission mode and guard of the sessions the bridge starts or drives; survives restarts. */
+  state: Pick<ForemanSessionStateService, 'get' | 'track'>;
   /** Remembers/reads which Foreman task a session belongs to. */
   taskIds: { get(sessionId: string): string | null; set(sessionId: string, taskId: string): void };
   /** Marks sessions started through the bridge, so the runtime gives them the worker autocompact threshold. */
@@ -118,6 +133,7 @@ const MAX_LIST_LIMIT = 100;
 const DEFAULT_LIST_LIMIT = 30;
 const MAX_TITLE_LENGTH = 100;
 const MAX_SUMMARY_LENGTH = 80;
+const MAX_PERMISSION_INPUT_LENGTH = 1000;
 const TOP_CONTEXT_CATEGORIES = 6;
 // Context windows by model family; `[1m]` models have the extended window.
 const STANDARD_CONTEXT_WINDOW = 200_000;
@@ -148,10 +164,6 @@ function withTimeout<T>(promise: Promise<T>, ms: number, what: string): Promise<
  */
 // Consumed by foreman.routes.ts, which parses requests and calls these operations.
 export function createForemanSessionsService(deps: ForemanBridgeDependencies) {
-  // Permission mode is chosen per turn by the UI and is not stored server-side, so the
-  // last one Foreman used for a session is remembered here (lost on restart; callers can
-  // always pass it explicitly).
-  const permissionModes = new Map<string, string>();
   const admissionWindowMs = deps.admissionWindowMs ?? DEFAULT_ADMISSION_WINDOW_MS;
 
   function requireClaudeSession(sessionId: string): SessionRow {
@@ -165,27 +177,55 @@ export function createForemanSessionsService(deps: ForemanBridgeDependencies) {
     return session;
   }
 
+  type PendingApproval = { requestId: string; toolName: string; input: unknown; askedAt: string | null };
+
+  /** The session's unanswered permission prompts, read defensively from the runtime's loosely typed records. */
+  function pendingApprovals(sessionId: string): PendingApproval[] {
+    const pending: PendingApproval[] = [];
+    for (const entry of deps.runtime.pendingApprovals(sessionId)) {
+      const record = entry !== null && typeof entry === 'object' ? (entry as Record<string, unknown>) : null;
+      if (!record || typeof record.requestId !== 'string') {
+        continue;
+      }
+      const received = record.receivedAt;
+      pending.push({
+        requestId: record.requestId,
+        toolName: typeof record.toolName === 'string' ? record.toolName : 'UnknownTool',
+        input: record.input,
+        askedAt: received instanceof Date ? received.toISOString() : typeof received === 'string' ? received : null,
+      });
+    }
+    return pending;
+  }
+
+  /**
+   * What is true right now wins (a prompt waiting, a run processing); with nothing live, the remembered state decides,
+   * so an error that ended a session before a restart is still reported afterwards.
+   */
   function statusOf(sessionId: string): ForemanSessionStatus {
-    if (deps.runtime.pendingApprovals(sessionId).length > 0) {
+    if (pendingApprovals(sessionId).length > 0) {
       return 'waiting_permission';
     }
     if (deps.runs.isProcessing(sessionId)) {
       return 'running';
     }
-    return deps.hasFailed(sessionId) ? 'error' : 'idle';
+    return deps.hasFailed(sessionId) || deps.state.get(sessionId)?.status === 'error' ? 'error' : 'idle';
   }
 
   function summarize(session: SessionRow): ForemanSessionSummary {
     const { model, billing } = splitModelBilling(session.model);
     const tasks = deps.runtime.backgroundTasks(session.session_id) ?? [];
+    const state = deps.state.get(session.session_id);
     return {
       id: session.session_id,
-      taskId: deps.taskIds.get(session.session_id),
+      taskId: deps.taskIds.get(session.session_id) ?? state?.taskId ?? null,
       projectPath: session.project_path,
       title: session.custom_name,
       model,
       billing,
       status: statusOf(session.session_id),
+      permissionMode: state?.permissionMode ?? null,
+      guarded: state?.guard?.enabled === true,
       live: deps.runs.isProcessing(session.session_id) || deps.runtime.isLive(session.session_id),
       lastActivity: session.updated_at ?? session.created_at ?? null,
       backgroundTasks: tasks.filter((task) => !task.ambient).length,
@@ -256,8 +296,18 @@ export function createForemanSessionsService(deps: ForemanBridgeDependencies) {
       });
     }
 
-    if (options.permissionMode) {
-      permissionModes.set(sessionId, options.permissionMode);
+    // A resumed run (after a restart too) keeps the permission mode Foreman chose and the guard it started with.
+    const state = deps.state.get(sessionId);
+    const guard = state?.guard?.enabled ? state.guard : null;
+    const permissionMode = options.permissionMode ?? state?.permissionMode ?? undefined;
+    if (guard) {
+      assertGuardCompatiblePermissionMode(permissionMode);
+    }
+    if (!state || (options.permissionMode && options.permissionMode !== state.permissionMode)) {
+      deps.state.track(sessionId, {
+        billing: splitModelBilling(session.model).billing,
+        ...(options.permissionMode ? { permissionMode: options.permissionMode } : {}),
+      });
     }
     const interrupted = processing && options.interrupt;
     await dispatchTurn({
@@ -268,8 +318,9 @@ export function createForemanSessionsService(deps: ForemanBridgeDependencies) {
         // Same settings the UI sends with every turn: the session's own model and effort.
         model: session.model ?? undefined,
         effort: session.effort ?? undefined,
-        permissionMode: options.permissionMode ?? permissionModes.get(sessionId),
+        permissionMode,
         sessionSummary: clipText(text, MAX_SUMMARY_LENGTH),
+        ...(guard ? guardRunOptions(compileGuard(guard, session.project_path)) : {}),
       },
     });
     return { interrupted };
@@ -405,11 +456,17 @@ export function createForemanSessionsService(deps: ForemanBridgeDependencies) {
       effort?: string;
       title?: string;
       taskId?: string;
+      guard?: ForemanGuardConfig;
     }) {
       const project = deps.projectsDb.getProjectPath(input.projectPath);
       if (!project || project.isArchived) {
         throw new AppError('projectPath is not a known cloudcli project.', { code: 'UNKNOWN_PROJECT', statusCode: 422 });
       }
+      const guard = input.guard?.enabled ? input.guard : undefined;
+      if (guard) {
+        assertGuardCompatiblePermissionMode(input.permissionMode);
+      }
+      const compiledGuard = guard ? compileGuard(guard, project.project_path) : null;
       if (input.billing === 'api-key' && !deps.runtime.hasApiKey()) {
         throw new AppError('API-key billing was requested, but no API key file is available.', {
           code: 'API_KEY_UNAVAILABLE',
@@ -422,10 +479,16 @@ export function createForemanSessionsService(deps: ForemanBridgeDependencies) {
       if (input.title) {
         deps.sessionsDb.updateSessionCustomName(created.sessionId, clipText(input.title, MAX_TITLE_LENGTH));
       }
-      permissionModes.set(created.sessionId, input.permissionMode);
       // Marked before the run starts, so the run that this call starts already gets the threshold.
       deps.managed?.mark(created.sessionId);
-      // Recorded before the run starts so even its first event (session_started) carries the task.
+      // Recorded before the run starts so even its first event (session_started) carries the task, and a run
+      // that is resumed after a restart still has the permission mode and guard it started with.
+      deps.state.track(created.sessionId, {
+        taskId: input.taskId ?? null,
+        billing: input.billing,
+        permissionMode: input.permissionMode,
+        guard: guard ?? null,
+      });
       if (input.taskId) {
         deps.taskIds.set(created.sessionId, input.taskId);
       }
@@ -439,6 +502,7 @@ export function createForemanSessionsService(deps: ForemanBridgeDependencies) {
           effort: input.effort,
           permissionMode: input.permissionMode,
           sessionSummary: clipText(input.title ?? input.prompt, MAX_SUMMARY_LENGTH),
+          ...(compiledGuard ? guardRunOptions(compiledGuard) : {}),
         },
       });
 
@@ -451,6 +515,9 @@ export function createForemanSessionsService(deps: ForemanBridgeDependencies) {
         permissionMode: input.permissionMode,
         taskId: input.taskId ?? null,
         status: 'running' as const,
+        guarded: compiledGuard !== null,
+        // Patterns that are not valid regular expressions are not enforced; say so rather than hide it.
+        ...(compiledGuard ? { guard: { skippedPatterns: compiledGuard.skippedPatterns, approvalTimeoutMs: compiledGuard.approvalTimeoutMs } } : {}),
       };
     },
 
@@ -458,6 +525,40 @@ export function createForemanSessionsService(deps: ForemanBridgeDependencies) {
     async sendMessage(sessionId: string, input: { text: string; interrupt: boolean; permissionMode?: string }) {
       const { interrupted } = await sendUserTurn(sessionId, input.text, input);
       return { sessionId, accepted: true as const, interrupted };
+    },
+
+    /** The permission prompts a session is waiting on right now (so Foreman can recover after its own restart). */
+    listPermissions(sessionId: string) {
+      requireClaudeSession(sessionId);
+      return {
+        permissions: pendingApprovals(sessionId).map((pending) => ({
+          requestId: pending.requestId,
+          toolName: pending.toolName,
+          input: summarizeToolInput(pending.input, MAX_PERMISSION_INPUT_LENGTH),
+          askedAt: pending.askedAt,
+        })),
+      };
+    },
+
+    /**
+     * Answers one of the session's pending permission prompts, the same way the chat UI does. Whoever answers first
+     * wins: a prompt the UI (or a timeout, or an abort) already settled is no longer pending and answers 404.
+     */
+    answerPermission(sessionId: string, input: { requestId: string; decision: 'allow' | 'deny'; reason?: string }) {
+      requireClaudeSession(sessionId);
+      if (!pendingApprovals(sessionId).some((pending) => pending.requestId === input.requestId)) {
+        throw new AppError('That permission request is not pending for this session (already answered, unknown, or the run is gone).', {
+          code: 'NO_PENDING_PERMISSION',
+          statusCode: 404,
+        });
+      }
+      deps.runtime.resolvePermission(
+        input.requestId,
+        input.decision === 'allow'
+          ? { allow: true }
+          : { allow: false, message: input.reason ?? 'Denied by the Foreman supervisor.' },
+      );
+      return { resolved: true as const };
     },
 
     /** Stops the session's run the way the UI's Stop button does (the live process is ended too). */

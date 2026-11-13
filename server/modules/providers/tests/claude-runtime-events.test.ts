@@ -115,6 +115,8 @@ rl.on('line', (line) => {
 rl.on('close', () => process.exit(0));
 `;
 
+const DEFAULT_APPROVAL_WINDOW_MS = 2000;
+let previousApprovalTimeout: string | undefined;
 let directory = '';
 let logFile = '';
 let runtime: typeof import('@/modules/providers/list/claude/claude-runtime.provider.js');
@@ -135,11 +137,16 @@ before(async () => {
   process.env.CLAUDE_CLI_PATH = cli;
   process.env.FAKE_CLAUDE_LOG = logFile;
   process.env.CLOUDCLI_ANTHROPIC_API_KEY_FILE = keyFile;
+  // The runtime's own approval window, read when the module loads: short, so the tests below can outlast it.
+  previousApprovalTimeout = process.env.CLAUDE_TOOL_APPROVAL_TIMEOUT_MS;
+  process.env.CLAUDE_TOOL_APPROVAL_TIMEOUT_MS = String(DEFAULT_APPROVAL_WINDOW_MS);
   runtime = await import('@/modules/providers/list/claude/claude-runtime.provider.js');
   unsubscribers.push(runtime.subscribeClaudeRuntimeEvents((event: ClaudeRuntimeEvent) => events.push(event)));
 });
 
 after(async () => {
+  if (previousApprovalTimeout === undefined) delete process.env.CLAUDE_TOOL_APPROVAL_TIMEOUT_MS;
+  else process.env.CLAUDE_TOOL_APPROVAL_TIMEOUT_MS = previousApprovalTimeout;
   unsubscribers.forEach((unsubscribe) => unsubscribe());
   await rm(directory, { recursive: true, force: true });
 });
@@ -315,4 +322,189 @@ test('a listener that throws never disturbs the run or other listeners', async (
 
 test('the API key file is detected without exposing the key', () => {
   assert.equal(runtime.hasClaudeApiKey(), true);
+});
+
+// ---------------------------------------------------------------------------------------------
+// Per-session tool policy (`options.toolPolicy`): the hook the Foreman guard uses
+// ---------------------------------------------------------------------------------------------
+
+async function permissionAnswers(): Promise<Array<{ request_id: string; response: { behavior: string; message?: string; updatedInput?: unknown } }>> {
+  return (await readFile(logFile, 'utf8'))
+    .split('\n')
+    .filter(Boolean)
+    .map((entry) => JSON.parse(entry))
+    .filter((entry) => entry.permissionAnswer)
+    .map((entry) => entry.permissionAnswer);
+}
+
+test('a tool policy that allows the call lets it through: no prompt, no event, no waiting', async () => {
+  const asked: Array<[string, unknown]> = [];
+  const toolPolicy = (toolName: string, input: unknown) => {
+    asked.push([toolName, input]);
+    return { decision: 'allow' };
+  };
+  const before = (await permissionAnswers()).length;
+  const outcome = await runPrompt('ask', { toolPolicy }, 'app-session-policy-allow');
+
+  assert.deepEqual(asked, [['Bash', { command: 'rm -rf build' }]]);
+  assert.ok(kinds(outcome).includes('turn_result'), 'the turn ran to its end without anyone answering');
+  assert.ok(!kinds(outcome).includes('permission_request'));
+  assert.ok(!kinds(outcome).includes('permission_resolved'));
+  assert.ok(!outcome.sent.some((message) => message.kind === 'permission_request'), 'the chat UI is not asked either');
+
+  const answers = await permissionAnswers();
+  assert.equal(answers.length, before + 1);
+  assert.equal(answers.at(-1)?.response.behavior, 'allow');
+  assert.deepEqual(answers.at(-1)?.response.updatedInput, { command: 'rm -rf build' });
+});
+
+test('a tool policy that asks sends the call to the prompt, flagged as guarded with its category, and either side can answer', async () => {
+  const toolPolicy = () => ({ decision: 'ask', category: 'command' });
+  const pending = runPrompt('ask', { toolPolicy }, 'app-session-policy-ask');
+  const request = await waitForPermissionRequest('app-session-policy-ask');
+  assert.equal(request.toolName, 'Bash');
+  assert.deepEqual(request.input, { command: 'rm -rf build' });
+  assert.equal(request.guarded, true);
+  assert.equal(request.category, 'command');
+
+  // It is listed as pending (this is what the bridge answers through), exactly like any prompt.
+  assert.deepEqual(runtime.getPendingApprovalsForSession('app-session-policy-ask').map((entry: { requestId: string }) => entry.requestId), [request.requestId]);
+
+  runtime.resolveToolApproval(request.requestId, { allow: false, message: 'Pushing is not part of this task.' });
+  const outcome = await pending;
+
+  const resolved = outcome.events.find((event) => event.kind === 'permission_resolved') as Extract<ClaudeRuntimeEvent, { kind: 'permission_resolved' }>;
+  assert.equal(resolved?.requestId, request.requestId);
+  assert.deepEqual(runtime.getPendingApprovalsForSession('app-session-policy-ask'), []);
+  assert.ok(outcome.sent.some((message) => message.kind === 'permission_request' && message.requestId === request.requestId), 'the chat UI is asked too');
+  assert.ok(outcome.sent.some((message) => message.kind === 'permission_resolved' && message.requestId === request.requestId), 'and told when it was settled');
+
+  const answer = (await permissionAnswers()).at(-1);
+  assert.equal(answer?.response.behavior, 'deny');
+  assert.equal(answer?.response.message, 'Pushing is not part of this task.');
+  assert.ok(kinds(outcome).includes('turn_result'));
+});
+
+test('a policy that throws asks instead of allowing', async () => {
+  const toolPolicy = () => { throw new Error('classifier exploded'); };
+  const pending = runPrompt('ask', { toolPolicy }, 'app-session-policy-throw');
+  const request = await waitForPermissionRequest('app-session-policy-throw');
+  assert.equal(request.guarded, true);
+  assert.equal(request.category, null);
+  runtime.resolveToolApproval(request.requestId, { allow: true });
+  await pending;
+});
+
+test('a run without a policy is unchanged: its prompt carries no guard fields and is resolved by the answer', async () => {
+  const pending = runPrompt('ask', {}, 'app-session-no-policy');
+  const request = await waitForPermissionRequest('app-session-no-policy');
+  assert.equal('guarded' in request, false);
+  assert.equal('category' in request, false);
+  runtime.resolveToolApproval(request.requestId, { allow: true });
+  const outcome = await pending;
+  assert.ok(outcome.events.some((event) => event.kind === 'permission_resolved' && event.requestId === request.requestId));
+});
+
+test('an aborted guarded prompt is not reported as resolved: the run just ends', async () => {
+  const pending = runPrompt('ask', { toolPolicy: () => ({ decision: 'ask', category: 'command' }) }, 'app-session-policy-abort');
+  await waitForPermissionRequest('app-session-policy-abort');
+  assert.equal(await runtime.abortClaudeSDKSession('app-session-policy-abort'), true);
+  const outcome = await pending;
+  const own = outcome.events.filter((event) => event.sessionId === 'app-session-policy-abort');
+  assert.deepEqual(own.map((event) => event.kind), ['run_started', 'permission_request', 'run_ended']);
+});
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+test('an unguarded prompt keeps the runtime\'s own approval window and its plain timeout message', async () => {
+  const outcome = await runPrompt('ask', {}, 'app-session-env-timeout');
+  assert.ok(kinds(outcome).includes('turn_result'), 'the run goes on after the denial');
+  const answer = (await permissionAnswers()).at(-1);
+  assert.equal(answer?.response.behavior, 'deny');
+  assert.equal(answer?.response.message, 'Permission request timed out');
+  assert.ok(outcome.sent.some((message) => message.kind === 'permission_cancelled' && message.reason === 'timeout'));
+  assert.ok(outcome.events.some((event) => event.kind === 'permission_resolved'), 'a timeout settles the prompt too');
+});
+
+test('a policy\'s timeoutMs outlasts the runtime\'s window: still pending after it, and a later answer is honoured', async () => {
+  const toolPolicy = () => ({ decision: 'ask', category: 'command', timeoutMs: 20_000, timeoutMessage: 'Timed out waiting for a person.' });
+  const pending = runPrompt('ask', { toolPolicy }, 'app-session-policy-long-wait');
+  const request = await waitForPermissionRequest('app-session-policy-long-wait');
+
+  await sleep(DEFAULT_APPROVAL_WINDOW_MS + 700);
+  assert.deepEqual(
+    runtime.getPendingApprovalsForSession('app-session-policy-long-wait').map((entry: { requestId: string }) => entry.requestId),
+    [request.requestId],
+    'the unguarded window has passed and the guarded prompt is still waiting',
+  );
+
+  runtime.resolveToolApproval(request.requestId, { allow: true });
+  const outcome = await pending;
+  assert.equal((await permissionAnswers()).at(-1)?.response.behavior, 'allow');
+  assert.ok(kinds(outcome).includes('turn_result'));
+});
+
+test('when a guarded prompt times out the worker is told it timed out waiting for a person, and a late answer finds nothing', async () => {
+  const message = 'Timed out waiting for a person to approve this Bash call: no one answered within 1 second. This is a timeout, not a decision.';
+  const toolPolicy = () => ({ decision: 'ask', category: 'command', timeoutMs: 300, timeoutMessage: message });
+  const started = Date.now();
+  const outcome = await runPrompt('ask', { toolPolicy }, 'app-session-policy-timeout');
+  assert.ok(Date.now() - started < DEFAULT_APPROVAL_WINDOW_MS, 'the policy\'s window applied, not the longer default');
+
+  const request = outcome.events.find((event) => event.kind === 'permission_request') as Extract<ClaudeRuntimeEvent, { kind: 'permission_request' }>;
+  assert.equal(request.guarded, true);
+  const answer = (await permissionAnswers()).at(-1);
+  assert.equal(answer?.response.behavior, 'deny');
+  assert.equal(answer?.response.message, message);
+  assert.ok(outcome.sent.some((message_) => message_.kind === 'permission_cancelled' && message_.requestId === request.requestId && message_.reason === 'timeout'), 'the chat UI retracts the prompt');
+  assert.ok(outcome.events.some((event) => event.kind === 'permission_resolved' && event.requestId === request.requestId));
+  assert.deepEqual(runtime.getPendingApprovalsForSession('app-session-policy-timeout'), []);
+
+  // A late answer has nothing to resolve (the bridge reports it as 404 NO_PENDING_PERMISSION) and changes nothing.
+  assert.doesNotThrow(() => runtime.resolveToolApproval(request.requestId, { allow: true }));
+  assert.equal((await permissionAnswers()).at(-1)?.response.behavior, 'deny');
+});
+
+test('a policy without a timeoutMessage still denies a timeout with the runtime\'s plain message', async () => {
+  const toolPolicy = () => ({ decision: 'ask', category: 'command', timeoutMs: 200 });
+  await runPrompt('ask', { toolPolicy }, 'app-session-policy-timeout-plain');
+  assert.equal((await permissionAnswers()).at(-1)?.response.message, 'Permission request timed out');
+});
+
+// ---------------------------------------------------------------------------------------------
+// Host-supplied SDK hooks (`options.toolHooks`): merged into the run's own, never replacing them
+// ---------------------------------------------------------------------------------------------
+
+async function initializeHooks(): Promise<Record<string, Array<{ matcher?: string; hookCallbackIds: string[] }>>> {
+  const initializes = (await readFile(logFile, 'utf8'))
+    .split('\n')
+    .filter(Boolean)
+    .map((entry) => JSON.parse(entry))
+    .filter((entry) => entry.control === 'initialize');
+  return initializes.at(-1)?.request?.hooks ?? {};
+}
+
+test('a run without host hooks registers only its own hooks', async () => {
+  await runPrompt('hello', {}, 'app-session-hooks-none');
+  const hooks = await initializeHooks();
+  assert.deepEqual(Object.keys(hooks), ['Notification']);
+});
+
+test('host hooks join the run\'s own: Notification stays, PreToolUse is added', async () => {
+  const toolHooks = { PreToolUse: [{ matcher: '', hooks: [async () => ({})] }] };
+  const outcome = await runPrompt('hello', { toolHooks }, 'app-session-hooks-merge');
+  assert.ok(kinds(outcome).includes('turn_result'));
+  const hooks = await initializeHooks();
+  assert.deepEqual(Object.keys(hooks).sort(), ['Notification', 'PreToolUse']);
+  assert.equal(hooks.Notification.length, 1);
+  assert.equal(hooks.PreToolUse.length, 1);
+  assert.equal(hooks.PreToolUse[0].matcher, '');
+  assert.equal(hooks.PreToolUse[0].hookCallbackIds.length, 1);
+});
+
+test('host hooks for an event the run already hooks are appended after its own matchers', async () => {
+  const toolHooks = { Notification: [{ matcher: 'extra', hooks: [async () => ({})] }] };
+  await runPrompt('hello', { toolHooks }, 'app-session-hooks-append');
+  const hooks = await initializeHooks();
+  assert.deepEqual(hooks.Notification.map((matcher) => matcher.matcher), ['', 'extra']);
 });

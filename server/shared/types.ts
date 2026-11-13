@@ -1420,5 +1420,16 @@ export type ClaudeRuntimeEvent = { sessionId: string; projectPath: string | null
   | { kind: 'system_message'; message: Record<string, unknown> }
   /** An SDK `assistant` message whose stop reason is `refusal`. */
   | { kind: 'assistant_refusal'; message: Record<string, unknown> }
-  | { kind: 'permission_request'; requestId: string; toolName: string; input: unknown }
+  | {
+      kind: 'permission_request';
+      requestId: string;
+      toolName: string;
+      input: unknown;
+      /** Set when the run's tool policy (the Foreman guard) judged the call risky and sent it to a prompt. */
+      guarded?: boolean;
+      /** Why the guarded call was risky: `command`, `secret` or `outside_repo`. */
+      category?: string | null;
+    }
+  /** A permission prompt ended: answered by a client or the bridge, timed out, or cancelled by an abort. */
+  | { kind: 'permission_resolved'; requestId: string }
 );

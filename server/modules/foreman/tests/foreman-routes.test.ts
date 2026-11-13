@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -9,6 +10,8 @@ import test from 'node:test';
 import express from 'express';
 
 import { createBridgeAuthMiddleware } from '@/modules/foreman/foreman-auth.service.js';
+import { createForemanGitService } from '@/modules/foreman/foreman-git.service.js';
+import { createForemanSessionStateService, type ForemanSessionStateStore } from '@/modules/foreman/foreman-session-state.service.js';
 import {
   createForemanSessionsService,
   resolveContextWindow,
@@ -51,8 +54,35 @@ function createWorld() {
   const failed = new Set<string>();
   const taskStore = new Map<string, string>();
   const managedMarks: string[] = [];
+  // The state store is an in-memory map; "restarting" builds a second service over the same map.
+  const stateRows = new Map<string, Parameters<ForemanSessionStateStore['upsert']>[0]>();
+  const stateStore: ForemanSessionStateStore = {
+    get: (id) => stateRows.get(id) ?? null,
+    upsert: (stateRow) => void stateRows.set(stateRow.session_id, { ...stateRow }),
+    updateStatus: (id, status, updatedAt) => {
+      const existing = stateRows.get(id);
+      if (existing) stateRows.set(id, { ...existing, status, updated_at: updatedAt });
+      return Boolean(existing);
+    },
+    settleAfterRestart: () => {
+      let reset = 0;
+      let waitingPermission = 0;
+      for (const [id, existing] of stateRows) {
+        if (existing.status === 'running' || existing.status === 'waiting_permission') {
+          if (existing.status === 'waiting_permission') waitingPermission += 1;
+          stateRows.set(id, { ...existing, status: 'idle' });
+          reset += 1;
+        }
+      }
+      return { reset, waitingPermission };
+    },
+  };
 
   const world = {
+    stateStore,
+    stateRows,
+    state: createForemanSessionStateService({ store: stateStore }),
+    resolvedPermissions: [] as Array<{ requestId: string; decision: { allow: boolean; message?: string } }>,
     rows,
     processing,
     live,
@@ -132,6 +162,13 @@ function createWorld() {
       isLive: (id) => live.has(id),
       liveSessionIds: () => [...live],
       pendingApprovals: (id) => approvals.get(id) ?? [],
+      resolvePermission: (requestId, decision) => {
+        world.resolvedPermissions.push({ requestId, decision });
+        // Like the runtime's resolver: the prompt is no longer pending once answered.
+        for (const [sessionId, pending] of approvals) {
+          approvals.set(sessionId, pending.filter((entry) => (entry as { requestId?: string }).requestId !== requestId));
+        }
+      },
       backgroundTasks: (id) => (live.has(id) ? background.get(id) ?? [] : null),
       setModel: async (sessionId, model) => {
         world.liveModelChanges.push({ sessionId, model });
@@ -148,6 +185,7 @@ function createWorld() {
       const target = rows.get(sessionId);
       if (target) target.model = model;
     },
+    state: world.state,
     taskIds: createTaskIdStore({
       get: (key) => taskStore.get(key) ?? null,
       set: (key, value) => void taskStore.set(key, value),
@@ -173,9 +211,15 @@ async function withBridge(
     world: World;
     tokenFile: string;
     call: (method: string, pathname: string, body?: unknown, token?: string | null) => Promise<{ status: number; body: any }>;
+    /** A real directory registered as the known project `<projectDir>`; `deps` for building a second ("restarted") service. */
+    projectDir: string;
+    deps: ForemanBridgeDependencies;
   }) => Promise<void>,
 ): Promise<void> {
-  const directory = await mkdtemp(path.join(os.tmpdir(), 'foreman-routes-'));
+  const directory = await realpath(await mkdtemp(path.join(os.tmpdir(), 'foreman-routes-')));
+  const projectDir = path.join(directory, 'project');
+  await mkdir(projectDir);
+  const projectRows = [{ project_id: 'git-project', project_path: projectDir, custom_project_name: null, isStarred: 0, isArchived: 0 }];
   const tokenFile = path.join(directory, 'bridge-token');
   await writeFile(tokenFile, TOKEN, { mode: 0o600 });
   const { world, deps } = createWorld();
@@ -187,6 +231,12 @@ async function withBridge(
   app.use('/api/foreman', createForemanRouter({
     authMiddleware: createBridgeAuthMiddleware({ tokenFile }),
     sessions: createForemanSessionsService(deps),
+    git: createForemanGitService({
+      projectsDb: {
+        getProjectPath: (candidate: string) => (projectRows.find((project) => project.project_path === candidate) ?? null) as never,
+        getProjectPaths: () => projectRows as never,
+      },
+    }),
   }));
   const server = app.listen(0, '127.0.0.1');
   await once(server, 'listening');
@@ -205,7 +255,7 @@ async function withBridge(
   };
 
   try {
-    await run({ baseUrl, world, tokenFile, call });
+    await run({ baseUrl, world, tokenFile, call, projectDir, deps });
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await rm(directory, { recursive: true, force: true });
@@ -231,6 +281,9 @@ test('every route demands the bridge token, and the user login is not involved',
       ['POST', '/sessions/s1/interrupt', {}],
       ['POST', '/sessions/s1/model', { model: 'sonnet' }],
       ['POST', '/sessions/s1/compact', {}],
+      ['GET', '/sessions/s1/permissions'],
+      ['POST', '/sessions/s1/permission', { requestId: 'r1', decision: 'allow' }],
+      ['GET', '/projects/git?path=%2Fmnt%2Fdev%2Fknown'],
     ];
     for (const [method, pathname, body] of requests) {
       const missing = await call(method, pathname, body, null);
@@ -295,6 +348,8 @@ test('GET /sessions lists claude sessions with status, billing, activity and bac
       model: 'claude-sonnet-5-5',
       billing: 'api-key',
       status: 'running',
+      permissionMode: null,
+      guarded: false,
       live: true,
       lastActivity: '2026-11-13T09:30:00.000Z',
       backgroundTasks: 2,
@@ -356,7 +411,7 @@ test('GET /sessions/:id/digest returns the condensed turn with the session summa
     assert.equal(digest.lastUserMessage, 'Fix the bug');
     assert.equal(digest.finalAssistantText, 'Fixed.');
     assert.equal(digest.stopReason, 'end_turn');
-    assert.deepEqual(digest.toolCalls, [{ name: 'Bash', shortInput: 'npm test', isError: true }]);
+    assert.deepEqual(digest.toolCalls, [{ name: 'Bash', shortInput: 'npm test', isError: true, resultTail: 'fail' }]);
     assert.equal(digest.turnsRequested, 1);
 
     const two = await call('GET', '/sessions/s1/digest?turns=2');
@@ -839,4 +894,490 @@ test('POST compact is refused while a turn runs and validates its input', async 
     assert.equal((await call('POST', '/sessions/nope/compact', {})).status, 404);
     assert.equal(world.startedTurns.length, 0);
   });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Milestone 5: pending permission prompts
+// ---------------------------------------------------------------------------------------------
+
+const GUARD_BODY = {
+  enabled: true,
+  riskyPatterns: ['\\bgit\\s+push\\b', 'rm\\s+-[a-z]*r[a-z]*f'],
+  secretPatterns: ['(^|/)\\.env(\\.[\\w.-]+)?$'],
+  writeOutsideRepo: true,
+};
+const startBody = (extra: Record<string, unknown> = {}) => ({ projectPath: '/mnt/dev/known', prompt: 'Do the task', permissionMode: 'default', ...extra });
+
+test('GET /sessions/:id/permissions lists what is pending, with a clipped input and the time it was asked', async () => {
+  await withBridge(async ({ call, world }) => {
+    world.rows.set('s1', row({ session_id: 's1' }));
+    world.live.add('s1');
+
+    const none = await call('GET', '/sessions/s1/permissions');
+    assert.equal(none.status, 200);
+    assert.deepEqual(none.body.data, { permissions: [] });
+
+    world.approvals.set('s1', [
+      { requestId: 'req-1', toolName: 'Bash', input: { command: `git push origin main ${'x'.repeat(2000)}` }, receivedAt: new Date('2026-11-13T09:00:00.000Z') },
+      { requestId: 'req-2', toolName: 'Read', input: { file_path: '/repo/.env' }, receivedAt: new Date('2026-11-13T09:00:05.000Z') },
+      { toolName: 'Broken' },
+    ]);
+    const pending = await call('GET', '/sessions/s1/permissions');
+    assert.equal(pending.status, 200);
+    const permissions = pending.body.data.permissions as Array<{ requestId: string; toolName: string; input: string; askedAt: string }>;
+    assert.deepEqual(permissions.map((entry) => [entry.requestId, entry.toolName, entry.askedAt]), [
+      ['req-1', 'Bash', '2026-11-13T09:00:00.000Z'],
+      ['req-2', 'Read', '2026-11-13T09:00:05.000Z'],
+    ]);
+    assert.ok(permissions[0].input.startsWith('git push origin main xxx'));
+    assert.ok(permissions[0].input.length <= 1000);
+    assert.equal(permissions[1].input, '/repo/.env');
+    assert.deepEqual(Object.keys(permissions[0]).sort(), ['askedAt', 'input', 'requestId', 'toolName']);
+
+    // The session reports waiting_permission while anything is pending.
+    const listed = await call('GET', '/sessions');
+    assert.equal(listed.body.data.sessions.find((entry: { id: string }) => entry.id === 's1').status, 'waiting_permission');
+  });
+});
+
+test('GET /sessions/:id/permissions validates the session', async () => {
+  await withBridge(async ({ call, world }) => {
+    world.rows.set('codex', row({ session_id: 'codex', provider: 'codex' }));
+    assert.equal((await call('GET', '/sessions/missing/permissions')).status, 404);
+    assert.equal((await call('GET', '/sessions/missing/permissions')).body.error.code, 'SESSION_NOT_FOUND');
+    assert.equal((await call('GET', '/sessions/codex/permissions')).status, 400);
+    assert.equal((await call('GET', `/sessions/${encodeURIComponent('bad id')}/permissions`)).status, 400);
+  });
+});
+
+test('POST /sessions/:id/permission allows a pending prompt, and the session leaves waiting_permission', async () => {
+  await withBridge(async ({ call, world }) => {
+    world.rows.set('s1', row({ session_id: 's1' }));
+    world.approvals.set('s1', [{ requestId: 'req-1', toolName: 'Bash', input: { command: 'git push' }, receivedAt: new Date() }]);
+
+    const response = await call('POST', '/sessions/s1/permission', { requestId: 'req-1', decision: 'allow' });
+    assert.equal(response.status, 200);
+    assert.deepEqual(response.body.data, { resolved: true });
+    assert.deepEqual(world.resolvedPermissions, [{ requestId: 'req-1', decision: { allow: true } }]);
+
+    assert.deepEqual((await call('GET', '/sessions/s1/permissions')).body.data, { permissions: [] });
+    const listed = await call('GET', '/sessions');
+    assert.equal(listed.body.data.sessions.find((entry: { id: string }) => entry.id === 's1').status, 'idle');
+  });
+});
+
+test('POST /sessions/:id/permission denies with the reason, or with a default one', async () => {
+  await withBridge(async ({ call, world }) => {
+    world.rows.set('s1', row({ session_id: 's1' }));
+    world.approvals.set('s1', [
+      { requestId: 'req-1', toolName: 'Bash', input: {}, receivedAt: new Date() },
+      { requestId: 'req-2', toolName: 'Bash', input: {}, receivedAt: new Date() },
+    ]);
+
+    const withReason = await call('POST', '/sessions/s1/permission', { requestId: 'req-1', decision: 'deny', reason: 'Pushing is not part of this task.' });
+    assert.deepEqual(withReason.body.data, { resolved: true });
+    // Another prompt is still pending, so the session is still waiting.
+    const listed = await call('GET', '/sessions');
+    assert.equal(listed.body.data.sessions.find((entry: { id: string }) => entry.id === 's1').status, 'waiting_permission');
+
+    await call('POST', '/sessions/s1/permission', { requestId: 'req-2', decision: 'deny' });
+    assert.deepEqual(world.resolvedPermissions, [
+      { requestId: 'req-1', decision: { allow: false, message: 'Pushing is not part of this task.' } },
+      { requestId: 'req-2', decision: { allow: false, message: 'Denied by the Foreman supervisor.' } },
+    ]);
+  });
+});
+
+test('POST /sessions/:id/permission answers 404 NO_PENDING_PERMISSION when the request is not pending', async () => {
+  await withBridge(async ({ call, world }) => {
+    world.rows.set('s1', row({ session_id: 's1' }));
+    world.rows.set('s2', row({ session_id: 's2' }));
+    world.approvals.set('s1', [{ requestId: 'req-1', toolName: 'Bash', input: {}, receivedAt: new Date() }]);
+
+    // Unknown request id.
+    const unknown = await call('POST', '/sessions/s1/permission', { requestId: 'req-nope', decision: 'allow' });
+    assert.equal(unknown.status, 404);
+    assert.equal(unknown.body.error.code, 'NO_PENDING_PERMISSION');
+    // A request of another session is not this session's to answer.
+    const wrongSession = await call('POST', '/sessions/s2/permission', { requestId: 'req-1', decision: 'allow' });
+    assert.equal(wrongSession.status, 404);
+    assert.equal(wrongSession.body.error.code, 'NO_PENDING_PERMISSION');
+    assert.deepEqual(world.resolvedPermissions, []);
+
+    // Whoever answers first wins: the chat UI answered, so the bridge's answer finds nothing pending.
+    world.approvals.set('s1', []);
+    const late = await call('POST', '/sessions/s1/permission', { requestId: 'req-1', decision: 'allow' });
+    assert.equal(late.status, 404);
+    assert.equal(late.body.error.code, 'NO_PENDING_PERMISSION');
+
+    // Answering twice: the second answer is the late one.
+    world.approvals.set('s1', [{ requestId: 'req-2', toolName: 'Bash', input: {}, receivedAt: new Date() }]);
+    assert.equal((await call('POST', '/sessions/s1/permission', { requestId: 'req-2', decision: 'allow' })).status, 200);
+    assert.equal((await call('POST', '/sessions/s1/permission', { requestId: 'req-2', decision: 'allow' })).status, 404);
+    assert.equal(world.resolvedPermissions.length, 1);
+  });
+});
+
+test('POST /sessions/:id/permission validates the session and the body', async () => {
+  await withBridge(async ({ call, world }) => {
+    world.rows.set('s1', row({ session_id: 's1' }));
+    world.rows.set('codex', row({ session_id: 'codex', provider: 'codex' }));
+    world.approvals.set('s1', [{ requestId: 'req-1', toolName: 'Bash', input: {}, receivedAt: new Date() }]);
+
+    assert.equal((await call('POST', '/sessions/missing/permission', { requestId: 'req-1', decision: 'allow' })).status, 404);
+    assert.equal((await call('POST', '/sessions/codex/permission', { requestId: 'req-1', decision: 'allow' })).status, 400);
+    const bad: unknown[] = [
+      {},
+      { decision: 'allow' },
+      { requestId: 'req-1' },
+      { requestId: '', decision: 'allow' },
+      { requestId: 42, decision: 'allow' },
+      { requestId: 'has space', decision: 'allow' },
+      { requestId: 'req-1', decision: 'maybe' },
+      { requestId: 'req-1', decision: true },
+      { requestId: 'req-1', decision: 'deny', reason: 5 },
+      { requestId: 'req-1', decision: 'deny', reason: 'x'.repeat(1001) },
+      [],
+    ];
+    for (const body of bad) {
+      const response = await call('POST', '/sessions/s1/permission', body);
+      assert.equal(response.status, 400, JSON.stringify(body));
+      assert.equal(response.body.success, false);
+    }
+    assert.deepEqual(world.resolvedPermissions, []);
+    assert.equal(world.approvals.get('s1')?.length, 1);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Milestone 5: the guard on Foreman-started sessions
+// ---------------------------------------------------------------------------------------------
+
+type ToolPolicy = (toolName: string, input: unknown) => { decision: string; category?: string; timeoutMs?: number; timeoutMessage?: string };
+const policyOf = (turn: { options: Record<string, unknown> }) => turn.options.toolPolicy as ToolPolicy | undefined;
+type GuardHook = (input: unknown) => Promise<Record<string, any>>;
+const hookOf = (turn: { options: Record<string, unknown> }) =>
+  (turn.options.toolHooks as { PreToolUse: Array<{ matcher: string; hooks: GuardHook[] }> } | undefined)?.PreToolUse[0].hooks[0];
+const preToolUse = (toolName: string, toolInput: unknown) => ({ hook_event_name: 'PreToolUse', tool_name: toolName, tool_input: toolInput, tool_use_id: 'tu_1' });
+
+test('POST /sessions with a guard gives the run a tool policy that allows safe calls and asks about risky ones', async () => {
+  await withBridge(async ({ call, world }) => {
+    const response = await call('POST', '/sessions', startBody({ guard: GUARD_BODY }));
+    assert.equal(response.status, 201);
+    assert.equal(response.body.data.guarded, true);
+    assert.deepEqual(response.body.data.guard, { skippedPatterns: 0, approvalTimeoutMs: 1_800_000 });
+    assert.equal(response.body.data.permissionMode, 'default');
+
+    const policy = policyOf(world.startedTurns[0]);
+    assert.equal(typeof policy, 'function');
+    assert.deepEqual(policy?.('Bash', { command: 'node --test' }), { decision: 'allow' });
+    assert.deepEqual(policy?.('Bash', { command: 'git status' }), { decision: 'allow' });
+    assert.deepEqual(policy?.('Edit', { file_path: '/mnt/dev/known/src/a.ts', old_string: 'a', new_string: 'b' }), { decision: 'allow' });
+    assert.equal(policy?.('Bash', { command: 'git push --force' }).decision, 'ask');
+    assert.equal(policy?.('Bash', { command: 'git push --force' }).category, 'command');
+    assert.equal(policy?.('Read', { file_path: '/mnt/dev/known/.env' }).category, 'secret');
+    // repoRoot defaults to the project path.
+    assert.equal(policy?.('Write', { file_path: '/etc/hosts', content: '' }).category, 'outside_repo');
+
+    // The same guard rides along as a PreToolUse hook, so calls the CLI would allow by itself are classified too.
+    const hook = hookOf(world.startedTurns[0]);
+    assert.equal(typeof hook, 'function');
+    assert.equal((await hook?.(preToolUse('Read', { file_path: '/mnt/dev/known/.env' })))?.hookSpecificOutput.permissionDecision, 'ask');
+    assert.equal((await hook?.(preToolUse('Glob', { pattern: '**/.env*' })))?.hookSpecificOutput.permissionDecision, 'ask');
+    assert.deepEqual(await hook?.(preToolUse('Read', { file_path: '/mnt/dev/known/src/a.ts' })), {});
+
+    const listed = await call('GET', '/sessions');
+    const entry = listed.body.data.sessions.find((candidate: { id: string }) => candidate.id === 'new-1');
+    assert.equal(entry.guarded, true);
+    assert.equal(entry.permissionMode, 'default');
+  });
+});
+
+test('a guard can name its own repoRoot, switch the outside-repo rule off, and carry patterns that do not compile', async () => {
+  await withBridge(async ({ call, world }) => {
+    const response = await call('POST', '/sessions', startBody({
+      guard: { ...GUARD_BODY, riskyPatterns: ['(unclosed', ...GUARD_BODY.riskyPatterns], repoRoot: '/mnt/dev/known/worktrees/t1' },
+    }));
+    assert.equal(response.status, 201);
+    assert.deepEqual(response.body.data.guard, { skippedPatterns: 1, approvalTimeoutMs: 1_800_000 });
+    const policy = policyOf(world.startedTurns[0]);
+    assert.equal(policy?.('Write', { file_path: '/mnt/dev/known/src/a.ts', content: '' }).category, 'outside_repo');
+    assert.equal(policy?.('Write', { file_path: '/mnt/dev/known/worktrees/t1/a.ts', content: '' }).decision, 'allow');
+    assert.equal(policy?.('Bash', { command: 'git push' }).decision, 'ask', 'the valid patterns still apply');
+
+    const open = await call('POST', '/sessions', startBody({ guard: { ...GUARD_BODY, writeOutsideRepo: false } }));
+    assert.equal(policyOf(world.startedTurns[1])?.('Write', { file_path: '/etc/hosts', content: '' }).decision, 'allow');
+    assert.equal(open.body.data.guarded, true);
+  });
+});
+
+test('a guarded risky call waits 30 minutes by default, or the guard\'s approvalTimeoutMs, and a timeout says so plainly', async () => {
+  await withBridge(async ({ call, world }) => {
+    const standard = await call('POST', '/sessions', startBody({ guard: GUARD_BODY }));
+    assert.equal(standard.body.data.guard.approvalTimeoutMs, 1_800_000);
+    const standardAsk = policyOf(world.startedTurns[0])?.('Bash', { command: 'git push' });
+    assert.equal(standardAsk?.decision, 'ask');
+    assert.equal(standardAsk?.timeoutMs, 1_800_000);
+    assert.match(standardAsk?.timeoutMessage ?? '', /^Timed out waiting for a person to approve this Bash call: no one answered within 30 minutes\./);
+
+    const short = await call('POST', '/sessions', startBody({ guard: { ...GUARD_BODY, approvalTimeoutMs: 120_000 } }));
+    assert.equal(short.status, 201);
+    assert.equal(short.body.data.guard.approvalTimeoutMs, 120_000);
+    const shortAsk = policyOf(world.startedTurns[1])?.('Read', { file_path: '/mnt/dev/known/.env' });
+    assert.equal(shortAsk?.timeoutMs, 120_000);
+    assert.match(shortAsk?.timeoutMessage ?? '', /within 2 minutes\./);
+    assert.deepEqual(policyOf(world.startedTurns[1])?.('Bash', { command: 'git status' }), { decision: 'allow' });
+
+    // What is stored with the guard is the window actually in force.
+    const stored = world.state.get(short.body.data.sessionId)?.guard;
+    assert.equal(stored?.approvalTimeoutMs, 120_000);
+    assert.equal(world.state.get(standard.body.data.sessionId)?.guard?.approvalTimeoutMs, 1_800_000);
+  });
+});
+
+test('a session started without a guard, or with a disabled one, has no tool policy and behaves as before', async () => {
+  await withBridge(async ({ call, world }) => {
+    const plain = await call('POST', '/sessions', startBody());
+    assert.equal(plain.body.data.guarded, false);
+    assert.equal('guard' in plain.body.data, false);
+    assert.equal('toolPolicy' in world.startedTurns[0].options, false);
+    assert.equal('toolHooks' in world.startedTurns[0].options, false);
+
+    const disabled = await call('POST', '/sessions', startBody({ permissionMode: 'acceptEdits', guard: { enabled: false } }));
+    assert.equal(disabled.status, 201);
+    assert.equal(disabled.body.data.guarded, false);
+    assert.equal('toolPolicy' in world.startedTurns[1].options, false);
+    assert.equal('toolHooks' in world.startedTurns[1].options, false);
+    assert.equal(world.startedTurns[1].options.permissionMode, 'acceptEdits');
+
+    const listed = await call('GET', '/sessions');
+    for (const entry of listed.body.data.sessions as Array<{ guarded: boolean }>) {
+      assert.equal(entry.guarded, false);
+    }
+  });
+});
+
+test('POST /sessions rejects a malformed guard, and permission modes the guard cannot work under, without starting anything', async () => {
+  await withBridge(async ({ call, world }) => {
+    const bad: Array<[string, Record<string, unknown>, number, string]> = [
+      ['guard not an object', startBody({ guard: 'on' }), 400, 'INVALID_REQUEST'],
+      ['guard without enabled', startBody({ guard: { riskyPatterns: [], secretPatterns: [] } }), 400, 'INVALID_REQUEST'],
+      ['enabled without patterns', startBody({ guard: { enabled: true } }), 400, 'INVALID_REQUEST'],
+      ['patterns not strings', startBody({ guard: { ...GUARD_BODY, riskyPatterns: [1] } }), 400, 'INVALID_REQUEST'],
+      ['relative repoRoot', startBody({ guard: { ...GUARD_BODY, repoRoot: 'repo' } }), 400, 'INVALID_REQUEST'],
+      ['approval window too short', startBody({ guard: { ...GUARD_BODY, approvalTimeoutMs: 999 } }), 400, 'INVALID_REQUEST'],
+      ['approval window too long', startBody({ guard: { ...GUARD_BODY, approvalTimeoutMs: 86_400_001 } }), 400, 'INVALID_REQUEST'],
+      ['approval window not an integer', startBody({ guard: { ...GUARD_BODY, approvalTimeoutMs: 1500.5 } }), 400, 'INVALID_REQUEST'],
+      ['approval window a string', startBody({ guard: { ...GUARD_BODY, approvalTimeoutMs: '60000' } }), 400, 'INVALID_REQUEST'],
+      ['acceptEdits', startBody({ permissionMode: 'acceptEdits', guard: GUARD_BODY }), 400, 'GUARD_INCOMPATIBLE_PERMISSION_MODE'],
+      ['auto', startBody({ permissionMode: 'auto', guard: GUARD_BODY }), 400, 'GUARD_INCOMPATIBLE_PERMISSION_MODE'],
+      ['bypassPermissions', startBody({ permissionMode: 'bypassPermissions', guard: GUARD_BODY }), 400, 'GUARD_INCOMPATIBLE_PERMISSION_MODE'],
+    ];
+    for (const [label, body, status, code] of bad) {
+      const response = await call('POST', '/sessions', body);
+      assert.equal(response.status, status, label);
+      assert.equal(response.body.error.code, code, label);
+    }
+    assert.equal(world.startedTurns.length, 0);
+    assert.equal(world.created.length, 0);
+    assert.equal(world.stateRows.size, 0);
+
+    // Plan mode asks for everything non-trivial, so a guard fits it.
+    assert.equal((await call('POST', '/sessions', startBody({ permissionMode: 'plan', guard: GUARD_BODY }))).status, 201);
+  });
+});
+
+test('a guarded session keeps its guard on every message, and refuses a message that would drop it into an unguarded mode', async () => {
+  await withBridge(async ({ call, world }) => {
+    const started = await call('POST', '/sessions', startBody({ guard: GUARD_BODY }));
+    const sessionId = started.body.data.sessionId as string;
+    await tick();
+
+    const refused = await call('POST', `/sessions/${sessionId}/message`, { text: 'go on', permissionMode: 'bypassPermissions' });
+    assert.equal(refused.status, 400);
+    assert.equal(refused.body.error.code, 'GUARD_INCOMPATIBLE_PERMISSION_MODE');
+    assert.equal(world.startedTurns.length, 1);
+
+    const accepted = await call('POST', `/sessions/${sessionId}/message`, { text: 'go on' });
+    assert.equal(accepted.status, 202);
+    assert.equal(world.startedTurns[1].options.permissionMode, 'default');
+    assert.equal(policyOf(world.startedTurns[1])?.('Bash', { command: 'git push' }).decision, 'ask');
+    assert.equal((await hookOf(world.startedTurns[1])?.(preToolUse('Read', { file_path: '/mnt/dev/known/.env' })))?.hookSpecificOutput.permissionDecision, 'ask');
+  });
+});
+
+test('sessions that Foreman did not start keep behaving as before: no policy, whatever mode is asked for', async () => {
+  await withBridge(async ({ call, world }) => {
+    world.rows.set('ui', row({ session_id: 'ui' }));
+    const response = await call('POST', '/sessions/ui/message', { text: 'hello', permissionMode: 'bypassPermissions' });
+    assert.equal(response.status, 202);
+    assert.equal('toolPolicy' in world.startedTurns[0].options, false);
+    assert.equal('toolHooks' in world.startedTurns[0].options, false);
+    assert.equal(world.startedTurns[0].options.permissionMode, 'bypassPermissions');
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Milestone 5: status, permission mode and guard across a cloudcli restart
+// ---------------------------------------------------------------------------------------------
+
+test('after a restart a resumed Foreman session keeps its permission mode and its guard', async () => {
+  await withBridge(async ({ call, world, deps }) => {
+    const started = await call('POST', '/sessions', startBody({ permissionMode: 'plan', taskId: 'task-9', guard: { ...GUARD_BODY, approvalTimeoutMs: 600_000 } }));
+    const sessionId = started.body.data.sessionId as string;
+    await tick();
+    world.state.setStatus(sessionId, 'running');
+
+    // "Restart": a brand-new bridge over the same store, with the in-memory pieces of the old process gone.
+    const restarted = createForemanSessionsService({
+      ...deps,
+      state: createForemanSessionStateService({ store: world.stateStore }),
+      taskIds: createTaskIdStore({ get: () => null, set: () => undefined }),
+    });
+    const [summary] = restarted.listSessions().filter((entry) => entry.id === sessionId);
+    assert.equal(summary.status, 'idle', 'the run died with the process');
+    assert.equal(summary.permissionMode, 'plan');
+    assert.equal(summary.guarded, true);
+    assert.equal(summary.taskId, 'task-9', 'the task link is also read back from the stored state');
+
+    await restarted.sendMessage(sessionId, { text: 'Carry on', interrupt: false });
+    const resumed = world.startedTurns.at(-1);
+    assert.equal(resumed?.sessionId, sessionId);
+    assert.equal(resumed?.options.permissionMode, 'plan');
+    assert.equal(policyOf(resumed as never)?.('Bash', { command: 'git push' }).decision, 'ask');
+    assert.equal(policyOf(resumed as never)?.('Bash', { command: 'git push' }).timeoutMs, 600_000, 'the approval window survives the restart');
+    assert.equal(policyOf(resumed as never)?.('Bash', { command: 'git status' }).decision, 'allow');
+    assert.equal(policyOf(resumed as never)?.('Write', { file_path: '/etc/hosts', content: '' }).category, 'outside_repo');
+    assert.equal((await hookOf(resumed as never)?.(preToolUse('Read', { file_path: '/mnt/dev/known/.env' })))?.hookSpecificOutput.permissionDecision, 'ask', 'and its hook');
+  });
+});
+
+test('a message that names a permission mode changes the remembered one, and a driven session is remembered', async () => {
+  await withBridge(async ({ call, world, deps }) => {
+    world.rows.set('ui', row({ session_id: 'ui', model: 'sonnet@api' }));
+    assert.equal(world.state.get('ui'), null);
+
+    await call('POST', '/sessions/ui/message', { text: 'first', permissionMode: 'acceptEdits' });
+    const tracked = world.state.get('ui');
+    assert.equal(tracked?.permissionMode, 'acceptEdits');
+    assert.equal(tracked?.billing, 'api-key');
+    assert.equal(tracked?.guard, null);
+
+    const restarted = createForemanSessionsService({ ...deps, state: createForemanSessionStateService({ store: world.stateStore }) });
+    await tick();
+    await restarted.sendMessage('ui', { text: 'second', interrupt: false });
+    assert.equal(world.startedTurns.at(-1)?.options.permissionMode, 'acceptEdits');
+    assert.equal('toolPolicy' in (world.startedTurns.at(-1)?.options ?? {}), false);
+  });
+});
+
+test('GET /sessions reports the remembered status for sessions without a live process', async () => {
+  await withBridge(async ({ call, world }) => {
+    world.rows.set('failed-before-restart', row({ session_id: 'failed-before-restart' }));
+    world.rows.set('plain', row({ session_id: 'plain' }));
+    world.state.track('failed-before-restart', { permissionMode: 'default' });
+    world.state.setStatus('failed-before-restart', 'error');
+    world.state.track('plain', {});
+
+    const listed = await call('GET', '/sessions');
+    const byId = Object.fromEntries((listed.body.data.sessions as Array<{ id: string; status: string; live: boolean }>).map((entry) => [entry.id, entry]));
+    assert.equal(byId['failed-before-restart'].status, 'error');
+    assert.equal(byId['failed-before-restart'].live, false);
+    assert.equal(byId.plain.status, 'idle');
+
+    // What is live right now wins over what was remembered.
+    world.processing.add('failed-before-restart');
+    const running = await call('GET', '/sessions');
+    assert.equal(running.body.data.sessions.find((entry: { id: string }) => entry.id === 'failed-before-restart').status, 'running');
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Milestone 5: GET /projects/git
+// ---------------------------------------------------------------------------------------------
+
+const gitIn = (cwd: string, ...args: string[]) => execFileSync('git', args, {
+  cwd,
+  encoding: 'utf8',
+  env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null', GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@e.x', GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@e.x' },
+});
+
+test('GET /projects/git reports a project that is not a repository as isRepo false, not an error', async () => {
+  await withBridge(async ({ call, projectDir }) => {
+    const response = await call('GET', `/projects/git?path=${encodeURIComponent(projectDir)}`);
+    assert.equal(response.status, 200);
+    assert.equal(response.body.success, true);
+    assert.deepEqual(response.body.data, { path: projectDir, isRepo: false, branch: null, status: '', diffStat: '', diff: '', truncated: false });
+  });
+});
+
+test('GET /projects/git returns branch, status, diff stat and diff of a repository, including new files', async () => {
+  await withBridge(async ({ call, projectDir }) => {
+    gitIn(projectDir, 'init', '-q', '-b', 'main');
+    await writeFile(path.join(projectDir, 'a.txt'), 'old\n');
+    gitIn(projectDir, 'add', '.');
+    gitIn(projectDir, 'commit', '-q', '-m', 'init');
+    await writeFile(path.join(projectDir, 'a.txt'), 'new\n');
+    await writeFile(path.join(projectDir, 'fresh.txt'), 'brand new\n');
+
+    const response = await call('GET', `/projects/git?path=${encodeURIComponent(projectDir)}`);
+    assert.equal(response.status, 200);
+    const data = response.body.data;
+    assert.deepEqual(Object.keys(data).sort(), ['branch', 'diff', 'diffStat', 'isRepo', 'path', 'status', 'truncated']);
+    assert.equal(data.isRepo, true);
+    assert.equal(data.branch, 'main');
+    assert.match(data.status, /^## main/);
+    assert.match(data.status, /\?\? fresh\.txt/);
+    assert.match(data.diffStat, /a\.txt/);
+    assert.match(data.diff, /^-old$/m);
+    assert.match(data.diff, /^\+new$/m);
+    assert.match(data.diff, /^\+\+\+ b\/fresh\.txt$/m);
+    assert.equal(data.truncated, false);
+
+    // A path inside the project works too.
+    await mkdir(path.join(projectDir, 'sub'));
+    const inside = await call('GET', `/projects/git?path=${encodeURIComponent(path.join(projectDir, 'sub'))}`);
+    assert.equal(inside.status, 200);
+    assert.equal(inside.body.data.isRepo, true);
+  });
+});
+
+test('GET /projects/git validates the path: 400 when missing or relative, 422 for an unknown project, 404 when it does not exist', async () => {
+  await withBridge(async ({ call, projectDir }) => {
+    for (const query of ['', '?path=', '?path=relative%2Fdir', `?path=${encodeURIComponent('x'.repeat(5000))}`, '?path=a&path=b']) {
+      const response = await call('GET', `/projects/git${query}`);
+      assert.equal(response.status, 400, query);
+      assert.equal(response.body.success, false);
+    }
+    for (const unknown of ['/mnt/dev/known', '/', '/etc', `${projectDir}-other`, `${projectDir}/../project-sibling`]) {
+      const response = await call('GET', `/projects/git?path=${encodeURIComponent(unknown)}`);
+      assert.equal(response.status, 422, unknown);
+      assert.equal(response.body.error.code, 'UNKNOWN_PROJECT', unknown);
+    }
+    const missing = await call('GET', `/projects/git?path=${encodeURIComponent(path.join(projectDir, 'gone'))}`);
+    assert.equal(missing.status, 404);
+    assert.equal(missing.body.error.code, 'PATH_NOT_FOUND');
+  });
+});
+
+test('GET /projects/git answers 503 when no git service is wired', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'foreman-routes-nogit-'));
+  const tokenFile = path.join(directory, 'bridge-token');
+  await writeFile(tokenFile, TOKEN, { mode: 0o600 });
+  const { deps } = createWorld();
+  const app = express();
+  app.use('/api/foreman', createForemanRouter({
+    authMiddleware: createBridgeAuthMiddleware({ tokenFile }),
+    sessions: createForemanSessionsService(deps),
+  }));
+  const server = app.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  try {
+    const response = await fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}/api/foreman/projects/git?path=%2Ftmp`, { headers: { authorization: `Bearer ${TOKEN}` } });
+    assert.equal(response.status, 503);
+    assert.equal(((await response.json()) as { error: { code: string } }).error.code, 'GIT_UNAVAILABLE');
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await rm(directory, { recursive: true, force: true });
+  }
 });

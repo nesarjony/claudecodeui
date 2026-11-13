@@ -136,6 +136,12 @@ test('the digest of the last turn carries the user message, final text, tool cal
   const bash = digest.toolCalls.find((call) => call.name === 'Bash');
   assert.equal(bash?.shortInput, 'pnpm test --filter api --reporter=dot');
 
+  // Each call carries the tail of its result, paired by tool_use_id.
+  assert.deepEqual(
+    digest.toolCalls.map((call) => [call.name, call.resultTail]),
+    [['TodoWrite', 'Todos modified'], ['Bash', 'Exit code 1\n2 tests failed'], ['Edit', 'edited'], ['Write', 'Permission denied']],
+  );
+
   // Only the edit that succeeded counts as an edited file.
   assert.deepEqual(digest.filesEdited, ['/repo/src/handler.ts']);
   assert.equal(digest.filesEditedCount, 1);
@@ -226,7 +232,7 @@ test('long text and long tool lists are capped', () => {
   assert.match(digest.finalAssistantText ?? '', /chars clipped/);
   assert.equal(digest.toolCalls.length, 60);
   assert.equal(digest.toolCallCount, 100);
-  assert.ok(digest.toolCalls.every((call) => call.shortInput.length <= 200));
+  assert.ok(digest.toolCalls.every((call) => call.shortInput.length <= 300));
 });
 
 test('a slash command echo is a turn start, shown as the command the sender typed', () => {
@@ -406,4 +412,87 @@ test('the transcript is found through its indexed path, or by provider id under 
     // A provider id that could climb out of the projects root is never used to build a path.
     assert.equal(await locateTranscript({ jsonl_path: null, provider_session_id: '../../etc/passwd' }, projectsRoot), null);
   });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Tool results (Milestone 5): what Foreman reads to judge "did the gate command run and pass"
+// ---------------------------------------------------------------------------------------------
+
+const toolResultBlocks = (toolUseId: string, content: unknown, isError = false) =>
+  line({
+    type: 'user',
+    timestamp: at(),
+    message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: toolUseId, content, is_error: isError }] },
+  });
+
+test('a tool result given as an array of text blocks is joined, and non-text blocks are ignored', () => {
+  const rows = [
+    user('run it'),
+    assistant('m1', [toolUse('t1', 'Bash', { command: 'pnpm verify' })], 'tool_use'),
+    toolResultBlocks('t1', [
+      { type: 'text', text: 'lint ok' },
+      { type: 'image', source: { type: 'base64', data: 'AAAA' } },
+      { type: 'text', text: 'tests: 12 passed' },
+    ]),
+    assistant('m2', [text('done')], 'end_turn'),
+  ];
+  const digest = buildSessionDigest(parseTranscriptLines(rows.join('\n')), { turns: 1 });
+  assert.equal(digest.toolCalls[0].resultTail, 'lint ok\ntests: 12 passed');
+  assert.equal(digest.toolCalls[0].isError, false);
+});
+
+test('only the last 600 characters of a long result are kept, and the trailing newline is dropped', () => {
+  const output = `${'x'.repeat(2000)}\nTests  41 passed (41)\n`;
+  const rows = [
+    user('run it'),
+    assistant('m1', [toolUse('t1', 'Bash', { command: 'pnpm test' })], 'tool_use'),
+    toolResult('t1', output),
+    assistant('m2', [text('done')], 'end_turn'),
+  ];
+  const tail = buildSessionDigest(parseTranscriptLines(rows.join('\n')), { turns: 1 }).toolCalls[0].resultTail ?? '';
+  assert.equal(tail.length, 600);
+  assert.ok(tail.endsWith('Tests  41 passed (41)'));
+  assert.ok(output.includes(tail));
+});
+
+test('a call whose result has not been written yet reports a null tail, and an empty result an empty one', () => {
+  const rows = [
+    user('run it'),
+    assistant('m1', [toolUse('t1', 'Bash', { command: 'true' }), toolUse('t2', 'Bash', { command: 'sleep 600' })], 'tool_use'),
+    toolResult('t1', ''),
+  ];
+  const digest = buildSessionDigest(parseTranscriptLines(rows.join('\n')), { turns: 1 });
+  assert.deepEqual(digest.toolCalls.map((call) => call.resultTail), ['', null]);
+  assert.deepEqual(digest.toolCalls.map((call) => call.isError), [false, false]);
+});
+
+test('a failed command is an error with the exit code in its tail; oldest calls come first', () => {
+  const rows = [
+    user('verify'),
+    assistant('m1', [toolUse('t1', 'Bash', { command: 'git status' })], 'tool_use'),
+    toolResult('t1', 'On branch main'),
+    assistant('m2', [toolUse('t2', 'Bash', { command: 'pnpm verify' })], 'tool_use'),
+    toolResult('t2', 'Exit code 2\nFAIL src/a.test.ts', true),
+    assistant('m3', [text('it failed')], 'end_turn'),
+  ];
+  const digest = buildSessionDigest(parseTranscriptLines(rows.join('\n')), { turns: 1 });
+  assert.deepEqual(digest.toolCalls.map((call) => call.shortInput), ['git status', 'pnpm verify']);
+  assert.equal(digest.toolCalls[1].isError, true);
+  assert.match(digest.toolCalls[1].resultTail ?? '', /^Exit code 2/);
+  assert.equal(digest.toolErrorCount, 1);
+});
+
+test('a Bash command keeps up to 300 characters of shortInput on one line', () => {
+  const gate = `cd /repo && ${'pnpm --filter api test -- --reporter=dot '.repeat(6)}&& pnpm lint`;
+  assert.ok(gate.length > 250 && gate.length <= 300, `fixture is ${gate.length} characters`);
+  const rows = [
+    user('go'),
+    assistant('m1', [toolUse('t1', 'Bash', { command: `${gate}\n` }), toolUse('t2', 'Bash', { command: 'a'.repeat(400) })], 'tool_use'),
+    toolResult('t1', 'ok'),
+    toolResult('t2', 'ok'),
+  ];
+  const [full, clipped] = buildSessionDigest(parseTranscriptLines(rows.join('\n')), { turns: 1 }).toolCalls;
+  assert.equal(full.shortInput, gate);
+  assert.equal(clipped.shortInput.length, 300);
+  assert.ok(clipped.shortInput.endsWith('…'));
 });
