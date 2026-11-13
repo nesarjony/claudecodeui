@@ -1,10 +1,12 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { Target } from 'lucide-react';
 
 import { Button } from '@/shared/ui';
 import { errorMessage, foremanTabApi } from '@/modules/foreman/api';
 import { Chip } from '@/modules/foreman/components/Chip';
 import { Ago, Empty, LoadError, Loading, SessionLink } from '@/modules/foreman/components/Bits';
+import ConfirmDialog from '@/modules/foreman/components/ConfirmDialog';
 import type { PolledResource } from '@/modules/foreman/usePolledResource';
 import type { InboxAnswer, InboxItem } from '@/modules/foreman/types';
 
@@ -13,16 +15,40 @@ type NeedsYouSectionProps = {
   onOpenSession: (sessionId: string) => void;
   /** Called after an answer so the counts in the status bar refresh too. */
   onAnswered: () => void;
+  /** Opens a goal's detail in the Goals section (a goal's items: plan approval, budget, question). */
+  onOpenGoal?: (goalId: string) => void;
 };
 
-/** One thing Foreman is waiting on: a question with an answer box, or a permission with Allow and Deny. */
-function InboxCard({ item, onOpenSession, onAnswered, refresh }: { item: InboxItem; onOpenSession: (id: string) => void; onAnswered: () => void; refresh: () => Promise<void> }) {
+const LINK =
+  'inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-border/60 px-2.5 text-xs font-medium text-foreground transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring active:bg-muted';
+
+/**
+ * One thing Foreman is waiting on: a question with an answer box, a permission with Allow and Deny, or a goal's plan
+ * with Approve and Reject (its full review is in the Goals section).
+ */
+function InboxCard({
+  item,
+  onOpenSession,
+  onAnswered,
+  onOpenGoal,
+  refresh,
+}: {
+  item: InboxItem;
+  onOpenSession: (id: string) => void;
+  onAnswered: () => void;
+  onOpenGoal?: (goalId: string) => void;
+  refresh: () => Promise<void>;
+}) {
   const { t } = useTranslation('foreman');
   const [text, setText] = useState('');
   const [reason, setReason] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [rejecting, setRejecting] = useState(false);
+  const isPlan = item.kind === 'plan';
   const isDecision = item.kind === 'permission' || item.kind === 'budget';
+  const goalId = item.goalId ?? null;
+  const openGoal = goalId && onOpenGoal ? () => onOpenGoal(goalId) : null;
 
   const send = async (answer: InboxAnswer) => {
     setBusy(true);
@@ -49,7 +75,26 @@ function InboxCard({ item, onOpenSession, onAnswered, refresh }: { item: InboxIt
       {item.title && <p className="break-words text-sm font-medium text-foreground">{item.title}</p>}
       {item.question && <p className="whitespace-pre-wrap break-words text-sm text-foreground/90">{item.question}</p>}
 
-      {item.options && item.options.length > 0 && (
+      {isPlan && (
+        <div className="space-y-2">
+          {openGoal && (
+            <Button variant="outline" className="h-10 w-full" onClick={openGoal}>
+              {t('needs.reviewPlan')}
+            </Button>
+          )}
+          {/* A plan is answered with allow: the option words alone would ask for a revision. */}
+          <div className="grid grid-cols-2 gap-2">
+            <Button className="h-11" disabled={busy} onClick={() => void send({ allow: true })}>
+              {t('needs.approve')}
+            </Button>
+            <Button variant="outline" className="h-11" disabled={busy} onClick={() => setRejecting(true)}>
+              {t('needs.reject')}
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {!isPlan && item.options && item.options.length > 0 && (
         <div className="flex flex-wrap gap-1.5">
           {item.options.map((option) => (
             <Button key={option} size="sm" variant="outline" className="h-10 max-w-full whitespace-normal text-left" disabled={busy} onClick={() => void send({ text: option })}>
@@ -59,7 +104,7 @@ function InboxCard({ item, onOpenSession, onAnswered, refresh }: { item: InboxIt
         </div>
       )}
 
-      {isDecision ? (
+      {isPlan ? null : isDecision ? (
         <div className="space-y-2">
           <input
             value={reason}
@@ -100,17 +145,41 @@ function InboxCard({ item, onOpenSession, onAnswered, refresh }: { item: InboxIt
           {error}
         </p>
       )}
-      {item.sessionId && (
-        <div>
-          <SessionLink sessionId={item.sessionId} onOpen={onOpenSession} />
+      {(item.sessionId || (openGoal && !isPlan)) && (
+        <div className="flex flex-wrap items-center gap-2">
+          {openGoal && !isPlan && (
+            <button type="button" onClick={openGoal} className={LINK}>
+              <Target className="h-3.5 w-3.5" aria-hidden />
+              {t('needs.openGoal')}
+            </button>
+          )}
+          {item.sessionId && <SessionLink sessionId={item.sessionId} onOpen={onOpenSession} />}
         </div>
+      )}
+
+      {rejecting && (
+        <ConfirmDialog
+          open
+          title={t('goals.approval.rejectTitle')}
+          description={t('goals.approval.rejectBody')}
+          confirmLabel={t('goals.approval.rejectConfirm')}
+          cancelLabel={t('goals.keep')}
+          tone="danger"
+          onConfirm={async () => {
+            await foremanTabApi.answer(item.id, { allow: false });
+            setRejecting(false);
+            await refresh();
+            onAnswered();
+          }}
+          onCancel={() => setRejecting(false)}
+        />
       )}
     </li>
   );
 }
 
 /** Everything waiting on the user. Answers go to Foreman; the list and the status bar count refresh straight away. */
-export default function NeedsYouSection({ inbox, onOpenSession, onAnswered }: NeedsYouSectionProps) {
+export default function NeedsYouSection({ inbox, onOpenSession, onAnswered, onOpenGoal }: NeedsYouSectionProps) {
   const { t } = useTranslation('foreman');
   return (
     <>
@@ -120,7 +189,7 @@ export default function NeedsYouSection({ inbox, onOpenSession, onAnswered }: Ne
       {inbox.data && inbox.data.length > 0 && (
         <ul className="m-0 min-w-0 list-none space-y-2 p-0">
           {inbox.data.map((item) => (
-            <InboxCard key={item.id} item={item} onOpenSession={onOpenSession} onAnswered={onAnswered} refresh={inbox.refresh} />
+            <InboxCard key={item.id} item={item} onOpenSession={onOpenSession} onAnswered={onAnswered} onOpenGoal={onOpenGoal} refresh={inbox.refresh} />
           ))}
         </ul>
       )}

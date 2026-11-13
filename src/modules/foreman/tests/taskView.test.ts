@@ -26,6 +26,11 @@ describe('dodItems', () => {
   });
   it('digs criteria out of an object, and is empty for anything else', () => {
     expect(dodItems({ criteria: ['x'] })).toEqual([{ text: 'x', met: null }]);
+    // the Definition of Done Foreman really stores (M5, and a goal task's from the Goal Planner)
+    expect(dodItems({ playbook: 'P1', goal: 'store exists', acceptanceCriteria: ['node --test passes', ' tasks.json is written '], gateCommands: ['node --test'] })).toEqual([
+      { text: 'node --test passes', met: null },
+      { text: 'tasks.json is written', met: null },
+    ]);
     expect(dodItems(undefined)).toEqual([]);
     expect(dodItems(42)).toEqual([]);
   });

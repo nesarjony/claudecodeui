@@ -29,6 +29,9 @@ describe('formatAgo', () => {
   const now = Date.parse('2026-11-13T12:00:00.000Z');
   it('picks the largest fitting unit', () => {
     expect(formatAgo('2026-11-13T11:59:30.000Z', now, 'en')).toMatch(/30 ?s/);
+    // a time slightly ahead of the (cached) clock is now, not "in 14 s"
+    expect(formatAgo('2026-11-13T12:00:14.000Z', now, 'en')).toMatch(/now/);
+    expect(formatAgo('2026-11-13T12:02:00.000Z', now, 'en')).toMatch(/in 2 ?m/);
     expect(formatAgo('2026-11-13T11:57:00.000Z', now, 'en')).toMatch(/3 ?m/);
     expect(formatAgo('2026-11-13T09:00:00.000Z', now, 'en')).toMatch(/3 ?h/);
     expect(formatAgo('2026-11-10T12:00:00.000Z', now, 'en')).toMatch(/3 ?d/);

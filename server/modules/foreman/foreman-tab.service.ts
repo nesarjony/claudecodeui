@@ -9,7 +9,11 @@ const ID_PATTERN = /^[A-Za-z0-9._:-]{1,120}$/;
 const SESSION_ID_PATTERN = /^[a-zA-Z0-9._-]{1,120}$/;
 const TRACE_ID_PATTERN = /^[0-9a-f]{32}$/;
 const STATUS_PATTERN = /^[a-z_]{1,32}$/;
+/** One status or a comma-separated list of them (`?status=running,paused`), as the goals list takes it. */
+const STATUS_LIST_PATTERN = /^[a-z_]{1,32}(?:,[a-z_]{1,32}){0,9}$/;
 const REPO_PATTERN = /^[A-Za-z0-9._ -]{1,80}$/;
+const ISO_DATE_TIME_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:\d{2})$/;
+const MAX_GOAL_REPOS = 20;
 
 const asRecord = (value: unknown): Record<string, unknown> | null =>
   value !== null && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
@@ -55,6 +59,69 @@ const answerBody: BodyRule = (body) => {
   return null;
 };
 
+/** A message naming the keys of `record` that are not in `allowed`, or null when there are none. */
+const unknownFields = (record: Record<string, unknown>, allowed: readonly string[]): string | null => {
+  const extra = Object.keys(record).filter((key) => !allowed.includes(key));
+  if (extra.length === 0) return null;
+  return `Unknown field${extra.length > 1 ? 's' : ''}: ${extra.join(', ')}.`;
+};
+
+const isText = (value: unknown, max: number): value is string => typeof value === 'string' && value.trim().length > 0 && value.length <= max;
+
+const GOAL_FIELDS = ['title', 'description', 'repos', 'constraints', 'budgetUsd', 'deadline', 'requirePlanApproval'] as const;
+
+/** `POST /goals`: the new goal, with the limits Foreman applies, so a bad form never reaches it. */
+const createGoalBody: BodyRule = (body) => {
+  const record = asRecord(body);
+  if (!record) return 'The body must be a JSON object with the goal.';
+  const extra = unknownFields(record, GOAL_FIELDS);
+  if (extra) return extra;
+  const { title, description, repos, constraints, budgetUsd, deadline, requirePlanApproval } = record;
+  if (!isText(title, 200)) return 'title must be a non-empty string of at most 200 characters.';
+  if (!isText(description, 20_000)) return 'description must be a non-empty string of at most 20000 characters.';
+  if (!Array.isArray(repos) || repos.length === 0 || repos.length > MAX_GOAL_REPOS || !repos.every((repo) => typeof repo === 'string' && REPO_PATTERN.test(repo))) {
+    return `repos must be a list of 1 to ${MAX_GOAL_REPOS} repo names.`;
+  }
+  if (typeof budgetUsd !== 'number' || !Number.isFinite(budgetUsd) || budgetUsd <= 0 || budgetUsd > 1000) return 'budgetUsd must be a number above 0 and at most 1000.';
+  if (constraints !== undefined && (typeof constraints !== 'string' || constraints.length > 5000)) return 'constraints must be a string of at most 5000 characters.';
+  if (deadline !== undefined && (typeof deadline !== 'string' || !ISO_DATE_TIME_PATTERN.test(deadline) || Number.isNaN(Date.parse(deadline)))) {
+    return 'deadline must be an ISO date-time, such as 2026-12-01T17:00:00.000Z.';
+  }
+  if (requirePlanApproval !== undefined && typeof requirePlanApproval !== 'boolean') return 'requirePlanApproval must be true or false.';
+  return null;
+};
+
+const PLAN_DECISIONS = ['approve', 'revise', 'reject'];
+
+/** `POST /goals/:id/approve-plan`: approve (optionally with a note), revise (a note is required) or reject. */
+const approvePlanBody: BodyRule = (body) => {
+  const record = asRecord(body);
+  if (!record) return 'The body must be a JSON object.';
+  const extra = unknownFields(record, ['decision', 'approve', 'note']);
+  if (extra) return extra;
+  const { decision, approve, note } = record;
+  if (decision !== undefined && (typeof decision !== 'string' || !PLAN_DECISIONS.includes(decision))) return 'decision must be approve, revise or reject.';
+  if (approve !== undefined && typeof approve !== 'boolean') return 'approve must be true or false.';
+  if (note !== undefined && !isText(note, 5000)) return 'note must be a non-empty string of at most 5000 characters.';
+  if (decision === undefined && approve === undefined) return 'Send decision (approve, revise or reject), or approve true or false.';
+  if (decision !== undefined && approve !== undefined && (decision === 'revise' || (decision === 'approve') !== approve)) return 'decision and approve disagree.';
+  if (decision === 'revise' && note === undefined) return 'A revise needs a note that says what should change.';
+  return null;
+};
+
+/** `POST /goals/:id/cancel`: an optional reason. */
+const cancelGoalBody: BodyRule = (body) => {
+  if (body === undefined) return null;
+  const record = asRecord(body);
+  if (!record) return 'The body must be a JSON object.';
+  const extra = unknownFields(record, ['reason']);
+  if (extra) return extra;
+  if (record.reason !== undefined && (typeof record.reason !== 'string' || record.reason.length > 500)) return 'reason must be a string of at most 500 characters.';
+  return null;
+};
+
+const goalPath = (id: string | undefined, action = ''): string => `/foreman/goals/${encodeURIComponent(id!)}${action}`;
+
 /**
  * Everything the Foreman tab may ask of Foreman. This table is the allowlist: a path that is not here is a 404 and
  * never reaches Foreman, a query parameter that is not listed is dropped, and a body is checked before it is forwarded.
@@ -85,6 +152,14 @@ export const FOREMAN_TAB_ROUTES: readonly ForemanTabRoute[] = [
   { method: 'POST', path: '/inbox/:id/answer', target: ({ id }) => `/foreman/inbox/${encodeURIComponent(id!)}/answer`, body: answerBody },
   { method: 'GET', path: '/lessons', target: () => '/foreman/lessons', query: { repo: (v) => REPO_PATTERN.test(v) }, body: null },
   { method: 'POST', path: '/lessons/:id/retire', target: ({ id }) => `/foreman/lessons/${encodeURIComponent(id!)}/retire`, body: null },
+  // Milestone 7: goals and big work.
+  { method: 'GET', path: '/goals', target: () => '/foreman/goals', query: { status: (v) => STATUS_LIST_PATTERN.test(v) }, body: null },
+  { method: 'POST', path: '/goals', target: () => '/foreman/goals', body: createGoalBody, timeoutMs: 10_000 },
+  { method: 'GET', path: '/goals/:id', target: ({ id }) => goalPath(id), body: null },
+  { method: 'POST', path: '/goals/:id/approve-plan', target: ({ id }) => goalPath(id, '/approve-plan'), body: approvePlanBody, timeoutMs: 10_000 },
+  { method: 'POST', path: '/goals/:id/pause', target: ({ id }) => goalPath(id, '/pause'), body: null },
+  { method: 'POST', path: '/goals/:id/resume', target: ({ id }) => goalPath(id, '/resume'), body: null },
+  { method: 'POST', path: '/goals/:id/cancel', target: ({ id }) => goalPath(id, '/cancel'), body: cancelGoalBody },
 ];
 
 type ForemanTabClientDependencies = {
@@ -160,7 +235,8 @@ export function createForemanTabClient(dependencies: ForemanTabClientDependencie
         response = await fetchImpl(`${resolveForemanBaseUrl(dependencies.baseUrl)}${request.route.target(request.params)}${search}`, {
           method: request.route.method,
           headers: { authorization: `Bearer ${token}`, ...(hasBody ? { 'content-type': 'application/json' } : {}) },
-          body: hasBody ? JSON.stringify(request.body) : undefined,
+          // A route whose body is optional (cancel) still sends Foreman a JSON object.
+          body: hasBody ? JSON.stringify(request.body ?? {}) : undefined,
           signal: AbortSignal.timeout(request.route.timeoutMs ?? dependencies.timeoutMs ?? FOREMAN_TIMEOUT_MS),
         });
       } catch (error) {
@@ -175,7 +251,8 @@ export function createForemanTabClient(dependencies: ForemanTabClientDependencie
       } catch {
         json = null;
       }
-      if (response.status === 200) {
+      // Any 2xx with a JSON body is an answer: Foreman creates a goal with a 201.
+      if (response.ok) {
         if (json === null) {
           throw new AppError('Foreman answered with something that is not JSON.', { code: 'FOREMAN_ERROR', statusCode: 502 });
         }

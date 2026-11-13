@@ -13,6 +13,16 @@ import { createForemanTabClient, FOREMAN_TAB_ROUTES } from '@/modules/foreman/fo
 
 const TOKEN = 'tab-test-token';
 const TRACE = 'a'.repeat(32);
+const GOAL = 'goal_0b7c6f1e-4a2d-4f3e-9c8b-1d2e3f4a5b6c';
+const NEW_GOAL = {
+  title: 'Move checkout to the new tax service',
+  description: 'Replace the inline tax maths with calls to the tax service, behind a flag.',
+  repos: ['desk', 'web'],
+  constraints: 'No schema change.',
+  budgetUsd: 5,
+  deadline: '2026-12-01T17:00:00.000Z',
+  requirePlanApproval: true,
+};
 
 type ForemanCall = { method: string; url: string; authorization?: string; body?: unknown };
 type Responder = (call: ForemanCall) => { status: number; json: unknown } | 'down';
@@ -90,11 +100,18 @@ const CASES: Array<{ method: string; path: string; body?: unknown; foreman: { me
   { method: 'POST', path: '/inbox/inb_1/answer', body: { allow: false, reason: 'not now' }, foreman: { method: 'POST', url: '/foreman/inbox/inb_1/answer', body: { allow: false, reason: 'not now' } } },
   { method: 'GET', path: '/lessons?repo=desk', foreman: { method: 'GET', url: '/foreman/lessons?repo=desk' } },
   { method: 'POST', path: '/lessons/les_1/retire', foreman: { method: 'POST', url: '/foreman/lessons/les_1/retire' } },
+  { method: 'GET', path: '/goals?status=running,paused', foreman: { method: 'GET', url: '/foreman/goals?status=running%2Cpaused' } },
+  { method: 'POST', path: '/goals', body: NEW_GOAL, foreman: { method: 'POST', url: '/foreman/goals', body: NEW_GOAL } },
+  { method: 'GET', path: `/goals/${GOAL}`, foreman: { method: 'GET', url: `/foreman/goals/${GOAL}` } },
+  { method: 'POST', path: `/goals/${GOAL}/approve-plan`, body: { decision: 'approve', note: 'keep it small' }, foreman: { method: 'POST', url: `/foreman/goals/${GOAL}/approve-plan`, body: { decision: 'approve', note: 'keep it small' } } },
+  { method: 'POST', path: `/goals/${GOAL}/pause`, foreman: { method: 'POST', url: `/foreman/goals/${GOAL}/pause` } },
+  { method: 'POST', path: `/goals/${GOAL}/resume`, foreman: { method: 'POST', url: `/foreman/goals/${GOAL}/resume` } },
+  { method: 'POST', path: `/goals/${GOAL}/cancel`, body: { reason: 'not needed any more' }, foreman: { method: 'POST', url: `/foreman/goals/${GOAL}/cancel`, body: { reason: 'not needed any more' } } },
 ];
 
 test('the allowlist covers exactly the routes of the Foreman tab contract', () => {
   const declared = FOREMAN_TAB_ROUTES.map((route) => `${route.method} ${route.path}`).sort();
-  const expected = CASES.map((entry) => `${entry.method} ${entry.path.split('?')[0]!.replace(/\/(task-1|inb_1|les_1)(?=\/|$)/, '/:id')}`).sort();
+  const expected = CASES.map((entry) => `${entry.method} ${entry.path.split('?')[0]!.replace(/\/(task-1|inb_1|les_1|goal_[0-9a-f-]+)(?=\/|$)/, '/:id')}`).sort();
   assert.deepEqual(declared, expected);
 });
 
@@ -128,6 +145,11 @@ test('routes Foreman has but the tab must not reach are a 404 and never call For
       ['POST', '/overview'],
       ['PUT', '/kill'],
       ['GET', '/tasks/task-1/takeover'],
+      ['DELETE', `/goals/${GOAL}`],
+      ['PUT', `/goals/${GOAL}`],
+      ['GET', `/goals/${GOAL}/pause`],
+      ['POST', `/goals/${GOAL}/delete`],
+      ['POST', `/goals/${GOAL}/approve`],
     ] as const) {
       const result = await call(method, pathname, method === 'GET' ? undefined : {});
       assert.equal(result.status, 404, `${method} ${pathname}`);
@@ -202,8 +224,187 @@ test('routes without a body do not forward the browser\'s body', async () => {
   await withTabRouter(ok(), async ({ call, foremanCalls }) => {
     await call('POST', '/kill', { sneaky: true });
     await call('POST', '/tasks/task-1/takeover', { sneaky: true });
-    assert.deepEqual(foremanCalls.map((entry) => entry.body), [undefined, undefined]);
+    await call('POST', `/goals/${GOAL}/pause`, { sneaky: true });
+    await call('POST', `/goals/${GOAL}/resume`, { sneaky: true });
+    assert.deepEqual(foremanCalls.map((entry) => entry.body), [undefined, undefined, undefined, undefined]);
   });
+});
+
+test('GET /goals forwards only a valid status list and drops every other query parameter', async () => {
+  await withTabRouter(ok([]), async ({ call, foremanCalls }) => {
+    assert.equal((await call('GET', '/goals?status=awaiting_approval&limit=5&repo=desk&all=1')).status, 200);
+    assert.equal(foremanCalls[0]!.url, 'http://foreman.test:4111/foreman/goals?status=awaiting_approval');
+    assert.equal((await call('GET', '/goals')).status, 200);
+    assert.equal(foremanCalls[1]!.url, 'http://foreman.test:4111/foreman/goals');
+    for (const pathname of ['/goals?status=Running', '/goals?status=running,,paused', '/goals?status=running;paused', '/goals?status=a,b,c,d,e,f,g,h,i,j,k', '/goals?status=running&status=paused']) {
+      assert.equal((await call('GET', pathname)).status, 400, pathname);
+    }
+    assert.equal(foremanCalls.length, 2);
+  });
+});
+
+test('goal ids are checked: odd characters never reach Foreman', async () => {
+  await withTabRouter(ok(), async ({ call, foremanCalls }) => {
+    for (const [method, pathname] of [
+      ['GET', '/goals/a%20b'],
+      ['GET', `/goals/${'g'.repeat(121)}`],
+      ['POST', '/goals/a%2Fb/pause'],
+      ['POST', '/goals/a%3Fb/resume'],
+      ['POST', '/goals/a%23b/cancel'],
+      ['POST', '/goals/..%2F..%2Fkill/approve-plan'],
+    ] as const) {
+      const result = await call(method, pathname, method === 'POST' ? { decision: 'approve' } : undefined);
+      assert.equal(result.status, 400, `${method} ${pathname}`);
+      assert.equal(result.body.error.code, 'INVALID_REQUEST');
+    }
+    assert.equal(foremanCalls.length, 0);
+  });
+});
+
+test('POST /goals checks the new goal before calling Foreman', async () => {
+  const without = (key: keyof typeof NEW_GOAL) => Object.fromEntries(Object.entries(NEW_GOAL).filter(([name]) => name !== key));
+  await withTabRouter(ok({ id: GOAL }), async ({ call, foremanCalls }) => {
+    const bad: unknown[] = [
+      [],
+      {},
+      without('title'),
+      { ...NEW_GOAL, title: '' },
+      { ...NEW_GOAL, title: '   ' },
+      { ...NEW_GOAL, title: 'x'.repeat(201) },
+      without('description'),
+      { ...NEW_GOAL, description: 'x'.repeat(20_001) },
+      without('repos'),
+      { ...NEW_GOAL, repos: [] },
+      { ...NEW_GOAL, repos: 'desk' },
+      { ...NEW_GOAL, repos: ['../etc'] },
+      { ...NEW_GOAL, repos: [5] },
+      { ...NEW_GOAL, repos: Array.from({ length: 21 }, (_, index) => `repo${index}`) },
+      without('budgetUsd'),
+      { ...NEW_GOAL, budgetUsd: 0 },
+      { ...NEW_GOAL, budgetUsd: -1 },
+      { ...NEW_GOAL, budgetUsd: 1000.01 },
+      { ...NEW_GOAL, budgetUsd: '5' },
+      { ...NEW_GOAL, constraints: 'x'.repeat(5001) },
+      { ...NEW_GOAL, constraints: 5 },
+      { ...NEW_GOAL, deadline: 'tomorrow' },
+      { ...NEW_GOAL, deadline: '2026-12-01' },
+      { ...NEW_GOAL, deadline: '2026-13-45T00:00:00Z' },
+      { ...NEW_GOAL, requirePlanApproval: 'yes' },
+      { ...NEW_GOAL, owner: 'someone' },
+    ];
+    for (const body of bad) {
+      const result = await call('POST', '/goals', body);
+      assert.equal(result.status, 400, JSON.stringify(body).slice(0, 120));
+      assert.equal(result.body.error.code, 'INVALID_REQUEST');
+    }
+    assert.equal(foremanCalls.length, 0);
+    assert.equal((await call('POST', '/goals', { ...NEW_GOAL, owner: 'someone' })).body.error.message, 'Unknown field: owner.');
+    assert.match((await call('POST', '/goals', { ...NEW_GOAL, budgetUsd: 0 })).body.error.message, /budgetUsd/);
+
+    const minimal = { title: 'Fix it', description: 'All of it.', repos: ['desk'], budgetUsd: 1000 };
+    assert.equal((await call('POST', '/goals', minimal)).status, 200);
+    assert.equal((await call('POST', '/goals', { ...NEW_GOAL, deadline: '2026-12-01T17:00+01:00', requirePlanApproval: false })).status, 200);
+    assert.deepEqual(foremanCalls.map((entry) => entry.body), [minimal, { ...NEW_GOAL, deadline: '2026-12-01T17:00+01:00', requirePlanApproval: false }]);
+  });
+});
+
+test('POST /goals/:id/approve-plan takes approve, approve with a note, revise with a note, or reject, and refuses anything else', async () => {
+  await withTabRouter(ok({ id: GOAL }), async ({ call, foremanCalls }) => {
+    const bad: unknown[] = [
+      {},
+      [],
+      { decision: 'maybe' },
+      { decision: 5 },
+      { decision: 'revise' },
+      { decision: 'revise', note: '   ' },
+      { approve: 'yes' },
+      { note: 'just a note' },
+      { decision: 'approve', approve: false },
+      { decision: 'reject', approve: true },
+      { decision: 'revise', approve: true, note: 'x' },
+      { decision: 'approve', note: 'x'.repeat(5001) },
+      { decision: 'approve', extra: 1 },
+    ];
+    for (const body of bad) {
+      assert.equal((await call('POST', `/goals/${GOAL}/approve-plan`, body)).status, 400, JSON.stringify(body));
+    }
+    assert.equal(foremanCalls.length, 0);
+    assert.match((await call('POST', `/goals/${GOAL}/approve-plan`, { decision: 'revise' })).body.error.message, /note/);
+
+    const good = [
+      { decision: 'approve' },
+      { approve: true },
+      { approve: false },
+      { decision: 'approve', approve: true, note: 'keep the old endpoint' },
+      { decision: 'revise', note: 'split the migration into its own milestone' },
+      { decision: 'reject' },
+      { decision: 'reject', approve: false, note: 'not this quarter' },
+    ];
+    for (const body of good) {
+      assert.equal((await call('POST', `/goals/${GOAL}/approve-plan`, body)).status, 200, JSON.stringify(body));
+    }
+    assert.deepEqual(foremanCalls.map((entry) => entry.body), good);
+  });
+});
+
+test('POST /goals/:id/cancel takes an optional short reason and always sends Foreman a JSON object', async () => {
+  await withTabRouter(ok({ id: GOAL }), async ({ call, foremanCalls }) => {
+    for (const body of [[], { reason: 5 }, { reason: 'x'.repeat(501) }, { why: 'x' }]) {
+      assert.equal((await call('POST', `/goals/${GOAL}/cancel`, body)).status, 400, JSON.stringify(body));
+    }
+    assert.equal(foremanCalls.length, 0);
+    assert.equal((await call('POST', `/goals/${GOAL}/cancel`)).status, 200);
+    assert.equal((await call('POST', `/goals/${GOAL}/cancel`, { reason: 'x'.repeat(500) })).status, 200);
+    assert.deepEqual(foremanCalls.map((entry) => entry.body), [{}, { reason: 'x'.repeat(500) }]);
+  });
+});
+
+test('the inbox answer route takes every answer a goal item needs (plan, budget, question)', async () => {
+  await withTabRouter(ok(), async ({ call, foremanCalls }) => {
+    const answers = [{ allow: true }, { allow: true, text: 'keep the old endpoint' }, { allow: false, text: 'not now' }, { text: 'split the migration' }, { text: 'fail' }, { text: 'extend' }, { allow: false }];
+    for (const body of answers) {
+      assert.equal((await call('POST', `/inbox/inb_${GOAL}_1/answer`, body)).status, 200, JSON.stringify(body));
+    }
+    assert.deepEqual(foremanCalls.map((entry) => entry.body), answers);
+    assert.equal(foremanCalls[0]!.url, `http://foreman.test:4111/foreman/inbox/inb_${GOAL}_1/answer`);
+  });
+});
+
+test('Foreman\'s 201 for a new goal reaches the browser as a success; a 2xx without JSON is still a 502', async () => {
+  const created = { id: GOAL, title: NEW_GOAL.title, status: 'planning' };
+  await withTabRouter((entry) => (entry.method === 'POST' && entry.url.endsWith('/foreman/goals') ? { status: 201, json: created } : { status: 204, json: undefined }), async ({ call }) => {
+    const result = await call('POST', '/goals', NEW_GOAL);
+    assert.equal(result.status, 200);
+    assert.deepEqual(result.body, { success: true, data: created });
+    const empty = await call('POST', `/goals/${GOAL}/pause`);
+    assert.equal(empty.status, 502);
+    assert.equal(empty.body.error.code, 'FOREMAN_ERROR');
+  });
+});
+
+test('Foreman\'s refusals of goal calls reach the browser: 400 with its issues, 404, and 409 with its message', async () => {
+  const issues = [{ path: ['repos', 0], message: 'Unknown repo: nope' }];
+  await withTabRouter(
+    (entry) =>
+      entry.url.endsWith('/foreman/goals')
+        ? { status: 400, json: { error: 'The goal is invalid.', issues } }
+        : entry.url.endsWith('/approve-plan')
+          ? { status: 409, json: { error: 'The goal is not awaiting approval.' } }
+          : { status: 404, json: { error: 'goal not found' } },
+    async ({ call }) => {
+      const refused = await call('POST', '/goals', { ...NEW_GOAL, repos: ['nope'] });
+      assert.equal(refused.status, 400);
+      assert.equal(refused.body.error.code, 'FOREMAN_REJECTED');
+      assert.deepEqual(refused.body.error.details.issues, issues);
+      const conflict = await call('POST', `/goals/${GOAL}/approve-plan`, { decision: 'approve' });
+      assert.equal(conflict.status, 409);
+      assert.equal(conflict.body.error.code, 'CONFLICT');
+      assert.equal(conflict.body.error.message, 'The goal is not awaiting approval.');
+      const missing = await call('GET', `/goals/${GOAL}`);
+      assert.equal(missing.status, 404);
+      assert.equal(missing.body.error.message, 'goal not found');
+    },
+  );
 });
 
 test('Foreman\'s refusal of a settings change reaches the browser with its per-field messages', async () => {

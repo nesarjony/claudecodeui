@@ -35,7 +35,9 @@ export function formatAgo(iso: string | undefined | null, now: number = Date.now
   if (!iso) return '';
   const then = Date.parse(iso);
   if (Number.isNaN(then)) return '';
-  const diff = then - now;
+  let diff = then - now;
+  // `now` is refreshed every 30 s while the data is polled every 5 s (and the server's clock may lead by a moment): a time a few seconds ahead is "now", not "in 14 s".
+  if (diff > 0 && diff < 60_000) diff = 0;
   const formatter = new Intl.RelativeTimeFormat(locale, { numeric: 'auto', style: 'narrow' });
   for (const [unit, size] of UNITS) {
     if (Math.abs(diff) >= size || unit === 'second') {
