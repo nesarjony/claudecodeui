@@ -130,11 +130,15 @@ export type TimelineKind = 'decision' | 'action' | 'gate' | 'judge' | 'needs_use
 export type TimelineEntry = { ts: string; kind: TimelineKind | string; summary: string; traceId?: string | null };
 export type TaskDetail = TaskSummary & { dod?: unknown; timeline?: TimelineEntry[] };
 
-export type InboxKind = 'question' | 'permission' | 'budget';
+/** `plan`: a goal's plan waits for approval (Milestone 7). */
+export type InboxKind = 'question' | 'permission' | 'budget' | 'plan';
 export type InboxItem = {
   id: string;
   kind: InboxKind | string;
+  /** For a goal item, the goal id too. */
   taskId?: string | null;
+  /** Set on a goal's items (plan, budget, question); absent for a task's. */
+  goalId?: string | null;
   sessionId?: string | null;
   title?: string;
   question?: string;

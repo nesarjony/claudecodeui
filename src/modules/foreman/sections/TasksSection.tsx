@@ -23,16 +23,20 @@ function StatusChip({ status }: { status: string | undefined }) {
   return <Chip tone={statusTone(status)}>{t(`tasks.status.${status ?? 'unknown'}`, { defaultValue: status ?? t('tasks.status.unknown') })}</Chip>;
 }
 
-function TaskDetailView({
+/** One task: its definition of done, timeline, session and take-over. Also opened from a goal's task list. */
+export function TaskDetailView({
   summary,
   live,
   onBack,
+  backLabel,
   onOpenSession,
   onChanged,
 }: {
   summary: TaskSummary;
   live: boolean;
   onBack: () => void;
+  /** The back button's label (default "All tasks"). */
+  backLabel?: string;
   onOpenSession: (sessionId: string) => void;
   onChanged: () => void;
 }) {
@@ -47,7 +51,7 @@ function TaskDetailView({
   return (
     <div data-testid="foreman-task-detail" className="min-w-0 space-y-3">
       <button type="button" onClick={onBack} className="inline-flex min-h-10 items-center gap-1.5 rounded-lg px-1.5 text-xs font-medium text-muted-foreground hover:text-foreground">
-        <ArrowLeft className="h-3.5 w-3.5" aria-hidden /> {t('tasks.back')}
+        <ArrowLeft className="h-3.5 w-3.5" aria-hidden /> {backLabel ?? t('tasks.back')}
       </button>
       <div className="space-y-1.5">
         <h3 className="m-0 break-words text-sm font-semibold text-foreground">{task.title ?? task.id}</h3>

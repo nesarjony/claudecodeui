@@ -9,6 +9,7 @@ import WebSocketContext from '@/shared/context/WebSocketContext';
 import type { ServerEvent } from '@/shared/types';
 import { foremanTabApi } from '@/modules/foreman/api';
 import ForemanPanel from '@/modules/foreman/ForemanPanel';
+import { goalsApi } from '@/modules/foreman/goals/api';
 import { CONFIG, CONFIG_RESPONSE, DECISIONS, INBOX, LESSONS, overview, spend, TASK_DETAIL, TASKS } from '@/modules/foreman/tests/fixtures';
 
 /**
@@ -61,6 +62,8 @@ function mockApi() {
     answer: vi.spyOn(foremanTabApi, 'answer').mockResolvedValue({}),
     lessons: vi.spyOn(foremanTabApi, 'lessons').mockResolvedValue(LESSONS),
     retireLesson: vi.spyOn(foremanTabApi, 'retireLesson').mockResolvedValue({}),
+    // The Goals section has its own tests (goals/tests); here it only has to stay quiet.
+    goals: vi.spyOn(goalsApi, 'list').mockResolvedValue([]),
   };
 }
 

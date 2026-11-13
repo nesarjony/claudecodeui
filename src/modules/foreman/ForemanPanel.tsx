@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Activity, Inbox, Lightbulb, ListChecks, SlidersHorizontal, Wallet } from 'lucide-react';
+import { Activity, Inbox, Lightbulb, ListChecks, SlidersHorizontal, Target, Wallet } from 'lucide-react';
 
 import { useWebSocket } from '@/shared/context/WebSocketContext';
 import '@/modules/foreman/i18n';
@@ -8,6 +8,9 @@ import { foremanTabApi } from '@/modules/foreman/api';
 import { Chip } from '@/modules/foreman/components/Chip';
 import Section from '@/modules/foreman/components/Section';
 import { DECISIONS_PAGE } from '@/modules/foreman/constants';
+import { goalsApi } from '@/modules/foreman/goals/api';
+import GoalsSection from '@/modules/foreman/goals/GoalsSection';
+import { isActiveGoal } from '@/modules/foreman/goals/goalView';
 import DecisionsSection from '@/modules/foreman/sections/DecisionsSection';
 import LessonsSection from '@/modules/foreman/sections/LessonsSection';
 import NeedsYouSection from '@/modules/foreman/sections/NeedsYouSection';
@@ -27,15 +30,16 @@ type ForemanPanelProps = {
   onOpenSession: (sessionId: string) => void;
 };
 
-type SectionId = 'needs' | 'tasks' | 'decisions' | 'spend' | 'lessons' | 'settings';
+type SectionId = 'needs' | 'tasks' | 'goals' | 'decisions' | 'spend' | 'lessons' | 'settings';
 
 // A phone shows the things that need a decision first; the reading sections start folded.
-const DEFAULT_OPEN: Record<SectionId, boolean> = { needs: true, tasks: true, decisions: true, spend: false, lessons: false, settings: false };
+const DEFAULT_OPEN: Record<SectionId, boolean> = { needs: true, tasks: true, goals: true, decisions: true, spend: false, lessons: false, settings: false };
 
 const WS_REFRESH_DEBOUNCE_MS = 300;
 
 /**
- * The Foreman tab: status bar, then collapsible sections (needs you, tasks, live decisions, spend, lessons, settings).
+ * The Foreman tab: status bar, then collapsible sections (needs you, tasks, goals, live decisions, spend, lessons,
+ * settings).
  *
  * Each section's data is polled every 5 seconds while the tab is in front, the browser tab is visible and the section is
  * open. A `foreman_suggestion` frame on the chat WebSocket (a new decision) refreshes everything at once instead of
@@ -50,10 +54,14 @@ export default function ForemanPanel({ isVisible = true, onOpenSession }: Forema
   const [decisionLimit, setDecisionLimit] = useState(DECISIONS_PAGE);
   const [spendRange, setSpendRange] = useState<SpendRange>('today');
   const needsRef = useRef<HTMLDivElement>(null);
+  const goalsRef = useRef<HTMLDivElement>(null);
+  // The goal whose detail is open in the Goals section; a needs-you item can open one too.
+  const [goalId, setGoalId] = useState<string | null>(null);
 
   const overview = usePolledResource(foremanTabApi.overview, { enabled: live });
   const inbox = usePolledResource(foremanTabApi.inbox, { enabled: live && open.needs });
   const tasks = usePolledResource(() => foremanTabApi.tasks(), { enabled: live && open.tasks });
+  const goals = usePolledResource(() => goalsApi.list(), { enabled: live && open.goals });
   const decisions = usePolledResource(() => foremanTabApi.decisions({ limit: decisionLimit }), { enabled: live && open.decisions, key: String(decisionLimit) });
   const spend = usePolledResource(() => foremanTabApi.spend(spendRange), { enabled: live && open.spend, key: spendRange });
   const lessons = usePolledResource(() => foremanTabApi.lessons(), { enabled: live && open.lessons });
@@ -66,6 +74,7 @@ export default function ForemanPanel({ isVisible = true, onOpenSession }: Forema
       void overview.refresh();
       void inbox.refresh();
       void tasks.refresh();
+      void goals.refresh();
       void decisions.refresh();
     };
   });
@@ -88,7 +97,17 @@ export default function ForemanPanel({ isVisible = true, onOpenSession }: Forema
     setTimeout(() => needsRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'start' }), 0);
   }, [show]);
 
+  const openGoal = useCallback(
+    (id: string) => {
+      setGoalId(id);
+      show('goals');
+      setTimeout(() => goalsRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'start' }), 0);
+    },
+    [show],
+  );
+
   const data = overview.data;
+  const activeGoals = goals.data ? goals.data.filter(isActiveGoal).length : 0;
   const spentToday = data ? data.budgets.today.foremanUsd + data.budgets.today.workerUsd : null;
 
   return (
@@ -105,7 +124,15 @@ export default function ForemanPanel({ isVisible = true, onOpenSession }: Forema
             onToggle={() => toggle('needs')}
             badge={data && data.needsUserCount > 0 ? <Chip tone="warn">{data.needsUserCount}</Chip> : null}
           >
-            <NeedsYouSection inbox={inbox} onOpenSession={onOpenSession} onAnswered={() => void overview.refresh()} />
+            <NeedsYouSection
+              inbox={inbox}
+              onOpenSession={onOpenSession}
+              onOpenGoal={openGoal}
+              onAnswered={() => {
+                void overview.refresh();
+                void goals.refresh();
+              }}
+            />
           </Section>
         </div>
 
@@ -119,6 +146,29 @@ export default function ForemanPanel({ isVisible = true, onOpenSession }: Forema
         >
           <TasksSection tasks={tasks} live={live} onOpenSession={onOpenSession} onChanged={() => void overview.refresh()} />
         </Section>
+
+        <div ref={goalsRef} className="min-w-0 scroll-mt-3">
+          <Section
+            id="goals"
+            title={t('sections.goals')}
+            icon={Target}
+            open={open.goals}
+            onToggle={() => toggle('goals')}
+            badge={activeGoals > 0 ? <Chip tone="info">{t('sections.activeCount', { count: activeGoals })}</Chip> : null}
+          >
+            <GoalsSection
+              goals={goals}
+              live={live}
+              selectedId={goalId}
+              onSelect={setGoalId}
+              onOpenSession={onOpenSession}
+              onChanged={() => {
+                void overview.refresh();
+                void inbox.refresh();
+              }}
+            />
+          </Section>
+        </div>
 
         <Section id="decisions" title={t('sections.decisions')} icon={Activity} open={open.decisions} onToggle={() => toggle('decisions')}>
           <DecisionsSection
