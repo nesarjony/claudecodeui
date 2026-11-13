@@ -560,3 +560,206 @@ test('without a worktree registry, or with hooks switched off, a worktree path g
     await off.cleanup();
   }
 });
+
+// ---------------------------------------------------------------------------------------------
+// Workers: the refusal fallback model and the denied tools of bridge-started sessions
+// ---------------------------------------------------------------------------------------------
+
+const CATCH_ALL = 'CLAUDE_CODE_REFUSAL_FALLBACK_CATCH_ALL';
+const FALLBACK_MODELS = { 'claude-opus-5-5': 'claude-sonnet-5-5', 'claude-sonnet-5-5': 'claude-opus-5-5' };
+const WORKERS = {
+  refusalFallback: { enabled: true, models: FALLBACK_MODELS },
+  disallowedTools: ['mcp__infigraph__save_session'],
+};
+const withWorkers = (workers: unknown) => ({ foreman: { config: { ...RUNTIME_CONFIG, workers } } });
+const forModel = (sessionId: string, model?: string) => ({ ...desk(sessionId), ...(model !== undefined ? { model } : {}) });
+
+test('a bridge-started session gets the fallback model of its own model, with the catch-all next to the autocompact threshold', async () => {
+  const t = await setup({ managed: ['s1'], ...withWorkers(WORKERS) });
+  try {
+    const opus = await t.hooks.forSession(forModel('s1', 'claude-opus-5-5'));
+    assert.equal(opus.fallbackModel, 'claude-sonnet-5-5');
+    assert.deepEqual(opus.env, { CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '70', [CATCH_ALL]: '1' });
+    assert.deepEqual(opus.disallowedTools, ['mcp__infigraph__save_session']);
+    // The hooks of a Foreman repo are still there.
+    assert.deepEqual(Object.keys(opus.hooks ?? {}).sort(), ['PreCompact', 'SessionStart']);
+
+    const sonnet = await t.hooks.forSession(forModel('s1', 'claude-sonnet-5-5'));
+    assert.equal(sonnet.fallbackModel, 'claude-opus-5-5');
+  } finally {
+    await t.cleanup();
+  }
+});
+
+test('the session model is compared case-insensitively, trimmed and without a trailing [1m]; the fallback is sent as Foreman wrote it', async () => {
+  const t = await setup({ managed: ['s1'], ...withWorkers({ ...WORKERS, refusalFallback: { enabled: true, models: { 'Claude-Opus-5-5[1M]': ' Claude-Sonnet-5-5 ' } } }) });
+  try {
+    for (const model of ['claude-opus-5-5[1m]', 'CLAUDE-OPUS-5-5', '  Claude-Opus-5-5[1M]  ', 'claude-opus-5-5']) {
+      const additions = await t.hooks.forSession(forModel('s1', model));
+      assert.equal(additions.fallbackModel, 'Claude-Sonnet-5-5', model);
+    }
+    // [1m] only counts at the end of the id.
+    assert.equal((await t.hooks.forSession(forModel('s1', 'claude-opus-5-5[1m]-x'))).fallbackModel, undefined);
+  } finally {
+    await t.cleanup();
+  }
+});
+
+test('no fallback when it is disabled, the model has no entry, the model is unknown, or the entry is the model itself', async () => {
+  const cases: Array<{ name: string; workers: unknown; model?: string }> = [
+    { name: 'disabled', workers: { ...WORKERS, refusalFallback: { enabled: false, models: FALLBACK_MODELS } }, model: 'claude-opus-5-5' },
+    { name: 'unmapped model', workers: WORKERS, model: 'claude-haiku-5' },
+    { name: 'no model on the session', workers: WORKERS },
+    { name: 'empty model', workers: WORKERS, model: '  ' },
+    { name: 'entry equals the model', workers: { ...WORKERS, refusalFallback: { enabled: true, models: { 'claude-opus-5-5': 'claude-opus-5-5' } } }, model: 'claude-opus-5-5' },
+    { name: 'entry equals the model up to case and [1m]', workers: { ...WORKERS, refusalFallback: { enabled: true, models: { 'claude-opus-5-5': 'Claude-Opus-5-5[1m]' } } }, model: 'claude-opus-5-5' },
+    { name: 'an inherited property name is not an entry', workers: WORKERS, model: 'constructor' },
+  ];
+  for (const { name, workers, model } of cases) {
+    const t = await setup({ managed: ['s1'], ...withWorkers(workers) });
+    try {
+      const additions = await t.hooks.forSession(forModel('s1', model));
+      assert.equal(additions.fallbackModel, undefined, name);
+      // The catch-all env belongs to an armed fallback only.
+      assert.deepEqual(additions.env, { CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '70' }, name);
+    } finally {
+      await t.cleanup();
+    }
+  }
+});
+
+test('a session the user started gets no fallback, no catch-all and no denied tools, whatever its model', async () => {
+  const t = await setup({ managed: ['s1'], ...withWorkers(WORKERS) });
+  try {
+    const additions = await t.hooks.forSession(forModel('ui-session', 'claude-opus-5-5'));
+    assert.equal(additions.fallbackModel, undefined);
+    assert.equal(additions.disallowedTools, undefined);
+    assert.equal(additions.env, undefined);
+    assert.ok(additions.hooks?.PreCompact, 'the compaction hooks of a Foreman repo are unchanged');
+  } finally {
+    await t.cleanup();
+  }
+});
+
+test('the denied tools go to a bridge-started session only, trimmed and deduplicated, non-strings and empty entries dropped', async () => {
+  const t = await setup({ managed: ['s1'], ...withWorkers({ refusalFallback: { enabled: false, models: {} }, disallowedTools: ['mcp__a__b', ' mcp__a__b ', '', '  ', 7, null, 'Bash(rm:*)'] }) });
+  try {
+    const managed = await t.hooks.forSession(forModel('s1', 'claude-opus-5-5'));
+    assert.deepEqual(managed.disallowedTools, ['mcp__a__b', 'Bash(rm:*)']);
+    assert.equal(managed.fallbackModel, undefined);
+    assert.equal((await t.hooks.forSession(forModel('ui-session', 'claude-opus-5-5'))).disallowedTools, undefined);
+  } finally {
+    await t.cleanup();
+  }
+  const none = await setup({ managed: ['s1'], ...withWorkers({ refusalFallback: { enabled: true, models: FALLBACK_MODELS }, disallowedTools: [] }) });
+  try {
+    const additions = await none.hooks.forSession(forModel('s1', 'claude-opus-5-5'));
+    assert.equal(additions.disallowedTools, undefined, 'an empty list adds nothing');
+    assert.equal(additions.fallbackModel, 'claude-sonnet-5-5');
+  } finally {
+    await none.cleanup();
+  }
+});
+
+test('the fallback also reaches a bridge-started session that sits outside the Foreman repos', async () => {
+  const t = await setup({ managed: ['s1'], ...withWorkers(WORKERS) });
+  try {
+    const additions = await t.hooks.forSession({ sessionId: 's1', projectPath: '/mnt/dev/elsewhere', model: 'claude-opus-5-5' });
+    assert.equal(additions.hooks, undefined);
+    assert.equal(additions.fallbackModel, 'claude-sonnet-5-5');
+    assert.equal(additions.env?.[CATCH_ALL], '1');
+  } finally {
+    await t.cleanup();
+  }
+});
+
+test('a malformed workers is ignored without touching the rest of the config', async () => {
+  const malformed: unknown[] = ['yes', 7, null, [], [1, 2], true];
+  for (const workers of malformed) {
+    const t = await setup({ managed: ['s1'], ...withWorkers(workers) });
+    try {
+      const additions = await t.hooks.forSession(forModel('s1', 'claude-opus-5-5'));
+      assert.equal(additions.fallbackModel, undefined, JSON.stringify(workers));
+      assert.equal(additions.disallowedTools, undefined, JSON.stringify(workers));
+      assert.deepEqual(additions.env, { CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '70' }, JSON.stringify(workers));
+      assert.ok(additions.hooks?.PreCompact, 'the hooks still apply');
+    } finally {
+      await t.cleanup();
+    }
+  }
+});
+
+test('a malformed part of workers loses only that part; model entries need a non-empty key and value', async () => {
+  // refusalFallback is not an object: the denied tools still apply.
+  const badFallback = await setup({ managed: ['s1'], ...withWorkers({ refusalFallback: 'on', disallowedTools: ['mcp__a__b'] }) });
+  try {
+    const additions = await badFallback.hooks.forSession(forModel('s1', 'claude-opus-5-5'));
+    assert.equal(additions.fallbackModel, undefined);
+    assert.deepEqual(additions.disallowedTools, ['mcp__a__b']);
+  } finally {
+    await badFallback.cleanup();
+  }
+  // disallowedTools is not a list: the fallback still applies and nothing is denied.
+  const badTools = await setup({ managed: ['s1'], ...withWorkers({ refusalFallback: { enabled: true, models: FALLBACK_MODELS }, disallowedTools: 'mcp__a__b' }) });
+  try {
+    const additions = await badTools.hooks.forSession(forModel('s1', 'claude-opus-5-5'));
+    assert.equal(additions.fallbackModel, 'claude-sonnet-5-5');
+    assert.equal(additions.disallowedTools, undefined);
+  } finally {
+    await badTools.cleanup();
+  }
+  // `enabled` that is not a boolean means off, a models map that is not an object means no entries.
+  for (const refusalFallback of [{ enabled: 'true', models: FALLBACK_MODELS }, { models: FALLBACK_MODELS }, { enabled: true, models: 'x' }, { enabled: true, models: ['claude-opus-5-5'] }, { enabled: true }]) {
+    const t = await setup({ managed: ['s1'], ...withWorkers({ refusalFallback }) });
+    try {
+      assert.equal((await t.hooks.forSession(forModel('s1', 'claude-opus-5-5'))).fallbackModel, undefined, JSON.stringify(refusalFallback));
+    } finally {
+      await t.cleanup();
+    }
+  }
+  // Half entries are left out, the whole ones stay.
+  const halves = await setup({ managed: ['s1'], ...withWorkers({
+    refusalFallback: { enabled: true, models: { '': 'claude-sonnet-5-5', 'claude-haiku-5': '', 'claude-a': '   ', 'claude-b': 5, 'claude-c': null, 'claude-opus-5-5': 'claude-sonnet-5-5' } },
+    disallowedTools: [],
+  }) });
+  try {
+    assert.equal((await halves.hooks.forSession(forModel('s1', 'claude-opus-5-5'))).fallbackModel, 'claude-sonnet-5-5');
+    for (const model of ['claude-haiku-5', 'claude-a', 'claude-b', 'claude-c', '']) {
+      assert.equal((await halves.hooks.forSession(forModel('s1', model))).fallbackModel, undefined, model);
+    }
+  } finally {
+    await halves.cleanup();
+  }
+});
+
+test('with Foreman down or without workers in the config a bridge session gets no fallback and no denied tools (as before)', async () => {
+  const noWorkers = await setup({ managed: ['s1'] });
+  try {
+    const additions = await noWorkers.hooks.forSession(forModel('s1', 'claude-opus-5-5'));
+    assert.deepEqual(additions.env, { CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '70' });
+    assert.equal(additions.fallbackModel, undefined);
+    assert.equal(additions.disallowedTools, undefined);
+  } finally {
+    await noWorkers.cleanup();
+  }
+  const down = await setup({ managed: ['s1'], ...withWorkers(WORKERS) });
+  try {
+    down.foreman.state.down = true;
+    assert.deepEqual(await down.hooks.forSession(forModel('s1', 'claude-opus-5-5')), { env: { CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '70' } });
+  } finally {
+    await down.cleanup();
+  }
+});
+
+test('a config that changes its workers is picked up after the TTL, and the last good workers survive Foreman going away', async () => {
+  const clock = { now: 1_000_000 };
+  const t = await setup({ managed: ['s1'], clock, ttlMs: 10_000, ...withWorkers(WORKERS) });
+  try {
+    assert.equal((await t.hooks.forSession(forModel('s1', 'claude-opus-5-5'))).fallbackModel, 'claude-sonnet-5-5');
+    t.foreman.state.down = true;
+    clock.now += 60_000;
+    assert.equal((await t.hooks.forSession(forModel('s1', 'claude-opus-5-5'))).fallbackModel, 'claude-sonnet-5-5', 'stale config is used while Foreman is down');
+  } finally {
+    await t.cleanup();
+  }
+});

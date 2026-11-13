@@ -18,6 +18,8 @@ const SESSION = 'prov-fake-session';
 const log = process.env.FAKE_CLAUDE_LOG;
 const out = (message) => process.stdout.write(JSON.stringify(message) + '\n');
 const note = (entry) => log && fs.appendFileSync(log, JSON.stringify(entry) + '\n');
+// How the runtime started this process: the command line and the Foreman-controlled environment.
+note({ spawn: { argv: process.argv.slice(2), catchAll: process.env.CLAUDE_CODE_REFUSAL_FALLBACK_CATCH_ALL ?? null } });
 const common = () => ({ session_id: SESSION, parent_tool_use_id: null, uuid: require('node:crypto').randomUUID() });
 
 let userUuid = null;
@@ -580,11 +582,77 @@ test('either half alone: the guard outside a Foreman repo adds only PreToolUse, 
 });
 
 // ---------------------------------------------------------------------------------------------
+// Foreman's refusal fallback model and denied tools, from the runtime additions provider
+// ---------------------------------------------------------------------------------------------
+
+const settingsWith = (overrides: Record<string, unknown>) => ({ allowedTools: [], disallowedTools: [], skipPermissions: false, ...overrides });
+
+async function lastSpawn(): Promise<{ argv: string[]; catchAll: string | null }> {
+  const spawns = (await readFile(logFile, 'utf8')).split('\n').filter(Boolean).map((entry) => JSON.parse(entry)).filter((entry) => entry.spawn);
+  return spawns.at(-1).spawn;
+}
+const argValue = (argv: string[], flag: string) => argv[argv.indexOf(flag) + 1];
+
+test('the additions provider is asked with the run\'s SDK model, without the @api marker', async () => {
+  const asked: Array<{ sessionId: string; projectPath: string | null; model?: string }> = [];
+  runtime.setClaudeRuntimeAdditionsProvider(async (session: { sessionId: string; projectPath: string | null; model?: string }) => {
+    asked.push(session);
+    return {};
+  });
+  try {
+    await runPrompt('hello', {}, 'app-session-asked-model');
+    assert.deepEqual(asked, [{ sessionId: 'app-session-asked-model', projectPath: '/mnt/dev/repo', model: 'claude-sonnet-5-5' }]);
+  } finally {
+    runtime.setClaudeRuntimeAdditionsProvider(null);
+  }
+});
+
+test('a fallback model and denied tools from the additions reach the CLI, next to the settings\' own disallowed tools', async () => {
+  runtime.setClaudeRuntimeAdditionsProvider(async () => ({
+    fallbackModel: 'claude-opus-5-5',
+    disallowedTools: ['mcp__infigraph__save_session', 'Bash(rm:*)'],
+    env: { CLAUDE_CODE_REFUSAL_FALLBACK_CATCH_ALL: '1' },
+  }));
+  try {
+    const outcome = await runPrompt('hello', { toolsSettings: settingsWith({ disallowedTools: ['Bash(rm:*)', 'WebFetch'] }) }, 'app-session-fallback');
+    assert.ok(kinds(outcome).includes('turn_result'));
+    const { argv, catchAll } = await lastSpawn();
+    assert.equal(argValue(argv, '--fallback-model'), 'claude-opus-5-5');
+    assert.deepEqual(argValue(argv, '--disallowedTools').split(/[ ,]+/).sort(), ['Bash(rm:*)', 'WebFetch', 'mcp__infigraph__save_session']);
+    assert.equal(catchAll, '1');
+  } finally {
+    runtime.setClaudeRuntimeAdditionsProvider(null);
+  }
+});
+
+test('without additions the CLI gets no fallback model, and a run without the provider is unchanged', async () => {
+  await runPrompt('hello', { toolsSettings: settingsWith({ disallowedTools: ['WebFetch'] }) }, 'app-session-no-fallback');
+  const { argv, catchAll } = await lastSpawn();
+  assert.equal(argv.includes('--fallback-model'), false);
+  assert.equal(argValue(argv, '--disallowedTools'), 'WebFetch');
+  assert.equal(catchAll, null);
+});
+
+test('a tool Foreman denies is refused by canUseTool at once, in a bypass mode too, with no prompt', async () => {
+  runtime.setClaudeRuntimeAdditionsProvider(async () => ({ disallowedTools: ['Bash'] }));
+  try {
+    const plain = await runPrompt('ask', {}, 'app-session-foreman-deny');
+    assert.ok(!kinds(plain).includes('permission_request'));
+    assert.equal((await permissionAnswers()).at(-1)?.response.message, 'Tool disallowed by settings');
+
+    const bypass = await runPrompt('ask', { toolsSettings: settingsWith({ skipPermissions: true }) }, 'app-session-foreman-deny-bypass');
+    assert.ok(!kinds(bypass).includes('permission_request'));
+    assert.equal((await permissionAnswers()).at(-1)?.response.behavior, 'deny');
+  } finally {
+    runtime.setClaudeRuntimeAdditionsProvider(null);
+  }
+});
+
+// ---------------------------------------------------------------------------------------------
 // canUseTool: a call the guard holds is not waved through by a stored allow rule or a bypass mode
 // ---------------------------------------------------------------------------------------------
 
 const heldByPolicy = () => ({ decision: 'ask', category: 'command' });
-const settingsWith = (overrides: Record<string, unknown>) => ({ allowedTools: [], disallowedTools: [], skipPermissions: false, ...overrides });
 
 test('without a guard a stored allow rule or a bypass mode settles the call by itself, as before', async () => {
   const before = (await permissionAnswers()).length;
