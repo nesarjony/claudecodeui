@@ -1,28 +1,31 @@
 import path from 'node:path';
 
-import {
-  bashSecretLabel,
-  coversSecretDirectories,
-  expandHome,
-  globVariants,
-  resolveHome,
-  searchTargetLabel,
-  secretPathLabel,
-  type SecretScope,
-} from '@/modules/foreman/foreman-guard-secrets.service.js';
+import { classifyCore } from '@/modules/foreman/foreman-guard-classify.service.js';
+import { resolveHome } from '@/modules/foreman/foreman-guard-secrets.service.js';
 import { AppError } from '@/shared/utils.js';
 
 /**
- * The risky-action guard for sessions Foreman starts (Milestone 5).
+ * The risky-action guard for sessions Foreman starts (Milestone 5, hardened by the red-team pass).
  *
- * `classifyToolUse` is a port of Foreman's own rules (`src/tasks/risk.ts`): cloudcli judges every tool call of a
- * guarded session with the patterns Foreman handed over, allows the safe ones without asking anybody, and only
- * routes the risky ones to a prompt. Foreman then runs the same rules again on the request it receives.
+ * `classifyToolUse` judges every tool call of a guarded session with the patterns Foreman handed over, allows the safe
+ * ones without asking anybody, and only routes the risky ones to a prompt. Foreman then runs the same rules again on the
+ * request it receives. The rules themselves live in three files that are copies of Foreman's own `src/guard/` (`secrets.ts`,
+ * `shell.ts`, `classify.ts`), overwritten by Foreman's sync script and never edited here: `foreman-guard-secrets.service.ts`
+ * (the secret classes), `foreman-guard-shell.service.ts` (the structural shell reader) and
+ * `foreman-guard-classify.service.ts` (the shared classifier this file delegates to).
  *
- * On top of the patterns Foreman hands over, the built-in secret classes of `foreman-guard-secrets.service.ts` always
- * apply to a guarded session: `.env*`, `*.pem`, SSH keys, `credentials*`, token/key/secret files under `~/.config`, and
- * the secret directories. They are checked for every path argument, for the file globs and search roots of Grep and
- * Glob, and for every word of a Bash command.
+ * A Bash command is read structurally, not matched as text, so it is held when it does any of these however it is spelled:
+ * `git push`/`reset --hard`/`clean`/... behind global options (`-C`, `-c`, `--git-dir`), `rm -r`/`-f`, `find -delete`/`-exec rm`,
+ * `sudo`/`su`/`doas`, `env`/`printenv` dumps and secret-named variables, uploads (`curl -T`/`-d @file`/`--data-binary`, `scp`, `rsync`, `nc`), a
+ * script, package script (`npm run`, `make` target, ...) or file it is about to run and whose text is risky, a write
+ * outside the repo (redirects, `tee`, `cp`/`mv`/`ln` targets, `sed -i`, ...) or into `.git/hooks`, `.git/config`, `.claude/`,
+ * `.mcp.json`, and anything that reads a secret (the built-in classes of `foreman-guard-secrets.service.ts`: `.env*`,
+ * `*.pem`, SSH keys, `credentials*`, token/key/secret files under `~/.config`, the secret directories).
+ *
+ * The same secret classes apply to every path argument of any tool and to the file globs and search roots of Grep and
+ * Glob; links are followed, so a link in the repo that points at a secret is that secret. Write, Edit, MultiEdit and
+ * NotebookEdit are held when the target (links resolved) is outside the repo root or is one of the repository's protected
+ * files (`.git/hooks`, `.git/config`, `.claude/`, `.mcp.json`).
  */
 
 export type ForemanGuardCategory = 'command' | 'secret' | 'outside_repo';
@@ -76,13 +79,6 @@ export type ForemanToolPolicyDecision =
     };
 
 export type ForemanToolPolicy = (toolName: string, input: unknown) => ForemanToolPolicyDecision;
-
-const WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit']);
-// The arguments that name a file or directory a tool reads or writes (Read, Edit, Write, MultiEdit, NotebookEdit, Grep, Glob, LS, ...).
-const PATH_KEYS = ['file_path', 'path', 'notebook_path', 'filePath', 'notebookPath', 'directory', 'dir', 'cwd'];
-// Arguments that hold several of them.
-const PATH_LIST_KEYS = ['paths', 'file_paths', 'filePaths'];
-const SEARCH_TOOLS = new Set(['Grep', 'Glob']);
 
 /** Permission modes in which the CLI settles tool calls itself, so cloudcli's permission callback is never asked. */
 export const GUARD_INCOMPATIBLE_PERMISSION_MODES: readonly string[] = ['acceptEdits', 'auto', 'bypassPermissions'];
@@ -143,114 +139,21 @@ function asRecord(input: unknown): Record<string, unknown> {
   return {};
 }
 
-function textOf(input: unknown, record: Record<string, unknown>): string {
-  if (typeof record.command === 'string') {
-    return record.command;
-  }
-  return typeof input === 'string' ? input : JSON.stringify(input ?? '');
-}
-
 /**
- * The values of a call that are file globs: `glob` and `include` (Grep's file filters) and Glob's `pattern`. Grep's
- * `pattern` is a content regex, not a file name, and is not one of them.
- */
-function globValuesOf(toolName: string, record: Record<string, unknown>): string[] {
-  const values = [record.glob, record.include, toolName === 'Glob' ? record.pattern : undefined];
-  return values.filter((value): value is string => typeof value === 'string' && value.length > 0);
-}
-
-/** The string values of the arguments that name a path (a list argument contributes each of its strings). */
-function pathValuesOf(record: Record<string, unknown>): string[] {
-  const values: unknown[] = PATH_KEYS.map((key) => record[key]);
-  for (const key of PATH_LIST_KEYS) {
-    const list = record[key];
-    if (Array.isArray(list)) {
-      values.push(...list);
-    }
-  }
-  return values.filter((value): value is string => typeof value === 'string' && value.length > 0);
-}
-
-/**
- * Is this tool call one a person must approve? Pure and deterministic; Foreman's `classifyToolUse` rules, plus the
- * built-in secret classes and the file globs of Glob and Grep (see `foreman-guard-secrets.service.ts`).
- *
- * - Bash: the command matches a risky pattern, or mentions a secret: the session's secret patterns match its text, or
- *   a word of it is a built-in secret path (`cat`, `grep`, `cp`, `source`, `< file`, `$(cat file)`, `curl -d @file`, a pipe
- *   out of any of those, ...), or a directory walker is pointed at `~` or `~/.config`.
- * - Any tool: a path argument (`file_path`, `path`, `notebook_path`, ...) matches a secret pattern or is a built-in
- *   secret path (Read, Edit, Write, MultiEdit, NotebookEdit, Grep, Glob, LS, ...); `~` and `$HOME` are expanded.
- * - Grep and Glob: the `path` they search from is a secrets directory or holds one (`~`, `~/.config`, `/`), or the
- *   file glob they carry (`glob`, `include`, Glob's `pattern`) can match a secret file name, wildcards included, with
- *   `path` read as the glob's base. Grep's own `pattern` is a content regex and is not judged.
- * - Write, Edit, MultiEdit, NotebookEdit: the target is outside the repo root (when `writeOutsideRepo`).
- *
- * Foreman's own classifier knows only the first two points (patterns over paths and commands), so it can judge a call
- * safe that this one holds; the call is held here either way.
+ * Is this tool call one a person must approve? Pure and deterministic apart from reading the files a command is about to
+ * run and resolving links (the shared classifier's `ShellFs`). Delegates to `classifyCore`, the same classifier Foreman runs
+ * (see the header of this file for what it covers); the guard is already compiled, so its patterns, repo root and home
+ * are handed over as they are.
  */
 // Consumed by createToolPolicy below and by the guard tests.
 export function classifyToolUse(call: { toolName: string; input: unknown }, guard: CompiledForemanGuard): ForemanGuardVerdict {
-  const record = asRecord(call.input);
-  const text = textOf(call.input, record);
-  const scope: SecretScope = { home: guard.home, cwd: path.resolve(guard.repoRoot ?? '/') };
-  const secret = (matched: string): ForemanGuardVerdict => ({ risky: true, category: 'secret', matched });
-
-  if (call.toolName === 'Bash') {
-    for (const pattern of guard.riskyPatterns) {
-      if (pattern.test(text)) {
-        return { risky: true, category: 'command', matched: pattern.source };
-      }
-    }
-    for (const pattern of guard.secretPatterns) {
-      if (pattern.test(text)) {
-        return secret(pattern.source);
-      }
-    }
-    const reads = bashSecretLabel(text, scope);
-    if (reads) {
-      return secret(reads);
-    }
-  }
-
-  for (const value of pathValuesOf(record)) {
-    for (const pattern of guard.secretPatterns) {
-      if (pattern.test(value)) {
-        return secret(pattern.source);
-      }
-    }
-    const label = secretPathLabel(value, scope);
-    if (label) {
-      return secret(label);
-    }
-    if (guard.writeOutsideRepo && WRITE_TOOLS.has(call.toolName) && guard.repoRoot) {
-      const root = path.resolve(guard.repoRoot);
-      // The CLI expands `~` and `$HOME` in a path argument, so a write to `~/.bashrc` is not inside the repo.
-      const target = path.resolve(root, expandHome(value, guard.home));
-      if (target !== root && !target.startsWith(root.endsWith(path.sep) ? root : root + path.sep)) {
-        return { risky: true, category: 'outside_repo', matched: target };
-      }
-    }
-  }
-
-  const globs = globValuesOf(call.toolName, record);
-  for (const glob of globs) {
-    for (const variant of globVariants(glob)) {
-      for (const pattern of guard.secretPatterns) {
-        if (pattern.test(variant)) {
-          return secret(pattern.source);
-        }
-      }
-    }
-  }
-  const searchRoot = typeof record.path === 'string' && record.path ? record.path : undefined;
-  const searched = searchTargetLabel(searchRoot, globs, scope);
-  if (searched) {
-    return secret(searched);
-  }
-  if (SEARCH_TOOLS.has(call.toolName) && searchRoot && coversSecretDirectories(searchRoot, scope, true)) {
-    return secret('a search from a directory that holds secrets (~, ~/.config, /)');
-  }
-  return { risky: false };
+  return classifyCore(call, {
+    riskyPatterns: guard.riskyPatterns,
+    secretPatterns: guard.secretPatterns,
+    writeOutsideRepo: guard.writeOutsideRepo,
+    repoRoot: guard.repoRoot,
+    home: guard.home,
+  });
 }
 
 function describeDuration(ms: number): string {

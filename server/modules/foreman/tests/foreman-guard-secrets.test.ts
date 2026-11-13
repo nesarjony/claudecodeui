@@ -360,10 +360,15 @@ test('secretPathLabel names the class, and expands ~ and $HOME and reads relativ
   assert.equal(secretPathLabel('.env.example', scope), null);
   assert.equal(secretPathLabel('a/b/server.pem', scope), 'a .pem file');
   assert.equal(secretPathLabel('id_ed25519', scope), 'an SSH private key');
-  assert.equal(secretPathLabel('credentials.json', scope), 'a credentials file');
+  // Still a secret; the hardened secret classes name a `credentials.<ext>` file by the broader "named like a credential" rule.
+  assert.equal(secretPathLabel('credentials.json', scope), 'a file named like a credential');
+  assert.equal(secretPathLabel('.credentials', scope), 'a credentials file');
   assert.equal(secretPathLabel('docs/credentials-guide.md', scope), null);
-  assert.equal(secretPathLabel('~/.config/gh/oauth_token', scope), 'a file in ~/.config named like a token, key or secret');
-  assert.equal(secretPathLabel('~/.config/gh/hosts.yml', scope), null);
+  assert.equal(secretPathLabel('~/.config/app/oauth_token', scope), 'a file in ~/.config named like a token, key or secret');
+  assert.equal(secretPathLabel('~/.config/app/settings.yml', scope), null);
+  // `gh` keeps its OAuth token in `hosts.yml`, so the whole directory is a secrets directory now.
+  assert.equal(secretPathLabel('~/.config/gh/hosts.yml', scope), 'a secrets directory (~/.config/gh)');
+  assert.equal(secretPathLabel('~/.kube/config', scope), 'a secrets directory (~/.kube)');
   assert.equal(secretPathLabel('~/.ssh/known_hosts', scope), 'a secrets directory (~/.ssh)');
   assert.equal(secretPathLabel('$HOME/.gnupg', scope), 'a secrets directory (~/.gnupg)');
   assert.equal(secretPathLabel('../../home/other/.aws/config', scope), null, 'a relative path that lands in another home directory');
