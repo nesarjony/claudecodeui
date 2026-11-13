@@ -15,9 +15,10 @@ import { bashRisk, nodeShellFs, type ShellFs } from '@/modules/foreman/foreman-g
  * The risky-action classifier shared by Foreman (`src/tasks/risk.ts`) and cloudcli's guard. Pure apart from reading the files
  * a command is about to run and resolving symbolic links, both through `ShellFs`.
  *
- * - Bash: the configured risky patterns over the text; the configured secret patterns over the text; the built-in secret classes
- *   over every word; and the structural reader of `shell.ts` (git global options, `rm -r -f`, `find -delete`, `sudo`, scripts
- *   about to run, writes outside the repository, uploads, env dumps, ...).
+ * - Bash: the configured risky patterns over the text; the configured secret patterns and the built-in secret classes over every
+ *   word that is a path (not over the text of a program, a pattern or inline code; a wildcard that only a read-only command expands
+ *   is resolved against the file system); and the structural reader of `shell.ts` (git global options, `rm -r -f`, `find -delete`,
+ *   `sudo`, scripts about to run, writes outside the repository and into a reference directory, uploads, env dumps, ...).
  * - Any tool: a path argument that is a secret by the patterns or the built-in classes, also after `~`/`$HOME` expansion and after
  *   links are followed (a link in the repo that points at `~/.ssh/id_rsa` is that file).
  * - Write, Edit, MultiEdit, NotebookEdit: a target outside the repo root (links followed), or one of the repository's protected
@@ -34,6 +35,10 @@ export interface CompiledRules {
   writeOutsideRepo: boolean
   repoRoot: string | null
   home: string
+  /** Other repositories the session reads and never writes (`guard.referenceDirs`): a write into one is held whatever else allows it. */
+  referenceDirs?: string[]
+  /** Directories where plain files may be written (the task's scratch directory, /tmp): inline code may name paths there. */
+  scratchDirs?: string[]
 }
 
 const WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit'])
@@ -95,15 +100,17 @@ export function classifyCore(call: { toolName: string; input: unknown }, rules: 
   const text = textOf(call.input, record)
   const home = path.resolve(rules.home)
   const repoRoot = path.resolve(rules.repoRoot ?? '/')
-  const scope: SecretScope = { home, cwd: repoRoot }
+  const scope: SecretScope = { home, cwd: repoRoot, ...(fsx.list ? { list: fsx.list } : {}), real: fsx.realpath, patterns: rules.secretPatterns }
   const secret = (matched: string): GuardVerdict => ({ risky: true, category: 'secret', matched })
+  const referenceDirs = (rules.referenceDirs ?? []).filter(dir => path.isAbsolute(dir) && path.resolve(dir) !== path.sep)
 
   if (call.toolName === 'Bash') {
     for (const re of rules.riskyPatterns) if (re.test(text)) return { risky: true, category: 'command', matched: re.source }
-    for (const re of rules.secretPatterns) if (re.test(text)) return secret(re.source)
+    // The secret patterns are patterns over a path: `bashSecretLabel` applies them to the words of the command that are paths, to redirection
+    // targets and to the files a wildcard matches, and not to a program, a regular expression or inline code (`x.key` in `node -e` is a property).
     const reads = bashSecretLabel(text, scope)
     if (reads) return secret(reads)
-    const v = bashRisk(text, { ...scope, repoRoot: rules.writeOutsideRepo ? repoRoot : '/', fs: fsx })
+    const v = bashRisk(text, { ...scope, repoRoot: rules.writeOutsideRepo ? repoRoot : '/', fs: fsx, referenceDirs, scratchDirs: rules.scratchDirs ?? [] })
     if (v.risky) return v
   }
 
@@ -137,6 +144,10 @@ export function classifyCore(call: { toolName: string; input: unknown }, rules: 
     if (label) return secret(label)
     const resolved = path.resolve(repoRoot, expandHome(value, home))
     const real = fsx.realpath(resolved)
+    if (written) {
+      const ref = referenceDirs.find(dir => real === fsx.realpath(dir) || real.startsWith(fsx.realpath(dir).replace(/\/$/, '') + path.sep))
+      if (ref) return { risky: true, category: 'command', matched: `a write into a reference directory (${ref}), which is read-only` }
+    }
     if (real !== resolved) {
       // A link: the file it points at is the file that is read or written.
       const viaLink = secretPathLabel(real, scope)

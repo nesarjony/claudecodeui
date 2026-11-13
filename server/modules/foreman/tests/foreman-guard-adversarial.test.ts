@@ -20,7 +20,7 @@ type Case = {
   tool: string;
   input: Record<string, unknown>;
   expect: 'hold' | 'allow';
-  setup?: Array<{ file?: string; content?: string; mode?: number; link?: string; target?: string }>;
+  setup?: Array<{ file?: string; content?: string; mode?: number; link?: string; target?: string; in?: 'repo' | 'donor' }>;
 };
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -36,7 +36,9 @@ const root = realpathSync(mkdtempSync(path.join(cache, 'guard-')));
 const repo = path.join(root, 'repo');
 const home = path.join(root, 'home');
 const outside = path.join(root, 'outside');
-for (const d of [repo, path.join(repo, 'src'), path.join(repo, '.git/hooks'), home, path.join(home, '.ssh'), path.join(home, '.aws'), path.join(home, '.config/claude-api'), path.join(home, '.config/gh'), path.join(home, '.claude'), path.join(home, '.foreman'), path.join(home, '.kube'), path.join(home, '.docker'), outside]) {
+// The donor repository: a reference directory (read, never written) with a Go tree and a frontend .env.
+const donor = path.join(root, 'donor');
+for (const d of [donor, path.join(donor, 'internal/ws'), path.join(donor, 'internal/conversation/models'), path.join(donor, 'frontend/apps/main/src/constants'), path.join(donor, 'cmd'), repo, path.join(repo, 'src'), path.join(repo, '.git/hooks'), home, path.join(home, '.ssh'), path.join(home, '.aws'), path.join(home, '.config/claude-api'), path.join(home, '.config/gh'), path.join(home, '.claude'), path.join(home, '.foreman'), path.join(home, '.kube'), path.join(home, '.docker'), outside]) {
   mkdirSync(d, { recursive: true });
 }
 const plant = (p: string, text = FAKE) => writeFileSync(p, `${text}\n`);
@@ -44,6 +46,14 @@ plant(path.join(repo, '.env'), `API_KEY=${FAKE}`);
 plant(path.join(repo, '.env.example'), 'API_KEY=changeme');
 plant(path.join(repo, '.env.production'), `API_KEY=${FAKE}`);
 plant(path.join(repo, 'src/index.ts'), 'export {}');
+plant(path.join(repo, 'src/page.tsx'), 'export const Page = () => null');
+plant(path.join(donor, 'internal/ws/client.go'), 'package ws\n\nconst MessageTypeNew = "new"\n\ntype Client struct{}');
+plant(path.join(donor, 'internal/ws/ws.go'), 'package ws\n\ntype Hub struct{}');
+plant(path.join(donor, 'internal/ws/ws_test.go'), 'package ws');
+plant(path.join(donor, 'internal/conversation/models/models.go'), 'package models\n\ntype Draft struct {\n}\n');
+plant(path.join(donor, 'frontend/apps/main/src/constants/websocket.js'), 'export const WS_EVENT_NEW = 1');
+plant(path.join(donor, 'cmd/conversation.go'), 'package main\n\nfunc handleMarkConversationAsUnread() {\n}\n');
+plant(path.join(donor, 'frontend/.env'), `VITE_KEY=${FAKE}`);
 plant(path.join(repo, 'notes.txt'), 'plain notes');
 plant(path.join(repo, 'terraform.tfstate'), `{"secret":"${FAKE}"}`);
 plant(path.join(repo, 'gcp-service-account-key.json'), `{"private_key":"${FAKE}"}`);
@@ -56,9 +66,9 @@ plant(path.join(home, '.foreman/config.json'), '{}');
 plant(path.join(home, '.bash_history'), 'ls');
 plant(path.join(home, '.bashrc'), '# rc');
 
-const fill = (text: string) => text.replaceAll('{{REPO}}', repo).replaceAll('{{HOME}}', home).replaceAll('{{OUTSIDE}}', outside);
+const fill = (text: string) => text.replaceAll('{{REPO}}', repo).replaceAll('{{HOME}}', home).replaceAll('{{DONOR}}', donor).replaceAll('{{OUTSIDE}}', outside);
 const guard = compileGuard(
-  { enabled: true, riskyPatterns: patterns.riskyPatterns, secretPatterns: patterns.secretPatterns, writeOutsideRepo: true, repoRoot: repo },
+  { enabled: true, riskyPatterns: patterns.riskyPatterns, secretPatterns: patterns.secretPatterns, writeOutsideRepo: true, repoRoot: repo, referenceDirs: [donor] },
   repo,
   { home },
 );
@@ -71,13 +81,14 @@ test('red-team guard cases', () => {
     const made: string[] = [];
     for (const s of c.setup ?? []) {
       if (s.file !== undefined) {
-        const p = path.join(repo, s.file);
+        const p = path.join(s.in === 'donor' ? donor : repo, s.file);
         mkdirSync(path.dirname(p), { recursive: true });
         writeFileSync(p, fill(s.content ?? ''));
         if (s.mode) chmodSync(p, s.mode);
         made.push(p);
       } else if (s.link && s.target) {
-        const p = path.join(repo, s.link);
+        const p = path.join(s.in === 'donor' ? donor : repo, s.link);
+        mkdirSync(path.dirname(p), { recursive: true });
         rmSync(p, { force: true, recursive: true });
         symlinkSync(fill(s.target), p);
         made.push(p);

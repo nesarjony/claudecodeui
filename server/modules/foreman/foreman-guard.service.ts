@@ -28,6 +28,12 @@ import { AppError } from '@/shared/utils.js';
  * NotebookEdit are held when the target (links resolved) is outside the repo root or is one of the repository's protected
  * files (`.git/hooks`, `.git/config`, `.claude/`, `.mcp.json`).
  *
+ * What is not a path is not matched as one: the text of an `awk` or `sed` program, a `grep` pattern, a `jq` filter and the code of `node -e` or
+ * `python -c` are not judged as paths (a `.key` property in a script is not a key file), the files they read are. A wildcard that a read-only
+ * command expands is resolved against the file system and held only when a file it matches is a secret; a `find`, `ls` or `git ls-files` in a command
+ * substitution is run (without a shell, for a few seconds) and the paths it prints are judged. `referenceDirs` are read-only repositories: every write into
+ * one is held.
+ *
  * Foreman runs these sessions unattended, so the two tools only a person can answer, AskUserQuestion and ExitPlanMode,
  * are refused outright (see `unattendedToolDenial`) instead of being asked about: a prompt for them would wait for a
  * person who is not there, and the worker would hang.
@@ -58,6 +64,12 @@ export type ForemanGuardConfig = {
    * dot-directory below the allowed directory. Symlinks are resolved first. Absent: every write outside `repoRoot` is held.
    */
   allowWriteDirs?: string[];
+  /**
+   * Absolute directories of other repositories the session may read and never write (Foreman's `guard.referenceDirs`: the donor repos a
+   * parity task studies). Reading them follows the ordinary secret rules; every write into one is held, whatever else would allow it, and so is a
+   * git command that changes one. Absent: none.
+   */
+  referenceDirs?: string[];
 };
 
 /** A guard whose patterns are compiled; what the classifier runs on. */
@@ -69,6 +81,8 @@ export type CompiledForemanGuard = {
   approvalTimeoutMs: number;
   /** Directories where a plain, non-secret, non-dotfile write outside the repo root is allowed (see `ForemanGuardConfig.allowWriteDirs`). */
   allowWriteDirs: string[];
+  /** Read-only repositories (see `ForemanGuardConfig.referenceDirs`). */
+  referenceDirs: string[];
   /** Patterns that were not valid regular expressions and are therefore not enforced. */
   skippedPatterns: number;
   /** The home directory the built-in secret classes protect (`~/.ssh`, `~/.config/**`); captured when the guard is compiled. */
@@ -137,6 +151,7 @@ const MAX_PATTERNS = 200;
 const MAX_PATTERN_LENGTH = 1000;
 const MAX_REPO_ROOT_LENGTH = 4096;
 const MAX_ALLOW_WRITE_DIRS = 20;
+const MAX_REFERENCE_DIRS = 20;
 
 /** A symlink chain longer than this is a loop, or as good as one: it resolves to the root, which is outside every allowed directory. */
 const MAX_LINKS = 40;
@@ -241,6 +256,7 @@ export function compileGuard(config: ForemanGuardConfig, fallbackRepoRoot: strin
     repoRoot: config.repoRoot ?? fallbackRepoRoot,
     approvalTimeoutMs: config.approvalTimeoutMs ?? DEFAULT_GUARD_APPROVAL_TIMEOUT_MS,
     allowWriteDirs,
+    referenceDirs: (config.referenceDirs ?? []).filter((dir) => path.isAbsolute(dir) && path.resolve(dir) !== path.sep),
     skippedPatterns: risky.skipped + secret.skipped,
     home,
   };
@@ -281,6 +297,8 @@ export function classifyToolUse(call: { toolName: string; input: unknown }, guar
     writeOutsideRepo: guard.writeOutsideRepo,
     repoRoot: guard.repoRoot,
     home: guard.home,
+    referenceDirs: guard.referenceDirs,
+    scratchDirs: guard.allowWriteDirs,
   };
   const verdict = classifyCore(call, rules);
   if (verdict.risky && verdict.category === 'outside_repo' && guard.allowWriteDirs.length > 0 && WRITE_TOOLS.has(call.toolName) && writeAllowedByDirs(verdict.matched, guard.allowWriteDirs)) {
@@ -462,6 +480,17 @@ export function parseGuardConfig(raw: unknown): ForemanGuardConfig | undefined {
     }
     allowWriteDirs = (body.allowWriteDirs as string[]).map((dir) => dir.trim());
   }
+  let referenceDirs: string[] | undefined;
+  if (body.referenceDirs !== undefined && body.referenceDirs !== null) {
+    if (
+      !Array.isArray(body.referenceDirs)
+      || body.referenceDirs.length > MAX_REFERENCE_DIRS
+      || body.referenceDirs.some((dir) => typeof dir !== 'string' || !dir.trim().startsWith('/') || dir.trim() === '/' || dir.length > MAX_REPO_ROOT_LENGTH)
+    ) {
+      throw invalid(`guard.referenceDirs must be an array of at most ${MAX_REFERENCE_DIRS} absolute paths other than /.`);
+    }
+    referenceDirs = (body.referenceDirs as string[]).map((dir) => dir.trim());
+  }
   const approvalTimeoutMs = body.approvalTimeoutMs ?? DEFAULT_GUARD_APPROVAL_TIMEOUT_MS;
   if (
     typeof approvalTimeoutMs !== 'number'
@@ -479,6 +508,7 @@ export function parseGuardConfig(raw: unknown): ForemanGuardConfig | undefined {
     writeOutsideRepo: body.writeOutsideRepo !== false,
     ...(repoRoot ? { repoRoot } : {}),
     ...(allowWriteDirs ? { allowWriteDirs } : {}),
+    ...(referenceDirs ? { referenceDirs } : {}),
     approvalTimeoutMs,
   };
 }

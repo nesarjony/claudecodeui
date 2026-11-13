@@ -1,8 +1,10 @@
-import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 
-import { bashSecretLabel, expandHome, secretPathLabel, type SecretScope } from '@/modules/foreman/foreman-guard-secrets.service.js'
+import { awkFacts, sedFacts, stringLiterals } from '@/modules/foreman/foreman-guard-programs.service.js'
+import { bashSecretLabel, expandHome, gitSubcommand, globMatches, isGlobWord, MAX_GLOB_MATCHES, pathCandidates, patternWordIndexes, READ_ONLY_GIT, readsOnly, secretPathLabel, type DirLister, type SecretScope } from '@/modules/foreman/foreman-guard-secrets.service.js'
 
 /**
  * A structural reader for shell commands (red-team hardening). The regular expressions in config see text; this reads the
@@ -22,6 +24,18 @@ export type ShellVerdict = { risky: false } | { risky: true; category: 'command'
 export interface ShellFs {
   read(file: string): string | null
   realpath(file: string): string
+  /** Lists a directory (see `DirLister`). Absent: a wildcard is judged by its shape, never by what it matches. */
+  list?: DirLister
+  /** Runs a read-only lister (`find`, `ls`, `git ls-files`) so a command substitution can be judged by the paths it prints. Absent: such a substitution cannot be judged. */
+  run?(argv: string[], cwd: string, timeoutMs: number, maxBytes: number): { stdout: string; status: number } | null
+}
+
+const isDirectoryLink = (file: string): boolean => {
+  try {
+    return statSync(file).isDirectory()
+  } catch {
+    return false
+  }
 }
 
 export const nodeShellFs: ShellFs = {
@@ -35,6 +49,32 @@ export const nodeShellFs: ShellFs = {
     }
   },
   realpath: resolveReal,
+  list(dir) {
+    try {
+      const entries = readdirSync(dir, { withFileTypes: true })
+      if (entries.length > 20_000) return null
+      return entries.map(e => ({ name: e.name, dir: e.isDirectory() || (e.isSymbolicLink() && isDirectoryLink(path.join(dir, e.name))) }))
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code
+      return code === 'ENOENT' || code === 'ENOTDIR' ? [] : null
+    }
+  },
+  run(argv, cwd, timeoutMs, maxBytes) {
+    try {
+      const r = spawnSync(argv[0]!, argv.slice(1), {
+        cwd,
+        timeout: timeoutMs,
+        maxBuffer: maxBytes,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+        env: { PATH: '/usr/local/bin:/usr/bin:/bin', LC_ALL: 'C', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_OPTIONAL_LOCKS: '0' },
+      })
+      if (r.error || r.signal || r.status === null) return null
+      return { stdout: r.stdout, status: r.status }
+    } catch {
+      return null
+    }
+  },
 }
 
 /** The real path of the longest existing prefix of `file`, with the rest put back: the target of a write that has not happened yet. */
@@ -61,6 +101,10 @@ export interface ShellScope extends SecretScope {
   /** The session's repository: writes outside it are held. */
   repoRoot: string
   fs?: ShellFs
+  /** Other repositories the session may read and never write (`guard.referenceDirs`): every write into one is held, whatever else allows it. */
+  referenceDirs?: string[]
+  /** Directories where plain files may be written (the task's scratch directory, /tmp): inline code may name paths there. */
+  scratchDirs?: string[]
 }
 
 const label = (matched: string, category: 'command' | 'secret' | 'outside_repo' = 'command'): ShellVerdict => ({ risky: true, category, matched })
@@ -71,6 +115,8 @@ interface Cmd {
   words: string[]
   /** Words that hold a substitution the reader could not resolve: `$(...)`, backticks. */
   dynamic: boolean[]
+  /** For each word, the indexes (into the `subs` of `parse`) of the substitutions it holds. */
+  subIdx?: number[][]
   redirects: Array<{ op: string; target: string }>
   pipeIn: boolean
   /** What came before this command: `start`, `;`, `&&`, `||`, `|`, `|&`, `&` or a newline. */
@@ -120,6 +166,8 @@ function parse(input: string, vars: Map<string, string>, subs: string[]): Cmd[] 
   const cmds: Cmd[] = []
   let words: string[] = []
   let dyn: boolean[] = []
+  let wsubs: number[][] = []
+  let curSubs: number[] = []
   let redirects: Cmd['redirects'] = []
   let word = ''
   let inWord = false
@@ -139,10 +187,12 @@ function parse(input: string, vars: Map<string, string>, subs: string[]): Cmd[] 
     } else {
       words.push(word)
       dyn.push(wordDynamic)
+      wsubs.push(curSubs)
     }
     word = ''
     inWord = false
     wordDynamic = false
+    curSubs = []
   }
   const endCmd = (pipe: boolean, sep = ';') => {
     endWord()
@@ -151,12 +201,13 @@ function parse(input: string, vars: Map<string, string>, subs: string[]): Cmd[] 
       if (words.length > 0 && words.every(w => ASSIGN.test(w))) {
         for (const w of words) vars.set(w.slice(0, w.indexOf('=')), w.slice(w.indexOf('=') + 1))
       }
-      cmds.push({ words, dynamic: dyn, redirects, pipeIn, sepBefore: curSep, sepAfter: sep, ...(bodies.has(cmds.length) ? { heredoc: bodies.get(cmds.length) } : {}) })
+      cmds.push({ words, dynamic: dyn, subIdx: wsubs, redirects, pipeIn, sepBefore: curSep, sepAfter: sep, ...(bodies.has(cmds.length) ? { heredoc: bodies.get(cmds.length) } : {}) })
     }
     curSep = words.length > 0 || redirects.length > 0 ? sep : curSep
     pipeIn = nextPipe
     words = []
     dyn = []
+    wsubs = []
     redirects = []
     nextPipe = pipe
     pendingRedirect = null
@@ -196,6 +247,7 @@ function parse(input: string, vars: Map<string, string>, subs: string[]): Cmd[] 
           const end = closeParen(input, j + 1)
           const stop = end === -1 ? input.length : end
           subs.push(input.slice(j + 2, stop))
+          curSubs.push(subs.length - 1)
           word += '\u0001'
           wordDynamic = true
           j = stop
@@ -203,6 +255,7 @@ function parse(input: string, vars: Map<string, string>, subs: string[]): Cmd[] 
           const end = input.indexOf('`', j + 1)
           const stop = end === -1 ? input.length : end
           subs.push(input.slice(j + 1, stop))
+          curSubs.push(subs.length - 1)
           word += '\u0001'
           wordDynamic = true
           j = stop
@@ -230,6 +283,7 @@ function parse(input: string, vars: Map<string, string>, subs: string[]): Cmd[] 
       const end = closeParen(input, i + 1)
       const stop = end === -1 ? input.length : end
       subs.push(input.slice(i + 2, stop))
+      curSubs.push(subs.length - 1)
       word += '\u0001'
       inWord = true
       wordDynamic = true
@@ -240,6 +294,7 @@ function parse(input: string, vars: Map<string, string>, subs: string[]): Cmd[] 
       const end = input.indexOf('`', i + 1)
       const stop = end === -1 ? input.length : end
       subs.push(input.slice(i + 1, stop))
+      curSubs.push(subs.length - 1)
       word += '\u0001'
       inWord = true
       wordDynamic = true
@@ -381,6 +436,10 @@ interface Ctx {
   /** Files this command text writes, with their content when it is known (`cat > f <<EOF`, `echo ... > f`). */
   written: Map<string, string | null>
   budget: { left: number }
+  /** The substitutions of the command text being judged (`parse`'s `subs`). */
+  subs: string[]
+  /** What the whole call may still spend on running read-only listers (`find`, `ls`, `git ls-files`) to see what a substitution names. */
+  listers: { left: number; until: number }
 }
 
 const base = (word: string): string => path.basename(word).toLowerCase()
@@ -407,6 +466,15 @@ const INLINE_DANGER = [
   /(__import__|\bimportlib\b|\bcompile\s*\(|\bnew\s+Function\s*\(|\bFunction\s*\(|\beval\s*\(|\bexec\s*\(|\batob\s*\(|\bb64decode\b|\bbase64\b)/,
   /(process\.env|os\.environ|\bENV\b|getenv|System\.getenv)\W[^;\n]{0,40}(KEY|TOKEN|SECRET|PASSW|CREDENTIAL|AUTH)/i,
 ]
+
+// Inline code that only reads is code with none of: a write, a delete, a process, the network. These add the forms the list above does not name.
+INLINE_DANGER.push(
+  /\.(mkdir|mkdirSync|mkdtemp|mkdtempSync|copyFile|copyFileSync|cp|cpSync|symlink|symlinkSync|link|linkSync|chmod|chmodSync|chown|chownSync|truncate|truncateSync|utimes|utimesSync|openSync|writeSync|createWriteStream|write_text|write_bytes|touch|kill)\s*\(/,
+  /\b(require|import)\s*\(?\s*['"`](node:)?(https?|http2|net|tls|dgram|dns|child_process|cluster|worker_threads)['"`]|\bfrom\s+['"`](node:)?(https?|http2|net|tls|dgram|dns|child_process|cluster|worker_threads)['"`]/,
+  /\bfetch\s*\(/,
+  /\b(import|from)\s+(requests|aiohttp|http|socket|subprocess|urllib\d?|ftplib|smtplib|telnetlib|websockets?)\b/,
+  /\bopen\s*\([^)]*,\s*['"]\s*[wax+][bt+]?\s*['"]/,
+)
 
 const SQL_DANGER = /\b(DROP\s+\w+|TRUNCATE\b|DELETE\s+FROM\b|ALTER\s+(TABLE|DATABASE|ROLE|USER|SYSTEM)\b[^;]*\b(DROP|RENAME|OWNER)|GRANT\b|REVOKE\b|FLUSH(ALL|DB)\b|dropDatabase|\.drop\(\)|deleteMany\(\s*\{\s*\}\s*\)|UPDATE\s+\S+\s+SET\b(?![^;]*\bWHERE\b))/i
 const SECRET_VAR = /\$\{?[A-Za-z0-9_]*(KEY|TOKEN|SECRET|PASSWD|PASSWORD|PASS|CREDENTIAL|AUTH|PRIVATE|COOKIE)[A-Za-z0-9_]*\}?/
@@ -448,8 +516,16 @@ const isScratch = (target: string): boolean => SCRATCH.some(d => target === d ||
 const resolveWord = (word: string, ctx: Ctx): string => ctx.fs.realpath(path.resolve(ctx.cwd, expandHome(word, ctx.scope.home)))
 
 /** Why writing to `word` must be approved, or null. The repo is writable, scratch space is writable, `.git/hooks` and project settings are not. */
-export function writeTargetLabel(target: string, repoRoot: string, home: string, fsx: ShellFs = nodeShellFs, cwd = repoRoot): string | null {
-  const abs = fsx.realpath(path.resolve(cwd, expandHome(target, home)))
+export function writeTargetLabel(target: string, repoRoot: string, home: string, fsx: ShellFs = nodeShellFs, cwd = repoRoot, referenceDirs: readonly string[] = []): string | null {
+  const written = path.resolve(cwd, expandHome(target, home))
+  // The standard streams are links into /proc (or a pty): writing to them leaves nothing behind.
+  if (/^\/dev\/(null|zero|stdout|stderr|tty|fd\/\d+)$/.test(written)) return null
+  const abs = fsx.realpath(written)
+  // A reference repository is read-only, whatever else would allow the write (the repository root being `/`, a scratch directory above it).
+  for (const dir of referenceDirs) {
+    const ref = fsx.realpath(dir)
+    if (abs === ref || abs.startsWith(ref.endsWith(path.sep) ? ref : ref + path.sep)) return `a write into a reference directory (${dir}), which is read-only`
+  }
   const root = fsx.realpath(repoRoot)
   const inside = abs === root || abs.startsWith(root.endsWith(path.sep) ? root : root + path.sep)
   if (inside) {
@@ -473,7 +549,7 @@ function readScript(file: string, ctx: Ctx): string | null {
 function nested(text: string, ctx: Ctx, why: string): ShellVerdict {
   if (ctx.depth >= MAX_DEPTH || ctx.budget.left <= 0) return label('a command nested too deep to judge')
   ctx.budget.left -= 1
-  const reads = bashSecretLabel(text, { home: ctx.scope.home, cwd: ctx.cwd })
+  const reads = bashSecretLabel(text, { home: ctx.scope.home, cwd: ctx.cwd, ...(ctx.fs.list ? { list: ctx.fs.list } : {}), real: ctx.fs.realpath })
   if (reads) return label(`${why}: ${reads}`, 'secret')
   const v = judge(text, { ...ctx, depth: ctx.depth + 1, vars: new Map(ctx.vars) })
   return v.risky ? { ...v, matched: `${why}: ${v.matched}` } : v
@@ -523,6 +599,246 @@ function makeTargets(c: Cmd, verb: string, args: string[]): string[] {
     default:
       return c.redirects.length ? [] : []
   }
+}
+
+// ------------------------------------------------------------------------------------------------ programs, listers, reference directories
+
+const inside = (target: string, dir: string, fsx: ShellFs): boolean => {
+  const root = fsx.realpath(dir)
+  return target === root || target.startsWith(root.endsWith(path.sep) ? root : root + path.sep)
+}
+const inReferenceDir = (target: string, ctx: Ctx): boolean => (ctx.scope.referenceDirs ?? []).some(dir => inside(ctx.fs.realpath(target), dir, ctx.fs))
+
+/** Where inline code may name a path without a person: the repository, a reference directory, the scratch directories and /tmp. Null when `literal` is not a path outside them. */
+function outsideRootsLabel(literal: string, ctx: Ctx): string | null {
+  if (ctx.scope.repoRoot === '/' || /\s/.test(literal)) return null
+  let abs: string
+  if (/^~(\/|$)/.test(literal) || /^\$\{?HOME\}?(\/|$)/.test(literal)) abs = expandHome(literal, ctx.scope.home)
+  else if (/^\/[^\s/]/.test(literal)) abs = literal
+  else if (/(^|\/)\.\.(\/|$)/.test(literal)) abs = path.resolve(ctx.cwd, literal)
+  else return null
+  abs = ctx.fs.realpath(abs)
+  if (isScratch(abs) || [ctx.scope.repoRoot, ...(ctx.scope.referenceDirs ?? []), ...(ctx.scope.scratchDirs ?? [])].some(dir => inside(abs, dir, ctx.fs))) return null
+  return `a path outside the repository named in inline code (${abs})`
+}
+
+/** Why a path named inside a program (an awk `getline < file`, a sed `r file`, a string of inline code) must be approved: a secret by the built-in classes or the configured patterns. */
+function literalSecretLabel(literal: string, ctx: Ctx): string | null {
+  if (!literal || literal.length > 4096) return null
+  return secretPathLabel(literal, { home: ctx.scope.home, cwd: ctx.cwd, ...(ctx.scope.patterns ? { patterns: ctx.scope.patterns } : {}) }, { wildcard: false })
+}
+
+/**
+ * Inline code (`node -e`, `python -c`, ...): its text is code, not a path, so nothing in it is matched as one (`x.key` is a property). What
+ * it names as a string is: a secret path, or a path outside the places a worker may read freely.
+ */
+function codeLiteralVerdict(code: string, ctx: Ctx): ShellVerdict | null {
+  for (const literal of stringLiterals(code)) {
+    // A string may hold a file name next to an open mode or a flag (`"<.env"`, `"cat .env"`): its pieces are judged as well.
+    for (const piece of new Set([literal, ...literal.split(/[\s<>|&;,=:()]+/)])) {
+      const secret = literalSecretLabel(piece, ctx)
+      if (secret) return label(secret, 'secret')
+    }
+    const outside = outsideRootsLabel(literal, ctx)
+    if (outside) return label(outside, 'secret')
+  }
+  return null
+}
+
+function judgeAwk(c: Cmd, verb: string, args: string[], ctx: Ctx): ShellVerdict | null {
+  const programs = [...patternWordIndexes(c.words)].map(k => c.words[k]!)
+  if (programs.length === 0) {
+    // The program comes from a file (`-f`): all that can be judged is the command line.
+    const danger = scriptDanger(args.join(' '))
+    return danger ? label(`${verb} program: ${danger}`) : null
+  }
+  // gawk's `-i inplace` rewrites the files it is given: they are written.
+  const inPlace = args.some((a, k) => (/^(-i|--include)$/.test(a) && /inplace/.test(args[k + 1] ?? '')) || /^(-i|--include=)\s*\S*inplace/.test(a))
+  if (inPlace) {
+    const skip = new Set(patternWordIndexes(c.words))
+    for (const [k, word] of c.words.entries()) {
+      if (k === 0 || skip.has(k) || word.startsWith('-') || /inplace/.test(word) && /^(-i|--include)$/.test(c.words[k - 1] ?? '') || /^(-F|-v|-l|-W)$/.test(c.words[k - 1] ?? '')) continue
+      const out = writeTargetLabel(word, ctx.scope.repoRoot, ctx.scope.home, ctx.fs, ctx.cwd, ctx.scope.referenceDirs)
+      if (out) return label(`${verb} -i inplace: ${out}`, out.startsWith('a write outside') ? 'outside_repo' : 'command')
+    }
+  }
+  for (const program of programs) {
+    const f = awkFacts(program)
+    if (f.system) return label(`${verb} program runs a command (system)`)
+    if (f.pipe) return label(`${verb} program pipes to or from a command`)
+    if (f.environ) return label(`${verb} program reads the environment (ENVIRON)`)
+    if (f.include) return label(`${verb} program loads code from another file`)
+    for (const r of f.redirects) {
+      if (r.target === null) {
+        if (inReferenceDir(ctx.cwd, ctx)) return label(`${verb} program writes a file named at run time inside a reference directory`)
+        continue
+      }
+      const secret = literalSecretLabel(r.target, ctx)
+      if (secret) return label(secret, 'secret')
+      const out = writeTargetLabel(r.target, ctx.scope.repoRoot, ctx.scope.home, ctx.fs, ctx.cwd, ctx.scope.referenceDirs)
+      if (out) return label(`${verb} program: ${out}`, out.startsWith('a write outside') ? 'outside_repo' : 'command')
+    }
+    for (const file of f.reads) {
+      const secret = file === null ? null : literalSecretLabel(file, ctx)
+      if (secret) return label(secret, 'secret')
+    }
+  }
+  return null
+}
+
+function judgeSed(c: Cmd, ctx: Ctx): ShellVerdict | null {
+  for (const k of patternWordIndexes(c.words)) {
+    const text = c.words[k]!.replace(/^--expression=/, '')
+    const f = sedFacts(text)
+    if (!f.parsed) {
+      // A script this reader does not understand is judged as plain text, as it always was.
+      const secret = bashSecretLabel(text, { home: ctx.scope.home, cwd: ctx.cwd, ...(ctx.scope.patterns ? { patterns: ctx.scope.patterns } : {}) })
+      if (secret) return label(secret, 'secret')
+      continue
+    }
+    if (f.exec) return label('sed runs a command (e)')
+    for (const file of f.writes) {
+      const secret = literalSecretLabel(file, ctx)
+      if (secret) return label(secret, 'secret')
+      const out = writeTargetLabel(file, ctx.scope.repoRoot, ctx.scope.home, ctx.fs, ctx.cwd, ctx.scope.referenceDirs)
+      if (out) return label(`sed: ${out}`, out.startsWith('a write outside') ? 'outside_repo' : 'command')
+    }
+    for (const file of f.reads) {
+      const secret = literalSecretLabel(file, ctx)
+      if (secret) return label(secret, 'secret')
+    }
+  }
+  return null
+}
+
+const LISTER_MS = 3000
+const LISTER_BYTES = 1_000_000
+const FIND_FORBIDDEN = new Set(['-exec', '-execdir', '-ok', '-okdir', '-delete', '-fprint', '-fprint0', '-fprintf', '-fls', '-files0-from'])
+const GIT_LS_FLAGS = new Set(['-c', '-o', '-m', '-d', '-s', '-z', '-t', '-v', '-k', '-u', '-i', '-co', '-oc', '--cached', '--others', '--deleted', '--modified', '--stage', '--exclude-standard', '--full-name', '--error-unmatch', '--directory', '--no-empty-directory', '--deduplicate', '--eol', '--unmerged', '--killed', '--ignored'])
+const WILDCARD = /[*?[]/
+
+/** The command line of a substitution that only lists paths (`find` without anything that deletes, runs or writes; `ls`; `git ls-files`), or null for anything else. */
+function listerArgv(words: string[]): string[] | null {
+  if (words.length === 0 || ASSIGN.test(words[0]!) || words.some(w => /[$\u0001]/.test(w))) return null
+  const verb = path.basename(words[0]!)
+  const args = words.slice(1)
+  if (verb === 'find') {
+    if (args.some(a => FIND_FORBIDDEN.has(a))) return null
+    // Start points come before the first predicate; a wildcard in one would be expanded by the shell, which this does not do.
+    let at = 0
+    while (at < args.length && (['-H', '-L', '-P'].includes(args[at]!) || /^-O\d?$/.test(args[at]!))) at += 1
+    const starts: string[] = []
+    while (at < args.length && !/^(-|\(|!)/.test(args[at]!)) starts.push(args[at++]!)
+    if (starts.some(a => WILDCARD.test(a))) return null
+    return ['find', ...args]
+  }
+  if (verb === 'ls') return args.some(a => WILDCARD.test(a)) ? null : ['ls', ...args]
+  if (verb === 'git' && args[0] === 'ls-files') {
+    const rest = args.slice(1)
+    if (rest.some(a => a !== '--' && a.startsWith('-') && !GIT_LS_FLAGS.has(a))) return null
+    return ['git', '-c', 'core.fsmonitor=false', 'ls-files', ...rest]
+  }
+  return null
+}
+
+/** A filter that can only drop or reorder lines, so what it lets through is part of what the lister printed. */
+function safeFilter(words: string[]): boolean {
+  const verb = path.basename(words[0] ?? '')
+  const args = words.slice(1)
+  if (verb === 'sort' || verb === 'uniq') return args.every(a => /^-[unrfbdisc]+$/.test(a))
+  if (verb !== 'head' && verb !== 'tail') return false
+  for (let k = 0; k < args.length; k += 1) {
+    const a = args[k]!
+    if (/^-\d+$/.test(a)) continue
+    if ((a === '-n' || a === '-c') && /^\d+$/.test(args[k + 1] ?? '')) k += 1
+    else return false
+  }
+  return true
+}
+
+/**
+ * The paths a command substitution prints, found by running it, when it is only a lister: one `find` (no -exec, -execdir, -ok, -okdir, -delete, -fprint*,
+ * -fls), `ls` or `git ls-files`, optionally through `sort`, `uniq`, `head` or `tail`, with nothing but `/dev/null` as a redirect and nothing built at run
+ * time inside. Run without a shell, for at most a few seconds and a megabyte, `ctx.listers` being what the whole call may spend. Null when the
+ * substitution is anything else, did not finish, or printed too much: the caller holds the command, as it always did.
+ */
+function listedPaths(body: string, ctx: Ctx): string[] | null {
+  const run = ctx.fs.run
+  if (!run || ctx.listers.left <= 0) return null
+  const inner: string[] = []
+  const cmds = parse(body, new Map(ctx.vars), inner)
+  if (inner.length > 0 || cmds.length < 1 || cmds.length > 3) return null
+  for (const [n, c] of cmds.entries()) {
+    if (c.heredoc !== undefined || c.dynamic.some(Boolean) || c.redirects.some(r => r.target !== '/dev/null')) return null
+    if (n > 0 && !(c.pipeIn && c.sepBefore === '|')) return null
+    if (n < cmds.length - 1 && c.sepAfter !== '|') return null
+  }
+  const argv = listerArgv(cmds[0]!.words)
+  if (!argv || !cmds.slice(1).every(c => safeFilter(c.words))) return null
+  const ms = Math.min(LISTER_MS, ctx.listers.until - Date.now())
+  if (ms < 100) return null
+  ctx.listers.left -= 1
+  const res = run(argv, ctx.cwd, ms, LISTER_BYTES)
+  if (!res || (argv[0] === 'git' ? res.status !== 0 : res.status > 2)) return null
+  const out = new Set<string>()
+  for (const line of res.stdout.includes('\0') ? res.stdout.split('\0') : res.stdout.split('\n')) {
+    const text = line.replace(/\r$/, '')
+    if (!text) continue
+    out.add(text)
+    // The shell splits an unquoted substitution at white space: each piece is a word of its own.
+    for (const part of text.split(/\s+/)) if (part) out.add(part)
+    if (out.size > MAX_GLOB_MATCHES) return null
+  }
+  return [...out]
+}
+
+/** One path a lister printed, judged as the word it becomes: a secret by the classes or patterns, itself, as an absolute path and where its links lead. Null when it cannot be judged. */
+function judgeListedPath(listed: string, ctx: Ctx): ShellVerdict | null {
+  const scope: SecretScope = { home: ctx.scope.home, cwd: ctx.cwd, ...(ctx.fs.list ? { list: ctx.fs.list } : {}), ...(ctx.scope.patterns ? { patterns: ctx.scope.patterns } : {}) }
+  // A name with a wildcard in it is expanded again by the shell: what it then matches is read too.
+  const paths = isGlobWord(listed) ? globMatches(listed, scope) : [listed]
+  if (paths === null) return null
+  for (const p of [listed, ...paths]) {
+    const abs = path.resolve(ctx.cwd, expandHome(p, ctx.scope.home))
+    for (const form of new Set([p, abs, ctx.fs.realpath(abs)])) {
+      const secret = secretPathLabel(form, scope, { wildcard: false })
+      if (secret) return label(secret, 'secret')
+    }
+  }
+  return { risky: false }
+}
+
+/**
+ * The paths that the command substitutions among the arguments of a command print, each found by running a plain lister (`listedPaths`).
+ * Empty when there is no substitution among the arguments; null when one of them is not a plain lister or did not finish.
+ */
+function substitutionPaths(c: Cmd, verbAt: number, ctx: Ctx): string[] | null {
+  const paths: string[] = []
+  for (let k = verbAt + 1; k < c.words.length; k += 1) {
+    if (c.dynamic[k] !== true) continue
+    const indexes = c.subIdx?.[k] ?? []
+    const body = indexes.length === 1 ? ctx.subs[indexes[0]!] : undefined
+    if (c.words[k] !== '\u0001' || body === undefined) return null
+    const listed = listedPaths(body, ctx)
+    if (listed === null) return null
+    paths.push(...listed)
+  }
+  return paths
+}
+
+/**
+ * A reader (`awk`, `sed`, `grep`, `cat`, ...) whose path arguments come from command substitutions. When each one is a plain lister, running it shows
+ * the files the reader will really be given, and they are judged like any other path. Null: something here cannot be judged, so the call is held.
+ */
+function judgeSubstitutedPaths(c: Cmd, verbAt: number, ctx: Ctx): ShellVerdict | null {
+  const paths = substitutionPaths(c, verbAt, ctx)
+  if (paths === null || paths.length === 0 && !c.dynamic.some(Boolean)) return null
+  for (const p of paths) {
+    const v = judgeListedPath(p, ctx)
+    if (v === null) return null
+    if (v.risky) return v
+  }
+  return { risky: false }
 }
 
 function judgeCmd(c: Cmd, ctx: Ctx): ShellVerdict {
@@ -610,7 +926,7 @@ function judgeCmd(c: Cmd, ctx: Ctx): ShellVerdict {
       if (mass) return label('xargs rm (deletes many files)')
       for (const p of o.pos) {
         if (/^(\.|\.\.|\*|\.\*|\.\/\*|~|\$HOME|\/)$/.test(p) || /\/\*$/.test(p)) return label(`rm of a whole directory (${p})`)
-        const out = writeTargetLabel(p, ctx.scope.repoRoot, ctx.scope.home, ctx.fs, ctx.cwd)
+        const out = writeTargetLabel(p, ctx.scope.repoRoot, ctx.scope.home, ctx.fs, ctx.cwd, ctx.scope.referenceDirs)
         if (out) return label(`rm: ${out}`, out.startsWith('a write outside') ? 'outside_repo' : 'command')
       }
       return { risky: false }
@@ -780,8 +1096,13 @@ function judgeCmd(c: Cmd, ctx: Ctx): ShellVerdict {
     case 'gawk':
     case 'mawk':
     case 'nawk': {
-      const danger = scriptDanger(args.join(' '))
-      if (danger) return label(`${verb} program: ${danger}`)
+      const v = judgeAwk(c, verb, args, ctx)
+      if (v) return v
+      break
+    }
+    case 'sed': {
+      const v = judgeSed(c, ctx)
+      if (v) return v
       break
     }
     case 'tar':
@@ -881,13 +1202,16 @@ function judgeCmd(c: Cmd, ctx: Ctx): ShellVerdict {
   const targets = makeTargets(c, verb, args)
   for (const t of targets) {
     if (!t) continue
-    const out = writeTargetLabel(t, ctx.scope.repoRoot, ctx.scope.home, ctx.fs, ctx.cwd)
+    const out = writeTargetLabel(t, ctx.scope.repoRoot, ctx.scope.home, ctx.fs, ctx.cwd, ctx.scope.referenceDirs)
     if (out) return label(`${verb}: ${out}`, out.startsWith('a write outside') ? 'outside_repo' : 'command')
   }
 
   // ---- readers must not be pointed at a path built at run time
   if (READERS.has(verb) && dynArgs.some(Boolean) && vi('SAFE') === undefined) {
-    return label(`${verb} of a path built at run time (cannot be judged)`, 'secret')
+    // A reader whose paths come from plain listers (`awk ... $(find . -name '*.ts')`) is judged by the paths they print.
+    const listed = readsOnly(words, i) ? judgeSubstitutedPaths(c, i, ctx) : null
+    if (listed === null) return label(`${verb} of a path built at run time (cannot be judged)`, 'secret')
+    if (listed.risky) return listed
   }
   void raw
   return { risky: false }
@@ -903,7 +1227,7 @@ function redirectVerdict(c: Cmd, ctx: Ctx): ShellVerdict {
       continue
     }
     if (/^\u0001/.test(r.target) || r.target.includes('\u0001')) return label('a redirect to a path built at run time', 'outside_repo')
-    const out = writeTargetLabel(r.target, ctx.scope.repoRoot, ctx.scope.home, ctx.fs, ctx.cwd)
+    const out = writeTargetLabel(r.target, ctx.scope.repoRoot, ctx.scope.home, ctx.fs, ctx.cwd, ctx.scope.referenceDirs)
     if (out) return label(`redirect: ${out}`, out.startsWith('a write outside') ? 'outside_repo' : 'command')
   }
   return { risky: false }
@@ -911,6 +1235,9 @@ function redirectVerdict(c: Cmd, ctx: Ctx): ShellVerdict {
 
 function judgeGit(args: string[], ctx: Ctx): ShellVerdict {
   let i = 0
+  // Where git will really work: the directory of `-C`, `--git-dir` and `--work-tree`, else the working directory.
+  let workDir = ctx.cwd
+  const otherDirs: string[] = []
   while (i < args.length && args[i]!.startsWith('-')) {
     const a = args[i]!
     const name = a.split('=')[0]!
@@ -918,10 +1245,21 @@ function judgeGit(args: string[], ctx: Ctx): ShellVerdict {
       const value = a.includes('=') && name !== '-c' ? a.slice(a.indexOf('=') + 1) : args[i + 1] ?? ''
       if (GIT_RISKY_CONFIG.test(value)) return label(`git -c ${value.split('=')[0]} (a setting that can run commands or redirect traffic)`)
       i += name === '-c' ? 2 : 1
-    } else if (GIT_VALUE_OPTIONS.has(name) && !a.includes('=')) i += 2
-    else i += 1
+    } else if (GIT_VALUE_OPTIONS.has(name) && !a.includes('=')) {
+      const value = args[i + 1] ?? '.'
+      if (name === '-C') workDir = path.resolve(workDir, expandHome(value, ctx.scope.home))
+      else if (name === '--git-dir' || name === '--work-tree') otherDirs.push(path.resolve(ctx.cwd, expandHome(value, ctx.scope.home)))
+      i += 2
+    } else {
+      if ((name === '--git-dir' || name === '--work-tree') && a.includes('=')) otherDirs.push(path.resolve(ctx.cwd, expandHome(a.slice(a.indexOf('=') + 1), ctx.scope.home)))
+      i += 1
+    }
   }
   const sub = args[i] ?? ''
+  // A reference repository is read-only: git may look at it (log, show, diff, blame, ...) and may not change it (checkout, pull, commit, ...).
+  if (sub !== '' && (ctx.scope.referenceDirs?.length ?? 0) > 0 && !READ_ONLY_GIT.has(sub) && [workDir, ...otherDirs].some(d => inReferenceDir(d, ctx))) {
+    return label(`git ${sub} in a reference directory, which is read-only`)
+  }
   const rest = args.slice(i + 1)
   const o = options(rest)
   const has = (...f: string[]) => f.some(x => o.short.has(x.replace(/^-/, '')) || o.long.has(x))
@@ -1116,9 +1454,8 @@ function judgeScriptRun(verb: string, raw: string, args: string[], c: Cmd, ctx: 
     if (isShell) return nested(code, ctx, `${verb} -c`)
     const danger = scriptDanger(code)
     if (danger) return label(`${verb} inline code: ${danger}`)
-    const secret = bashSecretLabel(code.replace(/[()]/g, ' ').replace(/['"]/g, ' '), { home: ctx.scope.home, cwd: ctx.cwd })
-    if (secret) return label(secret, 'secret')
-    return { risky: false }
+    // The code is not a path; what it names as a string is.
+    return codeLiteralVerdict(code, ctx) ?? { risky: false }
   }
   // A script file.
   let file: string | undefined
@@ -1185,6 +1522,7 @@ function judge(text: string, ctx: Ctx): ShellVerdict {
   if (text.length > MAX_COMMAND) return label('a command too long to judge')
   const subs: string[] = []
   const cmds = parse(text, ctx.vars, subs)
+  ctx = { ...ctx, subs }
   collectWrites(cmds, ctx)
   for (const c of cmds) {
     // `cd` is followed so relative paths are read where the command will run.
@@ -1208,7 +1546,7 @@ function judge(text: string, ctx: Ctx): ShellVerdict {
 
 /** Why this Bash command must be approved by a person, or `{risky:false}`. Pure apart from reading the scripts the command runs. */
 export function bashRisk(command: string, scope: ShellScope): ShellVerdict {
-  const ctx: Ctx = { scope, fs: scope.fs ?? nodeShellFs, cwd: path.resolve(scope.cwd), vars: new Map(), depth: 0, written: new Map(), budget: { left: 200 } }
+  const ctx: Ctx = { scope, fs: scope.fs ?? nodeShellFs, cwd: path.resolve(scope.cwd), vars: new Map(), depth: 0, written: new Map(), budget: { left: 200 }, subs: [], listers: { left: 4, until: Date.now() + 4500 } }
   // The text of the command is judged as a whole first: secret variables and process environments need no parsing.
   if (SECRET_VAR.test(command)) return label(`the value of a secret-named variable (${SECRET_VAR.exec(command)![0]})`, 'secret')
   if (SQL_DANGER.test(command) && /\b(psql|mysql|mariadb|sqlite3?|mongosh?|redis-cli|cqlsh|clickhouse-client|duckdb)\b/i.test(command)) return label('a destructive SQL or database statement')
@@ -1218,4 +1556,182 @@ export function bashRisk(command: string, scope: ShellScope): ShellVerdict {
   } catch {
     return label('a command the reader could not parse')
   }
+}
+
+// ------------------------------------------------------------------------------------------------ the read-only plan
+
+export type ReadPlan = { readOnly: true; targets: string[]; recursive: string[] } | { readOnly: false; why: string }
+
+const PLAN_READERS = new Set(['cat', 'head', 'tail', 'nl', 'tac', 'wc', 'ls', 'stat', 'file', 'du', 'grep', 'egrep', 'fgrep', 'rg', 'sed', 'awk', 'gawk', 'mawk', 'nawk', 'find', 'git'])
+const PLAN_GIT_REFUSED = new Set(['diff-tree', 'name-rev', 'merge-base'])
+/** Options that make a reader do more than read: run a program, follow a file for ever, read a list of files from another file. */
+const PLAN_REFUSED_OPTIONS: Record<string, RegExp> = {
+  rg: /^(--pre|--pre-glob|--search-zip|-z|--hostname-bin)(=|$)/,
+  wc: /^--files0-from(=|$)/,
+  du: /^--files0-from(=|$)/,
+  file: /^(-f|--files-from)(=|$)/,
+  tail: /^(-f|-F|--follow|--pid)(=|$)/,
+  sed: /^(-f|--file|-i|--in-place)(=|$)/,
+  awk: /^(-f|--file|-E|-i|--include|-l|--load|--exec)(=|$)/,
+  git: /^(--output|--ext-diff|--textconv|--no-index|--open-files-in-pager|--exec-path|-O)/,
+}
+for (const alias of ['gawk', 'mawk', 'nawk']) PLAN_REFUSED_OPTIONS[alias] = PLAN_REFUSED_OPTIONS.awk!
+
+/**
+ * Does this command only read, and which paths does it read? A strict recogniser, the opposite of the guard's "hold what is risky": only
+ * `cat head tail nl tac wc ls stat file du grep egrep fgrep rg sed awk find git log|show|diff|blame|...` are known, joined by `;` `&&` `||` `|`, with
+ * `cd`, `pwd`, `sort` and `uniq` (flags only); no `-i`, no redirect except into /dev/null, no program file (`-f`), nothing that runs a command (`find
+ * -exec`, `awk system`, `sed e`), nothing built at run time except a plain lister (`$(find ...)`), a wildcard that resolves. `targets` are the absolute
+ * paths the command names (wildcards and listers resolved, `cd` followed; links are not followed here); `recursive` are the ones a search walks into.
+ * Any doubt is `readOnly: false`. Foreman uses it to allow, by itself, a read that cloudcli held for a reason that was never a secret.
+ */
+// Consumed by `src/tasks/read-allow.ts`, and by the tests.
+export function readOnlyPlan(command: string, scope: ShellScope): ReadPlan {
+  const no = (why: string): ReadPlan => ({ readOnly: false, why })
+  if (command.length > 20_000) return no('the command is too long to judge')
+  const fsx = scope.fs ?? nodeShellFs
+  const subs: string[] = []
+  let cmds: Cmd[]
+  try {
+    cmds = parse(command, new Map(), subs)
+  } catch {
+    return no('the command could not be read')
+  }
+  if (cmds.length === 0) return no('there is no command')
+  let ctx: Ctx = { scope, fs: fsx, cwd: path.resolve(scope.cwd), vars: new Map(), depth: 0, written: new Map(), budget: { left: 200 }, subs, listers: { left: 4, until: Date.now() + 4500 } }
+  const targets = new Set<string>()
+  const recursive = new Set<string>()
+  const add = (p: string, walks = false) => {
+    const abs = path.resolve(ctx.cwd, expandHome(p, scope.home))
+    targets.add(abs)
+    if (walks) recursive.add(abs)
+  }
+  const wildcards = (): SecretScope => ({ home: scope.home, cwd: ctx.cwd, ...(fsx.list ? { list: fsx.list } : {}) })
+
+  for (const c of cmds) {
+    if (c.sepAfter === '&') return no('a command run in the background')
+    if (c.heredoc !== undefined) return no('a here-document')
+    for (const r of c.redirects) {
+      if (r.op === '<' && !/[\u0001*?[]/.test(r.target)) add(r.target)
+      else if (r.op !== '<' && r.op !== '<<' && r.op !== '<<<' && r.target === '/dev/null') continue
+      else return no(`a redirect (${r.op} ${r.target})`)
+    }
+    const words = c.words
+    if (words.length === 0) continue
+    if (ASSIGN.test(words[0]!) || RESERVED.has(words[0]!) || c.dynamic[0]) return no('a command that starts with an assignment, a keyword or a run-time name')
+    const verb = path.basename(words[0]!)
+    const args = words.slice(1)
+    if (verb === 'pwd') continue
+    if (verb === 'cd') {
+      const dest = args[0] ?? ''
+      if (args.length !== 1 || dest.startsWith('-') || c.dynamic[1] || /[$\u0001*?[]/.test(dest.replace(/^\$\{?HOME\}?(?=\/|$)/, ''))) return no('a cd to a place that cannot be judged')
+      add(dest)
+      ctx = { ...ctx, cwd: path.resolve(ctx.cwd, expandHome(dest, scope.home)) }
+      continue
+    }
+    if (verb === 'sort' || verb === 'uniq') {
+      if (!args.every(a => /^-[unrfbdisc]+$/.test(a))) return no(`${verb} with an operand`)
+      continue
+    }
+    if (!PLAN_READERS.has(verb) || path.basename(words[0]!) !== words[0]) return no(`${verb} is not a command that only reads`)
+    if (!readsOnly(words, 0)) return no(`${verb} in a form that is not read-only`)
+    const refused = PLAN_REFUSED_OPTIONS[verb]
+    if (refused && args.some(a => refused.test(a))) return no(`${verb} with an option that does more than read`)
+    const literal = patternWordIndexes(words)
+    let walks = verb === 'rg' || verb === 'du'
+    let operandsFrom = 1
+
+    if (verb === 'find') {
+      if (args.some(a => FIND_FORBIDDEN.has(a))) return no('find with an action that runs, deletes or writes')
+    } else if (verb === 'awk' || verb === 'gawk' || verb === 'mawk' || verb === 'nawk') {
+      if (literal.size === 0) return no('an awk program that is not on the command line')
+      for (const k of literal) {
+        const f = awkFacts(words[k]!)
+        if (f.system || f.pipe || f.environ || f.include || f.redirects.length > 0 || f.reads.includes(null)) return no('an awk program that runs a command, writes, or reads a file named at run time')
+        for (const file of f.reads) if (file !== null) add(file)
+      }
+    } else if (verb === 'sed') {
+      if (literal.size === 0) return no('a sed script that is not on the command line')
+      for (const k of literal) {
+        const f = sedFacts(words[k]!.replace(/^--expression=/, ''))
+        if (!f.parsed || f.exec || f.writes.length > 0) return no('a sed script that runs a command, writes, or is not understood')
+        for (const file of f.reads) add(file)
+      }
+    } else if (verb === 'git') {
+      const sub = gitSubcommand(args)
+      if (!READ_ONLY_GIT.has(sub) || PLAN_GIT_REFUSED.has(sub)) return no(`git ${sub} is not a plain read`)
+      let k = 0
+      while (k < args.length && args[k]!.startsWith('-')) {
+        const name = args[k]!.split('=')[0]!
+        if (name === '-C' && !args[k]!.includes('=')) {
+          const dest = args[k + 1] ?? '.'
+          if (c.dynamic[k + 2] || /[$*?[\u0001]/.test(dest)) return no('git -C to a place that cannot be judged')
+          add(dest)
+          ctx = { ...ctx, cwd: path.resolve(ctx.cwd, expandHome(dest, scope.home)) }
+          k += 2
+        } else if (GIT_VALUE_OPTIONS.has(name)) return no(`git ${name}`)
+        else k += 1
+      }
+      operandsFrom = k + 2
+      add('.')
+    } else if (verb === 'ls') {
+      walks = args.some(a => /^-[A-Za-z]*R/.test(a) || a === '--recursive')
+    } else if (verb === 'grep' || verb === 'egrep' || verb === 'fgrep') {
+      walks = args.some(a => /^-[A-Za-z]*[rR]/.test(a) || a === '--recursive' || a === '--dereference-recursive' || a === '--directories=recurse')
+    }
+
+    // The operands: what the substitutions print, and every other word that is not an option and not program text.
+    const listed = substitutionPaths(c, 0, ctx)
+    if (listed === null) return no('a path built from something other than a plain lister')
+    let operands = 0
+    for (const p of listed) {
+      const v = judgeListedPath(p, ctx)
+      if (v === null) return no('a listed path that cannot be judged')
+      if (v.risky) return no(v.matched)
+      add(p, walks)
+      operands += 1
+    }
+    for (const [k, word] of words.entries()) {
+      if (k < operandsFrom || literal.has(k) || c.dynamic[k] || word.startsWith('-')) continue
+      if (verb === 'find' && /^(\(|\)|!|-o|-a)$/.test(word)) continue
+      if (/\$/.test(word.replace(/^\$\{?HOME\}?(?=\/|$)/, ''))) return no(`a word with a variable in it (${word})`)
+      if (/^~[^/]/.test(word)) return no(`a word that names another user's home (${word})`)
+      operands += 1
+      if (isGlobWord(word)) {
+        const matches = globMatches(word, wildcards())
+        if (matches === null) return no(`a wildcard that cannot be resolved (${word})`)
+        for (const m of matches) add(m, walks)
+        continue
+      }
+      // `rev:path` of git, `--flag=value`, `user@host:path`: every form a path can take inside one word is judged.
+      for (const form of pathCandidates(word)) add(form)
+      add(word, walks)
+    }
+    if (operands === 0 && (verb === 'find' || verb === 'ls' || verb === 'du' || walks)) add('.', walks)
+  }
+  if (targets.size === 0) return no('the command names no file')
+  return { readOnly: true, targets: [...targets], recursive: [...recursive] }
+}
+
+/** The first secret below `dir` (by the classes and `scope.patterns`), or `too-big` when it cannot be searched in full, or null. `.git` and `node_modules` are not entered. */
+export function secretBelow(dir: string, scope: SecretScope, fsx: ShellFs = nodeShellFs, limit = 20_000): { secret: string } | { tooBig: true } | null {
+  const list = fsx.list
+  if (!list) return { tooBig: true }
+  const stack = [path.resolve(dir)]
+  let seen = 0
+  while (stack.length > 0) {
+    const current = stack.pop()!
+    const entries = list(current)
+    if (entries === null) return { tooBig: true }
+    for (const entry of entries) {
+      seen += 1
+      if (seen > limit) return { tooBig: true }
+      const p = path.join(current, entry.name)
+      const secret = secretPathLabel(p, scope, { wildcard: false })
+      if (secret) return { secret: `${secret} (${p})` }
+      // Links are not walked: a search does not follow them, and one may lead anywhere.
+      if (entry.dir && entry.name !== '.git' && entry.name !== 'node_modules' && fsx.realpath(p) === path.join(fsx.realpath(current), entry.name)) stack.push(p)
+    }
+  }
+  return null
 }

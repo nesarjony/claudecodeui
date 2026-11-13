@@ -708,3 +708,113 @@ test('ensureAllowWriteDirs makes the missing directories (mode 0700), leaves exi
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------------------------
+// referenceDirs: other repositories the session reads and never writes (the donor repos of a parity task)
+// ---------------------------------------------------------------------------------------------
+
+test('referenceDirs: read freely (secrets excepted), every write into one is held, in whatever way it is spelled', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'fm-guard-ref-'));
+  try {
+    const repo = path.join(root, 'repo');
+    const donor = path.join(root, 'donor');
+    const home = path.join(root, 'home');
+    for (const d of [repo, path.join(donor, 'internal/ws'), path.join(donor, 'cmd'), path.join(donor, 'frontend'), home]) {
+      mkdirSync(d, { recursive: true });
+    }
+    writeFileSync(path.join(donor, 'internal/ws/ws.go'), 'package ws');
+    writeFileSync(path.join(donor, 'cmd/conversation.go'), 'package main');
+    writeFileSync(path.join(donor, 'frontend/.env'), 'X=1');
+    const g = compileGuard(config({ referenceDirs: [donor, 'relative/dir', '/'], repoRoot: repo, writeOutsideRepo: false }), repo, { home });
+    assert.deepEqual(g.referenceDirs, [donor]);
+    const run = (command: string) => classifyToolUse(bash(command), g);
+
+    for (const command of [
+      `cat ${donor}/cmd/conversation.go | head -3`,
+      `sed -n 1,40p ${donor}/cmd/conversation.go`,
+      `cd ${donor}; awk '/type .*Hub.* struct/{print FILENAME":"FNR": "$0}' internal/ws/*.go | head`,
+      `git -C ${donor} log --oneline -n 5`,
+      `grep -rn Hub ${donor}/internal`,
+      `find ${donor} -name '*.go'`,
+    ]) {
+      assert.deepEqual(run(command), { risky: false }, command);
+    }
+    for (const command of [`cat ${donor}/frontend/.env`, `cd ${donor}/frontend; cat .en*`, `cd ${donor}/frontend; cat *`]) {
+      const v = run(command);
+      assert.equal(v.risky && v.category, 'secret', command);
+    }
+    for (const command of [
+      `echo x > ${donor}/notes.md`,
+      `cd ${donor}/cmd && echo x > new.go`,
+      `cp ${repo}/a ${donor}/internal/ws/x.go`,
+      `sed -i s/a/b/ ${donor}/cmd/conversation.go`,
+      `touch ${donor}/x`,
+      `git -C ${donor} pull`,
+      `cd ${donor}; git commit -m x`,
+      `cd ${donor}; awk '{print > "out.txt"}' cmd/conversation.go`,
+    ]) {
+      const v = run(command);
+      // Writes outside the repo are not held in this guard (writeOutsideRepo is false): only the reference directory holds them.
+      assert.equal(v.risky && v.category, 'command', command);
+      assert.match(v.risky ? v.matched : '', /reference director|reference repo|in a reference/, command);
+    }
+    for (const toolName of ['Write', 'Edit', 'MultiEdit', 'NotebookEdit']) {
+      const v = classifyToolUse({ toolName, input: { file_path: path.join(donor, 'cmd/conversation.go'), content: 'x' } }, g);
+      assert.equal(v.risky && v.category, 'command', toolName);
+    }
+    assert.deepEqual(classifyToolUse({ toolName: 'Read', input: { file_path: path.join(donor, 'cmd/conversation.go') } }, g), { risky: false });
+    assert.deepEqual(classifyToolUse({ toolName: 'Write', input: { file_path: path.join(repo, 'new.ts'), content: 'x' } }, g), { risky: false });
+    // The tool policy asks, with the category the hold carries.
+    const policy = createToolPolicy(g);
+    assert.equal(policy('Write', { file_path: path.join(donor, 'cmd/new.go'), content: 'x' }).decision, 'ask');
+    assert.deepEqual(policy('Bash', { command: `cat ${donor}/cmd/conversation.go` }), { decision: 'allow' });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('referenceDirs: a find in a command substitution is run and judged by what it prints; a program is not a path', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'fm-guard-subst-'));
+  try {
+    const repo = path.join(root, 'repo');
+    mkdirSync(path.join(repo, 'src'), { recursive: true });
+    writeFileSync(path.join(repo, 'src/a.ts'), 'sidebarCounts');
+    writeFileSync(path.join(repo, 'src/b.tsx'), 'x');
+    const g = compileGuard(config({ repoRoot: repo }), repo, { home: path.join(root, 'home') });
+    const run = (command: string) => classifyToolUse(bash(command), g);
+    // The live desk command: a plain find in a substitution.
+    assert.deepEqual(run(`cd ${repo}/src; awk '/sidebar-counts|sidebarCounts/{print FILENAME":"FNR": "$0}' $(find . -name '*.ts' -o -name '*.tsx') | head`), { risky: false });
+    // The live libredesk command: .* in an awk regular expression is not a wildcard.
+    assert.deepEqual(run(`awk '/type .*Draft.* struct/{p=1} p{print FILENAME":"FNR": "$0} p&&/^}/{p=0}' ${repo}/src/a.ts | head -30`), { risky: false });
+    writeFileSync(path.join(repo, 'src/.env'), 'X=1');
+    const planted = run(`cd ${repo}/src; awk 1 $(find . -type f)`);
+    assert.equal(planted.risky && planted.category, 'secret');
+    for (const command of [
+      `cd ${repo}/src; cat $(find . -name '*.ts' -exec rm {} +)`,
+      `cd ${repo}/src; cat $(find . -fprint ${root}/list)`,
+      `cd ${repo}/src; cat $(cat list.txt)`,
+      `cd ${repo}/src; cat $(echo a.ts)`,
+    ]) {
+      assert.equal(run(command).risky, true, command);
+    }
+    // A key or secret file named as an argument is held; a `.key` property in the code of node -e is not a key file.
+    assert.equal(run('cat server.key').risky, true);
+    assert.deepEqual(run(`cd ${repo}; node -e "const b=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'));console.log(b.batches.map(x=>x.key))" src/a.ts`), { risky: false });
+    assert.equal(run(`cd ${repo}; node -e "require('fs').writeFileSync('x','y')"`).risky, true);
+    assert.equal(run(`cd ${repo}; node -e "require('child_process').execSync('id')"`).risky, true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('parseGuardConfig: referenceDirs must be a short list of absolute paths other than /, and is optional', () => {
+  const body = { enabled: true, riskyPatterns: [], secretPatterns: [] };
+  assert.equal(parseGuardConfig(body)?.referenceDirs, undefined);
+  assert.deepEqual(parseGuardConfig({ ...body, referenceDirs: ['/mnt/dev/moveon/libredesk', ' /mnt/dev/moveon/chatwoot '] })?.referenceDirs, ['/mnt/dev/moveon/libredesk', '/mnt/dev/moveon/chatwoot']);
+  for (const bad of ['/mnt/x', ['relative'], ['/'], [1], Array.from({ length: 21 }, (_, i) => `/mnt/${i}`)]) {
+    assert.throws(() => parseGuardConfig({ ...body, referenceDirs: bad }), (error: unknown) => error instanceof AppError && error.statusCode === 400, JSON.stringify(bad));
+  }
+  assert.equal(parseGuardConfig({ enabled: false, referenceDirs: ['/mnt/x'] })?.referenceDirs, undefined);
+  // A guard started by an older Foreman (no field) compiles with none.
+  assert.deepEqual(guard().referenceDirs, []);
+});
