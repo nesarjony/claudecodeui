@@ -187,7 +187,16 @@ export function createForemanModule() {
     worktrees: createForemanWorktreesService({
       projects: {
         getProjectByPath: (projectPath) => projectsDb.getProjectPath(projectPath),
-        createProject: (input) => createProject(input),
+        // The path is one the worktree service computed itself, inside its worktrees directory next to a project cloudcli already
+        // knows. The workspace-root rule (paths under the user's home) is meant for a path a person types: applied here it would
+        // refuse every worktree of a repository that lives outside the home directory (/mnt/dev/...).
+        createProject: (input) =>
+          createProject(input, {
+            validatePath: async (projectPath) => ({ valid: true, resolvedPath: projectPath }),
+            ensureWorkspaceDirectory: async () => undefined,
+            persistProjectPath: (projectPath, customName) => projectsDb.createProjectPath(projectPath, customName),
+            getProjectByPath: (projectPath) => projectsDb.getProjectPath(projectPath),
+          }),
         restoreProject: (projectId) => restoreArchivedProject(projectId),
         archiveProject: (projectId) => deleteOrArchiveProject(projectId, false),
       },
