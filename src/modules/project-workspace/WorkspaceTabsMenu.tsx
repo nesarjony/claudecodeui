@@ -2,8 +2,9 @@ import { useEffect, useRef, useState } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
-import { ArrowLeft, Folder, GitBranch, MessageSquare, MoreHorizontal, Terminal } from 'lucide-react';
+import { ArrowLeft, Folder, GitBranch, HardHat, MessageSquare, MoreHorizontal, Terminal } from 'lucide-react';
 
+import { FOREMAN_TAB_LABEL_KEY } from '@/modules/foreman';
 import type { AppTab } from '@/shared/types';
 
 type WorkspaceTabsMenuProps = {
@@ -16,6 +17,7 @@ const VIEWS: Array<{ id: AppTab; labelKey: string; icon: typeof MessageSquare }>
   { id: 'shell', labelKey: 'tabs.shell', icon: Terminal },
   { id: 'files', labelKey: 'tabs.files', icon: Folder },
   { id: 'git', labelKey: 'tabs.git', icon: GitBranch },
+  { id: 'foreman', labelKey: FOREMAN_TAB_LABEL_KEY, icon: HardHat },
 ];
 
 const MENU_WIDTH_PX = 192;
@@ -84,7 +86,7 @@ export default function WorkspaceTabsMenu({ activeTab, setActiveTab }: Workspace
         aria-label={t('tabs.views', { defaultValue: 'Workspace views' })}
         aria-haspopup="menu"
         aria-expanded={open}
-        title="Shell, files and source control"
+        title="Shell, files, source control and Foreman"
         className={`flex h-8 w-8 items-center justify-center rounded-lg transition hover:bg-muted hover:text-foreground ${
           open ? 'bg-muted text-foreground' : 'text-muted-foreground'
         }`}

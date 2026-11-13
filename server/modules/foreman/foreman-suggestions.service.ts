@@ -142,7 +142,7 @@ type ForemanSuggestionsClientDependencies = {
 };
 
 /** Foreman's origin: the explicit value, else `FOREMAN_URL`, else the origin of `FOREMAN_EVENTS_URL`, else Foreman's local address. */
-// Consumed by the suggestions client below and by the runtime hooks service, which call the same Foreman.
+// Consumed by the suggestions client below, the runtime hooks service and the Foreman tab client (foreman-tab.service.ts), which all call the same Foreman.
 export function resolveForemanBaseUrl(explicit: string | undefined): string {
   if (explicit) {
     return explicit.replace(/\/+$/, '');

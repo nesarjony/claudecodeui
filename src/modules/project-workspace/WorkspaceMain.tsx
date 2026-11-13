@@ -4,6 +4,7 @@ import { ChatInterface } from '@/modules/chat';
 import { FileTree } from '@/modules/file-tree';
 import { StandaloneShell } from '@/modules/standalone-shell';
 import { GitPanel } from '@/modules/git-panel';
+import { ForemanPanel } from '@/modules/foreman';
 import { PluginTabContent } from '@/modules/plugins';
 import { BrowserUsePanel, useBrowserUseEnabled } from '@/modules/browser-use';
 import { usePaletteOpsRegister } from '@/modules/command-palette';
@@ -116,6 +117,12 @@ function WorkspaceMain({
     handleFileOpen(filePath);
   }, [handleFileOpen, setActiveTab]);
 
+  // The Foreman tab's session links open that session's chat.
+  const openForemanSession = useCallback((sessionId: string) => {
+    onNavigateToSession(sessionId);
+    setActiveTab('chat');
+  }, [onNavigateToSession, setActiveTab]);
+
   // Opens the editor side panel in place, keeping the current tab (e.g. chat).
   const openFileInEditor = useCallback((filePath: string) => {
     resolvedFileOpen(filePath);
@@ -207,6 +214,12 @@ function WorkspaceMain({
           {shouldShowBrowserTab && activeTab === 'browser' && (
             <div className="h-full overflow-hidden">
               <BrowserUsePanel isVisible={activeTab === 'browser'} onShowSettings={onShowSettings} />
+            </div>
+          )}
+
+          {activeTab === 'foreman' && (
+            <div className="h-full overflow-hidden">
+              <ForemanPanel isVisible={activeTab === 'foreman'} onOpenSession={openForemanSession} />
             </div>
           )}
 
