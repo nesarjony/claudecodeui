@@ -307,6 +307,35 @@ test('refusal from the structured notices carries category, request id and model
   assert.equal(fallback?.data.fallback, true);
   assert.equal(fallback?.data.fallbackModel, 'b');
   assert.equal(fallback?.data.category, null);
+
+  // The whole payload of a fallback notice, as the real CLI shapes it.
+  const full = translate({
+    ...base,
+    kind: 'system_message',
+    message: {
+      subtype: 'model_refusal_fallback',
+      trigger: 'refusal',
+      direction: 'retry',
+      scope: 'session',
+      original_model: 'claude-opus-5-5',
+      fallback_model: 'claude-sonnet-5-5',
+      request_id: 'req_9',
+      api_refusal_category: 'reasoning_extraction',
+      api_refusal_explanation: 'Blocked.',
+    },
+  });
+  assert.equal(full?.type, 'refusal');
+  assert.deepEqual(full?.data, {
+    ...COMMON,
+    source: 'model_refusal_fallback',
+    fallback: true,
+    originalModel: 'claude-opus-5-5',
+    fallbackModel: 'claude-sonnet-5-5',
+    scope: 'session',
+    requestId: 'req_9',
+    category: 'reasoning_extraction',
+    explanation: 'Blocked.',
+  });
 });
 
 test('compact_boundary carries the trigger and the sizes before and after', () => {
@@ -718,6 +747,37 @@ test('one refusal is reported once even when two signals describe it', async () 
       ['refusal', 'sess-2'],
       ['refusal', 'sess-1'],
     ]);
+  });
+});
+
+test('a fallback notice is reported even when the refused message was reported just before it, and then folds later signals in', async () => {
+  await withToken('t', async (tokenFile) => {
+    const sent: ForemanEvent[] = [];
+    const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => {
+      sent.push(JSON.parse(String(init?.body)) as ForemanEvent);
+      return new Response(null, { status: 204 });
+    }) as typeof fetch;
+    let clock = NOW.getTime();
+    const pusher = createForemanEventPusher({ tokenFile, fetchImpl, describeSession, now: () => new Date(clock) });
+
+    pusher.handle({ ...base, kind: 'assistant_refusal', message: { message: { model: 'claude-opus-5-5', stop_details: { category: 'reasoning_extraction' } } } });
+    clock += 1000;
+    pusher.handle({
+      ...base,
+      kind: 'system_message',
+      message: { subtype: 'model_refusal_fallback', original_model: 'claude-opus-5-5', fallback_model: 'claude-sonnet-5-5', scope: 'session', api_refusal_category: 'reasoning_extraction' },
+    });
+    // Anything else about the same refusal after the notice is folded into it, as before.
+    clock += 1000;
+    pusher.handle({ ...base, kind: 'system_message', message: { subtype: 'model_refusal_no_fallback', api_refusal_category: 'reasoning_extraction' } });
+    await pusher.whenIdle();
+
+    assert.deepEqual(sent.map((event) => [event.type, event.data.source, event.data.fallback]), [
+      ['refusal', 'stop_reason', undefined],
+      ['refusal', 'model_refusal_fallback', true],
+    ]);
+    assert.equal(sent[1]!.data.originalModel, 'claude-opus-5-5');
+    assert.equal(sent[1]!.data.fallbackModel, 'claude-sonnet-5-5');
   });
 });
 
