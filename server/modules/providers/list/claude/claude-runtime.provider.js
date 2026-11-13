@@ -151,6 +151,9 @@ const BG_SETTLE_GRACE_MS = 2 * 60 * 1000;
 
 const TOOLS_REQUIRING_INTERACTION = new Set(['AskUserQuestion', 'ExitPlanMode']);
 
+// What a guarded run is told when it uses a tool only a person can answer and its policy gave no reason of its own.
+const UNATTENDED_DENIAL_FALLBACK = 'No person is available to answer this tool call in this session, because it runs unattended. Do not use this tool: carry out the work directly.';
+
 // Ultracode is a session-scoped setting rather than an SDK effort level: it pairs xhigh
 // effort with standing dynamic-workflow orchestration, and the CLI only honours it when
 // Workflows are enabled. The catalog offers it as an effort choice for the picker, so the
@@ -198,7 +201,7 @@ function createRequestId() {
 }
 
 // Asks a host-supplied per-session tool policy (`options.toolPolicy`, set by the Foreman bridge) about one tool call.
-// It answers `{ decision: 'allow' }` or `{ decision: 'ask', category, timeoutMs?, timeoutMessage? }`; null means no policy.
+// It answers `{ decision: 'allow' }`, `{ decision: 'deny', message }` or `{ decision: 'ask', category, timeoutMs?, timeoutMessage? }`; null means no policy.
 // A throwing policy asks.
 function consultToolPolicy(policy, toolName, input) {
   if (typeof policy !== 'function') return null;
@@ -208,6 +211,13 @@ function consultToolPolicy(policy, toolName, input) {
     console.warn('Claude tool policy failed; asking instead:', error?.message || error);
     return { decision: 'ask', category: null };
   }
+}
+
+// The reason a guarded run gives the worker for refusing a tool that only a person can answer (AskUserQuestion, ExitPlanMode):
+// the policy's own `deny` message (the Foreman guard's), or a plain one when the policy gives none or fails.
+function unattendedDenialMessage(policy, toolName, input) {
+  const decision = consultToolPolicy(policy, toolName, input);
+  return decision?.decision === 'deny' && decision.message ? decision.message : UNATTENDED_DENIAL_FALLBACK;
 }
 
 // Adds host-supplied SDK hooks (`options.toolHooks`, event -> matchers) to the run's own; matchers are appended, none replaced.
@@ -1176,13 +1186,23 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
     // (AskUserQuestion, ExitPlanMode) won't reach the UI — the classifier/bypass
     // auto-approves them and the model acts on a generated answer. Move these
     // tools to a PreToolUse hook (runs before the mode check) if we need them
-    // to work in those modes.
+    // to work in those modes. A guarded run's own PreToolUse hook (options.toolHooks)
+    // already does that for it: it denies both tools in every mode, and the check
+    // below is its backstop.
     sdkOptions.canUseTool = async (toolName, input, context) => {
       const requiresInteraction = TOOLS_REQUIRING_INTERACTION.has(toolName);
-      // A guarded run's policy allows safe calls outright; risky ones fall through to the prompt below.
+      // A guarded run (one with a tool policy) is unattended: nobody can answer a question or approve a plan, and the
+      // prompt below waits for them without any timeout. Refuse at once, with no prompt, event or notification.
+      if (requiresInteraction && typeof options.toolPolicy === 'function') {
+        return { behavior: 'deny', message: unattendedDenialMessage(options.toolPolicy, toolName, input) };
+      }
+      // A guarded run's policy allows safe calls outright and can refuse a call outright; risky ones fall through to the prompt below.
       const policy = requiresInteraction ? null : consultToolPolicy(options.toolPolicy, toolName, input);
       if (policy?.decision === 'allow') {
         return { behavior: 'allow', updatedInput: input };
+      }
+      if (policy?.decision === 'deny') {
+        return { behavior: 'deny', message: policy.message || UNATTENDED_DENIAL_FALLBACK };
       }
 
       if (!requiresInteraction) {

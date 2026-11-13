@@ -105,6 +105,13 @@ rl.on('line', (line) => {
     out({ type: 'control_request', request_id: 'perm-1', request: { subtype: 'can_use_tool', tool_name: 'Bash', input: { command: 'rm -rf build' }, tool_use_id: 'tu_perm' } });
     return;
   }
+  if (prompt === 'askq' || prompt === 'askplan') {
+    // The tools only a person can answer, sent straight to canUseTool.
+    pendingAsk = true;
+    const question = { questions: [{ question: 'Which store?', header: 'Store', multiSelect: false, options: [{ label: 'SQLite', description: 'One file' }, { label: 'Postgres', description: 'A server' }] }] };
+    out({ type: 'control_request', request_id: 'perm-1', request: { subtype: 'can_use_tool', tool_name: prompt === 'askq' ? 'AskUserQuestion' : 'ExitPlanMode', input: prompt === 'askq' ? question : { plan: '# Plan' }, tool_use_id: 'tu_interactive' } });
+    return;
+  }
   if (prompt === 'crash') {
     process.stderr.write('fake claude crashed\n');
     process.exit(3);
@@ -614,4 +621,117 @@ test('a tool the settings disallow is still denied outright for a guarded run, w
   const answer = (await permissionAnswers()).at(-1);
   assert.equal(answer?.response.behavior, 'deny');
   assert.equal(answer?.response.message, 'Tool disallowed by settings');
+});
+
+// ---------------------------------------------------------------------------------------------
+// canUseTool for the tools only a person can answer (AskUserQuestion, ExitPlanMode): a guarded run has nobody to ask
+// ---------------------------------------------------------------------------------------------
+
+const INTERACTIVE_TOOLS = [
+  { prompt: 'askq', toolName: 'AskUserQuestion' },
+  { prompt: 'askplan', toolName: 'ExitPlanMode' },
+] as const;
+const UNATTENDED_REASON = 'Foreman guard: no person is available to answer this in this session.';
+
+// Without the guard's refusal such a run waits for a person for ever (these prompts have no timeout): give up on it and
+// end the run instead of hanging the whole suite.
+async function settlesWithin(pending: Promise<RunOutcome>, sessionId: string, ms = 5000): Promise<RunOutcome> {
+  let timer: NodeJS.Timeout | undefined;
+  const giveUp = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      void runtime.abortClaudeSDKSession(sessionId);
+      reject(new Error(`${sessionId} was still waiting for a person after ${ms} ms`));
+    }, ms);
+  });
+  try {
+    return await Promise.race([pending, giveUp]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function assertNobodyWasAsked(outcome: RunOutcome, sessionId: string): void {
+  assert.ok(!kinds(outcome).includes('permission_request'), 'no permission_request event');
+  assert.ok(!kinds(outcome).includes('permission_resolved'), 'nothing to resolve');
+  assert.ok(!outcome.sent.some((message) => message.kind === 'permission_request' || message.kind === 'permission_cancelled'), 'the chat UI is not asked either');
+  assert.deepEqual(runtime.getPendingApprovalsForSession(sessionId), [], 'nothing is pending');
+  assert.ok(kinds(outcome).includes('turn_result'), 'the turn ran to its end');
+}
+
+for (const { prompt, toolName } of INTERACTIVE_TOOLS) {
+  test(`a guarded run's ${toolName} is denied at once with the policy's reason: no prompt, no event, no waiting`, async () => {
+    const sessionId = `app-session-unattended-${prompt}`;
+    const asked: string[] = [];
+    const toolPolicy = (name: string) => {
+      asked.push(name);
+      return { decision: 'deny', message: UNATTENDED_REASON };
+    };
+    const before = (await permissionAnswers()).length;
+    const outcome = await settlesWithin(runPrompt(prompt, { toolPolicy }, sessionId), sessionId);
+
+    assert.deepEqual(asked, [toolName], 'the policy was asked about the call');
+    assertNobodyWasAsked(outcome, sessionId);
+    const answers = await permissionAnswers();
+    assert.equal(answers.length, before + 1);
+    assert.equal(answers.at(-1)?.response.behavior, 'deny');
+    assert.equal(answers.at(-1)?.response.message, UNATTENDED_REASON);
+  });
+
+  test(`a guarded run's ${toolName} is still denied at once when its policy gives no reason, says allow or ask, or throws`, async () => {
+    const policies: Array<[string, () => unknown]> = [
+      ['no reason', () => ({ decision: 'deny' })],
+      ['allow', () => ({ decision: 'allow' })],
+      ['ask', () => ({ decision: 'ask', category: 'command' })],
+      ['throw', () => { throw new Error('classifier exploded'); }],
+    ];
+    for (const [label, toolPolicy] of policies) {
+      const sessionId = `app-session-unattended-fallback-${prompt}-${label.replace(' ', '-')}`;
+      const outcome = await settlesWithin(runPrompt(prompt, { toolPolicy }, sessionId), sessionId);
+      assertNobodyWasAsked(outcome, sessionId);
+      const answer = (await permissionAnswers()).at(-1);
+      assert.equal(answer?.response.behavior, 'deny', label);
+      assert.match(answer?.response.message ?? '', /^No person is available to answer this tool call in this session, because it runs unattended\./, label);
+    }
+  });
+
+  test(`a guarded run's ${toolName} is denied even when settings would allow it or skip permissions`, async () => {
+    const sessionId = `app-session-unattended-settings-${prompt}`;
+    const toolsSettings = settingsWith({ skipPermissions: true, allowedTools: ['AskUserQuestion', 'ExitPlanMode'] });
+    const outcome = await settlesWithin(runPrompt(prompt, { toolPolicy: heldByPolicy, toolsSettings }, sessionId), sessionId);
+    assertNobodyWasAsked(outcome, sessionId);
+    assert.equal((await permissionAnswers()).at(-1)?.response.behavior, 'deny');
+  });
+
+  test(`an unguarded run's ${toolName} still prompts a person and waits for the answer, with no timeout`, async () => {
+    const sessionId = `app-session-interactive-${prompt}`;
+    const pending = runPrompt(prompt, {}, sessionId);
+    const request = await waitForPermissionRequest(sessionId);
+    assert.equal(request.toolName, toolName);
+    assert.equal('guarded' in request, false);
+    assert.deepEqual(runtime.getPendingApprovalsForSession(sessionId).map((entry: { requestId: string }) => entry.requestId), [request.requestId]);
+
+    if (toolName === 'AskUserQuestion') {
+      // The approval window the other prompts have does not apply to these: still waiting after it.
+      await sleep(DEFAULT_APPROVAL_WINDOW_MS + 700);
+      assert.equal(runtime.getPendingApprovalsForSession(sessionId).length, 1);
+    }
+
+    runtime.resolveToolApproval(request.requestId, { allow: false, message: 'Not now.' });
+    const outcome = await settlesWithin(pending, sessionId);
+    assert.ok(outcome.events.some((event) => event.kind === 'permission_resolved' && event.requestId === request.requestId));
+    const answer = (await permissionAnswers()).at(-1);
+    assert.equal(answer?.response.behavior, 'deny');
+    assert.equal(answer?.response.message, 'Not now.');
+  });
+}
+
+test('a policy that refuses an ordinary call outright is obeyed at once, even in a bypass mode, with no prompt', async () => {
+  const sessionId = 'app-session-policy-deny-bash';
+  const toolPolicy = () => ({ decision: 'deny', message: 'Not allowed in this session.' });
+  const outcome = await settlesWithin(runPrompt('ask', { toolPolicy, toolsSettings: settingsWith({ skipPermissions: true }) }, sessionId), sessionId);
+  assert.ok(!kinds(outcome).includes('permission_request'));
+  assert.ok(!outcome.sent.some((message) => message.kind === 'permission_request'));
+  const answer = (await permissionAnswers()).at(-1);
+  assert.equal(answer?.response.behavior, 'deny');
+  assert.equal(answer?.response.message, 'Not allowed in this session.');
 });

@@ -9,6 +9,8 @@ import test, { after, before } from 'node:test';
 
 import express from 'express';
 
+import { ASK_USER_QUESTION_DENIAL, EXIT_PLAN_MODE_DENIAL } from '@/modules/foreman/foreman-guard.service.js';
+
 /**
  * The guard end to end inside one process: the real bridge module (router, sessions service, state service, event
  * pusher), the real database, the real Claude runtime and the real SDK, with a fake `claude` executable that asks for
@@ -61,6 +63,10 @@ rl.on('line', (line) => {
       if (output.hookSpecificOutput && output.hookSpecificOutput.permissionDecision === 'ask') {
         asking = hook.label;
         out({ type: 'control_request', request_id: 'perm-' + crypto.randomUUID(), request: { subtype: 'can_use_tool', tool_name: hook.tool, input: hook.input, tool_use_id: 'tu_h' } });
+      } else if (output.hookSpecificOutput && output.hookSpecificOutput.permissionDecision === 'deny') {
+        // 'deny' ends the call right there: the CLI tells the model why, and nobody is asked.
+        note({ denied: hook.label, reason: output.hookSpecificOutput.permissionDecisionReason });
+        finish('done');
       } else {
         note({ autoAllowed: hook.label });
         finish('done');
@@ -91,10 +97,12 @@ rl.on('line', (line) => {
     globtoken: ['Glob', { pattern: '*token*', path: HOME + '/.config' }],
     catconfig: ['Bash', { command: 'cat ~/.config/gh/oauth_token' }],
     readconfig: ['Read', { file_path: HOME + '/.config/gh/api_key' }],
+    askquestion: ['AskUserQuestion', { questions: [{ question: 'Which store?' }] }],
+    exitplan: ['ExitPlanMode', { plan: '# Plan' }],
   }[prompt];
   if (readOnly) {
     const [tool, input] = readOnly;
-    const label = tool + ' ' + (input.file_path || input.pattern || input.command);
+    const label = [tool, input.file_path || input.pattern || input.command].filter(Boolean).join(' ');
     if (hookIds.length === 0) {
       // No PreToolUse hook registered: the CLI settles a read-only call inside the project by itself.
       note({ hook: null, autoAllowed: label });
@@ -103,6 +111,16 @@ rl.on('line', (line) => {
     }
     pendingHook = { requestId: 'hook-' + crypto.randomUUID(), tool, input, label };
     out({ type: 'control_request', request_id: pendingHook.requestId, request: { subtype: 'hook_callback', callback_id: hookIds[0], tool_use_id: 'tu_h', input: { hook_event_name: 'PreToolUse', session_id: SESSION, transcript_path: '', cwd, tool_name: tool, tool_input: input, tool_use_id: 'tu_h' } } });
+    return;
+  }
+  // The tools only a person can answer, sent straight to canUseTool (the hook above has its own prompts).
+  const direct = {
+    directask: ['AskUserQuestion', { questions: [{ question: 'Which store?' }] }],
+    directplan: ['ExitPlanMode', { plan: '# Plan' }],
+  }[prompt];
+  if (direct) {
+    asking = direct[0];
+    out({ type: 'control_request', request_id: 'perm-' + crypto.randomUUID(), request: { subtype: 'can_use_tool', tool_name: direct[0], input: direct[1], tool_use_id: 'tu_d' } });
     return;
   }
   const command = prompt === 'risky' ? 'git push origin main' : prompt === 'slow' ? 'git push origin slow' : prompt === 'safe' ? 'git status' : null;
@@ -544,4 +562,69 @@ test('a Foreman repo without a guard gets only the compaction hooks, and a proje
   await until('the CLI to settle the call', async () => (await fakeLog()).slice(markOutside).find((entry) => entry.autoAllowed));
   assert.deepEqual((await fakeLog()).slice(markOutside).find((entry) => entry.initialized)?.initialized, ['Notification']);
   await until('the session to be idle', async () => (await statusOf(outside)) === 'idle');
+});
+
+// ---------------------------------------------------------------------------------------------
+// AskUserQuestion and ExitPlanMode: nobody is there to answer, so a guarded session refuses them instead of waiting
+// ---------------------------------------------------------------------------------------------
+
+const permissionRequestsPushed = () => pushed.filter((entry) => entry.type === 'permission_request').length;
+
+test('a guarded worker that calls AskUserQuestion or ExitPlanMode is refused by the hook with the guard\'s reason, and nobody is asked', async () => {
+  for (const [prompt, toolName, reason] of [
+    ['askquestion', 'AskUserQuestion', ASK_USER_QUESTION_DENIAL],
+    ['exitplan', 'ExitPlanMode', EXIT_PLAN_MODE_DENIAL],
+  ] as const) {
+    const mark = (await fakeLog()).length;
+    const requestsBefore = permissionRequestsPushed();
+    const sessionId = await startSession(prompt, true);
+
+    const refused = await until('the hook to refuse the call', async () => (await fakeLog()).slice(mark).find((entry) => entry.denied));
+    assert.equal(refused.denied, toolName);
+    assert.equal(refused.reason, reason, prompt);
+    const hook = (await fakeLog()).slice(mark).find((entry) => entry.hook);
+    assert.equal(hook.output.hookSpecificOutput.hookEventName, 'PreToolUse');
+    assert.equal(hook.output.hookSpecificOutput.permissionDecision, 'deny');
+
+    await until('the session to be idle', async () => (await statusOf(sessionId)) === 'idle');
+    assert.deepEqual((await api('GET', `/sessions/${sessionId}/permissions`)).body.data, { permissions: [] });
+    assert.equal(permissionRequestsPushed(), requestsBefore, 'no prompt reached Foreman');
+  }
+});
+
+test('if AskUserQuestion or ExitPlanMode reach canUseTool anyway, a guarded session refuses them at once with the same reasons', async () => {
+  for (const [prompt, toolName, reason] of [
+    ['directask', 'AskUserQuestion', ASK_USER_QUESTION_DENIAL],
+    ['directplan', 'ExitPlanMode', EXIT_PLAN_MODE_DENIAL],
+  ] as const) {
+    const mark = (await fakeLog()).length;
+    const requestsBefore = permissionRequestsPushed();
+    const sessionId = await startSession(prompt, true);
+
+    const reply = await until('the CLI to receive the refusal', async () => (await fakeLog()).slice(mark).find((entry) => entry.tool === toolName));
+    assert.equal(reply.answer.behavior, 'deny', prompt);
+    assert.equal(reply.answer.message, reason, prompt);
+    await until('the session to be idle', async () => (await statusOf(sessionId)) === 'idle');
+    assert.deepEqual((await api('GET', `/sessions/${sessionId}/permissions`)).body.data, { permissions: [] });
+    assert.equal(permissionRequestsPushed(), requestsBefore, 'no prompt reached Foreman');
+  }
+});
+
+test('a session started without a guard still prompts a person for AskUserQuestion and ExitPlanMode, as before', async () => {
+  for (const [prompt, toolName] of [['directask', 'AskUserQuestion'], ['directplan', 'ExitPlanMode']] as const) {
+    const mark = (await fakeLog()).length;
+    const sessionId = await startSession(prompt, false);
+
+    const pending = await pendingOf(sessionId);
+    assert.equal(pending[0].toolName, toolName);
+    const event = await until('the permission_request event', () => pushed.find((entry) => entry.type === 'permission_request' && entry.sessionId === sessionId));
+    assert.equal(event.data.toolName, toolName);
+    assert.equal('guarded' in event.data, false);
+
+    const answered = await api('POST', `/sessions/${sessionId}/permission`, { requestId: pending[0].requestId, decision: 'deny', reason: 'Not now.' });
+    assert.deepEqual(answered.body.data, { resolved: true });
+    const reply = await until('the CLI to receive the answer', async () => (await fakeLog()).slice(mark).find((entry) => entry.tool === toolName));
+    assert.equal(reply.answer.message, 'Not now.');
+    await until('the session to be idle', async () => (await statusOf(sessionId)) === 'idle');
+  }
 });

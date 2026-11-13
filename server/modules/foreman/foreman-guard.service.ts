@@ -23,6 +23,10 @@ import { AppError } from '@/shared/utils.js';
  * apply to a guarded session: `.env*`, `*.pem`, SSH keys, `credentials*`, token/key/secret files under `~/.config`, and
  * the secret directories. They are checked for every path argument, for the file globs and search roots of Grep and
  * Glob, and for every word of a Bash command.
+ *
+ * Foreman runs these sessions unattended, so the two tools only a person can answer, AskUserQuestion and ExitPlanMode,
+ * are refused outright (see `unattendedToolDenial`) instead of being asked about: a prompt for them would wait for a
+ * person who is not there, and the worker would hang.
  */
 
 export type ForemanGuardCategory = 'command' | 'secret' | 'outside_repo';
@@ -61,10 +65,12 @@ export type CompiledForemanGuard = {
 
 /**
  * What a runtime asks of a per-session tool policy for one tool call (see `options.toolPolicy` in the Claude
- * runtime). `allow` means no prompt at all; `ask` sends the call through the permission prompt.
+ * runtime). `allow` means no prompt at all; `deny` refuses the call at once, with no prompt, and `message` is the
+ * reason the worker is told; `ask` sends the call through the permission prompt.
  */
 export type ForemanToolPolicyDecision =
   | { decision: 'allow' }
+  | { decision: 'deny'; message: string }
   | {
       decision: 'ask';
       category: ForemanGuardCategory;
@@ -76,6 +82,29 @@ export type ForemanToolPolicyDecision =
     };
 
 export type ForemanToolPolicy = (toolName: string, input: unknown) => ForemanToolPolicyDecision;
+
+/** What a guarded worker is told when it calls AskUserQuestion: Foreman runs the session, so nobody is there to answer. */
+export const ASK_USER_QUESTION_DENIAL = 'Foreman guard: no person is available to answer AskUserQuestion in this session, because Foreman runs it. Decide per the repo docs, or list the question in your final report under OPEN QUESTIONS and carry on with the parts that do not depend on it. Never guess an answer to a question the repo documents as open for a person (for example EVIDENCE §7).';
+
+/** What a guarded worker is told when it calls ExitPlanMode: nobody can approve a plan. */
+export const EXIT_PLAN_MODE_DENIAL = 'Foreman guard: no person is available to approve a plan in this session, because Foreman runs it. Do not use plan mode: carry out the work directly.';
+
+/**
+ * The refusal for a tool that only a person can answer, or null for every other tool. A guarded session has no person
+ * watching it, and the prompt for these two tools waits without any timeout, so without this the worker would hang
+ * forever. Pure; the tool name is matched exactly, and anything that is not a string is no such tool.
+ */
+// Consumed by createToolPolicy below, which both the PreToolUse hook and the Claude runtime's canUseTool ask.
+export function unattendedToolDenial(toolName: unknown): string | null {
+  switch (toolName) {
+    case 'AskUserQuestion':
+      return ASK_USER_QUESTION_DENIAL;
+    case 'ExitPlanMode':
+      return EXIT_PLAN_MODE_DENIAL;
+    default:
+      return null;
+  }
+}
 
 const WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit']);
 // The arguments that name a file or directory a tool reads or writes (Read, Edit, Write, MultiEdit, NotebookEdit, Grep, Glob, LS, ...).
@@ -270,7 +299,8 @@ function timeoutMessageFor(toolName: string, approvalTimeoutMs: number): string 
 
 /**
  * The per-session policy a guarded run hands to the Claude runtime. It never throws: a call the classifier could not
- * judge counts as risky, so a fault routes the call to a prompt instead of waving it through.
+ * judge counts as risky, so a fault routes the call to a prompt instead of waving it through. AskUserQuestion and
+ * ExitPlanMode are denied outright (`unattendedToolDenial`), before any classification, whatever their input.
  */
 // Consumed by the sessions service when it starts or resumes a guarded run.
 export function createToolPolicy(guard: CompiledForemanGuard): ForemanToolPolicy {
@@ -279,6 +309,10 @@ export function createToolPolicy(guard: CompiledForemanGuard): ForemanToolPolicy
     timeoutMessage: timeoutMessageFor(toolName, guard.approvalTimeoutMs),
   });
   return (toolName, input) => {
+    const denial = unattendedToolDenial(toolName);
+    if (denial) {
+      return { decision: 'deny', message: denial };
+    }
     try {
       const verdict = classifyToolUse({ toolName, input }, guard);
       return verdict.risky
@@ -309,6 +343,10 @@ const CATEGORY_DESCRIPTIONS: Record<ForemanGuardCategory, string> = {
  * to `canUseTool`, where the guard holds it for a person. A safe call answers nothing: the hook never allows anything by
  * itself. Never throws; an input it cannot read is asked about.
  *
+ * AskUserQuestion and ExitPlanMode are the exception to "safe answers nothing": no person is there to answer a question
+ * or approve a plan, so the hook denies them (`permissionDecision: 'deny'`, with the reason in `unattendedToolDenial`)
+ * in every permission mode, including the ones that settle calls without asking. Asking would hang the worker.
+ *
  * `ask` only works when the CLI really prompts. In a permission mode that settles calls without asking
  * (`GUARD_INCOMPATIBLE_PERMISSION_MODES`, which the hook input reports as `permission_mode`, for example after a person
  * switched the session's mode in the chat), nobody could hold the call, so a risky call is denied outright with a reason
@@ -334,6 +372,9 @@ export function guardHooks(guard: CompiledForemanGuard): ForemanGuardHooks {
           return hold('the tool call could not be read');
         }
         const verdict = policy(record.tool_name, record.tool_input);
+        if (verdict.decision === 'deny') {
+          return answer('deny', verdict.message);
+        }
         if (verdict.decision !== 'ask') {
           return {};
         }

@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  ASK_USER_QUESTION_DENIAL,
   DEFAULT_GUARD_APPROVAL_TIMEOUT_MS,
+  EXIT_PLAN_MODE_DENIAL,
   assertGuardCompatiblePermissionMode,
   classifyToolUse,
   compileGuard,
@@ -10,6 +12,7 @@ import {
   guardHooks,
   guardRunOptions,
   parseGuardConfig,
+  unattendedToolDenial,
   type ForemanGuardConfig,
 } from '@/modules/foreman/foreman-guard.service.js';
 import { AppError } from '@/shared/utils.js';
@@ -298,7 +301,7 @@ test('the hook answers ask for risky calls, including the ones the CLI would all
   }
 });
 
-test('the hook answers nothing for safe calls: it never allows anything by itself', async () => {
+test('the hook answers nothing for safe calls: it never allows anything by itself (AskUserQuestion and ExitPlanMode are not safe: see below)', async () => {
   const safe: Array<[string, unknown]> = [
     ['Read', { file_path: `${REPO}/src/app.ts` }],
     ['Read', { file_path: `${REPO}/.env.example` }],
@@ -309,12 +312,97 @@ test('the hook answers nothing for safe calls: it never allows anything by itsel
     ['Edit', { file_path: `${REPO}/src/app.ts`, old_string: 'a', new_string: 'b' }],
     ['Write', { file_path: `${REPO}/docs/new.md`, content: 'x' }],
     ['TodoWrite', { todos: [] }],
-    ['AskUserQuestion', { questions: [] }],
     ['WebFetch', { url: 'https://example.com' }],
   ];
   for (const [toolName, toolInput] of safe) {
     assert.deepEqual(await runHook(preToolUse(toolName, toolInput)), {}, `${toolName} ${JSON.stringify(toolInput)}`);
   }
+});
+
+const ASK_USER_QUESTION_TEXT = 'Foreman guard: no person is available to answer AskUserQuestion in this session, because Foreman runs it. Decide per the repo docs, or list the question in your final report under OPEN QUESTIONS and carry on with the parts that do not depend on it. Never guess an answer to a question the repo documents as open for a person (for example EVIDENCE §7).';
+const EXIT_PLAN_MODE_TEXT = 'Foreman guard: no person is available to approve a plan in this session, because Foreman runs it. Do not use plan mode: carry out the work directly.';
+
+test('the refusals for AskUserQuestion and ExitPlanMode are fixed texts, exported for the runtime, and match those two tools only', () => {
+  assert.equal(ASK_USER_QUESTION_DENIAL, ASK_USER_QUESTION_TEXT);
+  assert.equal(EXIT_PLAN_MODE_DENIAL, EXIT_PLAN_MODE_TEXT);
+  assert.equal(unattendedToolDenial('AskUserQuestion'), ASK_USER_QUESTION_TEXT);
+  assert.equal(unattendedToolDenial('ExitPlanMode'), EXIT_PLAN_MODE_TEXT);
+  for (const other of ['Read', 'Bash', 'TodoWrite', 'askuserquestion', 'AskUserQuestion ', 'exit_plan_mode', 'mcp__notes__AskUserQuestion', 'ExitPlanModeX', '', 'constructor', '__proto__', 'toString', undefined, null, 7, {}, ['AskUserQuestion']]) {
+    assert.equal(unattendedToolDenial(other), null, String(other));
+  }
+});
+
+const PERMISSION_MODES: Array<string | undefined> = ['default', 'plan', 'bypassPermissions', 'acceptEdits', 'auto', 'dontAsk', 'some-future-mode', undefined];
+const withMode = (input: Record<string, unknown>, mode: string | undefined) => (mode === undefined ? input : { ...input, permission_mode: mode });
+
+test('the hook denies AskUserQuestion and ExitPlanMode with the exact reason in every permission mode, and never asks', async () => {
+  const unattended: Array<[string, unknown, string]> = [
+    ['AskUserQuestion', { questions: [] }, ASK_USER_QUESTION_TEXT],
+    ['AskUserQuestion', { questions: [{ question: 'Which store?', header: 'Store', multiSelect: false, options: [{ label: 'SQLite', description: 'One file' }, { label: 'Postgres', description: 'A server' }] }] }, ASK_USER_QUESTION_TEXT],
+    ['AskUserQuestion', undefined, ASK_USER_QUESTION_TEXT],
+    ['ExitPlanMode', { plan: '# Plan\n1. Do the work' }, EXIT_PLAN_MODE_TEXT],
+    ['ExitPlanMode', undefined, EXIT_PLAN_MODE_TEXT],
+  ];
+  for (const mode of PERMISSION_MODES) {
+    for (const [toolName, toolInput, reason] of unattended) {
+      const label = `${toolName} in ${mode ?? 'no mode'} ${JSON.stringify(toolInput)}`;
+      assert.deepEqual(await runHook(withMode(preToolUse(toolName, toolInput), mode)), {
+        hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason },
+      }, label);
+    }
+  }
+  // A permission mode that is not a string reads as no mode at all.
+  assert.equal((await runHook({ ...preToolUse('AskUserQuestion', {}), permission_mode: 7 })).hookSpecificOutput.permissionDecision, 'deny');
+});
+
+test('the denial of AskUserQuestion and ExitPlanMode does not depend on the guard\'s rules or on who asks', async () => {
+  const bare = { riskyPatterns: [], secretPatterns: [], writeOutsideRepo: false };
+  for (const [toolName, reason] of [['AskUserQuestion', ASK_USER_QUESTION_TEXT], ['ExitPlanMode', EXIT_PLAN_MODE_TEXT]] as const) {
+    const call = preToolUse(toolName, {});
+    assert.equal((await runHook(call, bare)).hookSpecificOutput.permissionDecisionReason, reason);
+    // A subagent's call is refused exactly like the main worker's.
+    const fromSubagent = { ...call, agent_id: 'a98c5140240c80a8e', agent_type: 'explorer' };
+    assert.deepEqual(await runHook(fromSubagent), await runHook(call));
+    assert.equal((await runHook(fromSubagent)).hookSpecificOutput.permissionDecision, 'deny');
+  }
+});
+
+test('the hook still answers nothing for ordinary safe calls, in every permission mode', async () => {
+  const safe: Array<[string, unknown]> = [
+    ['Read', { file_path: `${REPO}/src/app.ts` }],
+    ['Glob', { pattern: 'src/**/*.ts' }],
+    ['Bash', { command: 'git status' }],
+    ['Edit', { file_path: `${REPO}/src/app.ts`, old_string: 'a', new_string: 'b' }],
+    ['TodoWrite', { todos: [] }],
+    ['WebFetch', { url: 'https://example.com' }],
+    // Only the two built-in tools are refused: a lookalike name is judged like any other tool.
+    ['mcp__notes__AskUserQuestion', { questions: [] }],
+    ['ExitPlanModeX', {}],
+  ];
+  for (const mode of PERMISSION_MODES) {
+    for (const [toolName, toolInput] of safe) {
+      assert.deepEqual(await runHook(withMode(preToolUse(toolName, toolInput), mode)), {}, `${toolName} in ${mode ?? 'no mode'}`);
+    }
+  }
+});
+
+test('the tool policy refuses AskUserQuestion and ExitPlanMode outright, whatever the input and even if the classifier is broken', () => {
+  const policy = createToolPolicy(guard());
+  assert.deepEqual(policy('AskUserQuestion', { questions: [] }), { decision: 'deny', message: ASK_USER_QUESTION_TEXT });
+  assert.deepEqual(policy('AskUserQuestion', undefined), { decision: 'deny', message: ASK_USER_QUESTION_TEXT });
+  assert.deepEqual(policy('ExitPlanMode', { plan: 'x' }), { decision: 'deny', message: EXIT_PLAN_MODE_TEXT });
+
+  const broken = guard();
+  Object.defineProperty(broken, 'riskyPatterns', { get: () => { throw new Error('boom'); } });
+  assert.deepEqual(createToolPolicy(broken)('AskUserQuestion', {}), { decision: 'deny', message: ASK_USER_QUESTION_TEXT });
+
+  // Every other tool is judged as before.
+  assert.deepEqual(policy('TodoWrite', { todos: [] }), { decision: 'allow' });
+  assert.equal(policy('Bash', { command: 'git push' }).decision, 'ask');
+
+  // What a guarded run hands the runtime carries the same refusal in its policy and in its hook.
+  const options = guardRunOptions(guard());
+  assert.deepEqual(options.toolPolicy('ExitPlanMode', {}), { decision: 'deny', message: EXIT_PLAN_MODE_TEXT });
 });
 
 test('the hook follows the guard\'s own rules: a disabled outside-repo rule, another repo root', async () => {
