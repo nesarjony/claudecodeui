@@ -11,6 +11,7 @@ import { applyModelBilling, splitModelBilling } from '@/modules/foreman/foreman-
 import {
   assertGuardCompatiblePermissionMode,
   compileGuard,
+  ensureAllowWriteDirs,
   guardRunOptions,
   type ForemanGuardConfig,
 } from '@/modules/foreman/foreman-guard.service.js';
@@ -467,6 +468,9 @@ export function createForemanSessionsService(deps: ForemanBridgeDependencies) {
         assertGuardCompatiblePermissionMode(input.permissionMode);
       }
       const compiledGuard = guard ? compileGuard(guard, project.project_path) : null;
+      if (compiledGuard) {
+        ensureAllowWriteDirs(compiledGuard);
+      }
       if (input.billing === 'api-key' && !deps.runtime.hasApiKey()) {
         throw new AppError('API-key billing was requested, but no API key file is available.', {
           code: 'API_KEY_UNAVAILABLE',

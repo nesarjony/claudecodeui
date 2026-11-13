@@ -162,7 +162,7 @@ export function toForemanEvent(
           toolName: event.toolName,
           input: summarizeToolInput(event.input, guarded ? MAX_GUARDED_PERMISSION_INPUT_TEXT : MAX_PERMISSION_INPUT_TEXT),
           // Only a call the session's guard judged risky: why, and that it is Foreman's to answer.
-          ...(guarded ? { category: event.category ?? null, guarded: true } : {}),
+          ...(guarded ? { category: event.category ?? null, guarded: true, ...(event.allowlist === true ? { allowlist: true } : {}) } : {}),
         },
       };
     }

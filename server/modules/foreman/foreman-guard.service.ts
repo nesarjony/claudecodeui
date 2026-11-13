@@ -1,4 +1,4 @@
-import { realpathSync, statSync } from 'node:fs';
+import { mkdirSync, realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
 
 import {
@@ -88,6 +88,12 @@ export type ForemanToolPolicyDecision =
       timeoutMs: number;
       /** What the worker is told when that happens: it timed out waiting for a person, nobody refused. */
       timeoutMessage: string;
+      /**
+       * True when this guard has `allowWriteDirs`: the hold was made by a guard that already lets plain scratch and /tmp files through
+       * (judging them on the real file system, symlinks resolved), so a write that LOOKS like one of them and is held anyway was held for
+       * a reason. Foreman reads it from the permission event and does not allow such a hold by itself.
+       */
+      allowlist: boolean;
     };
 
 export type ForemanToolPolicy = (toolName: string, input: unknown) => ForemanToolPolicyDecision;
@@ -382,6 +388,7 @@ export function createToolPolicy(guard: CompiledForemanGuard): ForemanToolPolicy
   const waiting = (toolName: string) => ({
     timeoutMs: guard.approvalTimeoutMs,
     timeoutMessage: timeoutMessageFor(toolName, guard.approvalTimeoutMs),
+    allowlist: guard.allowWriteDirs.length > 0,
   });
   return (toolName, input) => {
     const denial = unattendedToolDenial(toolName);
@@ -548,6 +555,29 @@ export function parseGuardConfig(raw: unknown): ForemanGuardConfig | undefined {
     ...(allowWriteDirs ? { allowWriteDirs } : {}),
     approvalTimeoutMs,
   };
+}
+
+/**
+ * Creates the guard's `allowWriteDirs` that do not exist yet (mode 0700), so the scratch directory Foreman names in a worker's prompt is
+ * really there: Foreman itself may run with a private /tmp and cannot make it where the worker looks. Never throws; a directory that
+ * cannot be made is left to the worker's own `mkdir -p` (a Write creates its parent directories anyway).
+ */
+// Consumed by the sessions service when a guarded session starts.
+export function ensureAllowWriteDirs(guard: CompiledForemanGuard): string[] {
+  const made: string[] = [];
+  for (const dir of guard.allowWriteDirs) {
+    try {
+      statSync(dir);
+    } catch {
+      try {
+        mkdirSync(dir, { recursive: true, mode: 0o700 });
+        made.push(dir);
+      } catch {
+        // Left to the worker.
+      }
+    }
+  }
+  return made;
 }
 
 /** Refuses a permission mode the guard cannot work under (see `GUARD_INCOMPATIBLE_PERMISSION_MODES`). */

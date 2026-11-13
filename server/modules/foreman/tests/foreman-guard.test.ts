@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -12,6 +12,7 @@ import {
   classifyToolUse,
   compileGuard,
   createToolPolicy,
+  ensureAllowWriteDirs,
   guardHooks,
   guardRunOptions,
   parseGuardConfig,
@@ -472,6 +473,7 @@ test('the tool policy allows safe calls and asks for risky ones, naming the cate
     matched: RISKY[1],
     timeoutMs: DEFAULT_GUARD_APPROVAL_TIMEOUT_MS,
     timeoutMessage: undefined,
+    allowlist: false,
   });
   const secret = policy('Read', { file_path: `${REPO}/.env` });
   assert.equal(secret.decision, 'ask');
@@ -664,4 +666,33 @@ test('parseGuardConfig: allowWriteDirs must be a short list of absolute paths, a
     assert.throws(() => parseGuardConfig({ ...body, allowWriteDirs: bad }), (error: unknown) => error instanceof AppError && error.statusCode === 400, JSON.stringify(bad));
   }
   assert.equal(parseGuardConfig({ enabled: false, allowWriteDirs: ['/tmp'] })?.allowWriteDirs, undefined);
+});
+
+test('allowWriteDirs: a hold made by a guard with an allowlist says so, a guard without one does not', () => {
+  const withList = createToolPolicy(guard({ allowWriteDirs: ['/tmp/foreman-scratch/task-1'] }));
+  const held = withList('Write', { file_path: '/etc/hosts', content: 'x' });
+  assert.equal(held.decision === 'ask' && held.allowlist, true);
+  const withoutList = createToolPolicy(guard());
+  const heldToo = withoutList('Write', { file_path: '/etc/hosts', content: 'x' });
+  assert.equal(heldToo.decision === 'ask' && heldToo.allowlist, false);
+  const secret = withList('Write', { file_path: '/tmp/.env', content: 'x' });
+  assert.equal(secret.decision === 'ask' && secret.allowlist, true);
+});
+
+test('ensureAllowWriteDirs makes the missing directories (mode 0700), leaves existing ones, and never throws', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'fm-guard-ensure-'));
+  try {
+    const scratch = path.join(root, 'foreman-scratch', 'task-9');
+    const existing = path.join(root, 'existing');
+    mkdirSync(existing);
+    const compiled = guard({ allowWriteDirs: [scratch, existing, path.join(root, 'a-file', 'x')] });
+    writeFileSync(path.join(root, 'a-file'), 'x');
+    const made = ensureAllowWriteDirs(compiled);
+    assert.deepEqual(made, [scratch]);
+    assert.equal(existsSync(scratch), true);
+    assert.equal(statSync(scratch).mode & 0o777, 0o700);
+    assert.deepEqual(ensureAllowWriteDirs(compiled), []);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

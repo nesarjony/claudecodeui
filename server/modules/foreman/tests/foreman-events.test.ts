@@ -237,6 +237,12 @@ test('a guarded permission_request adds its category and the guarded flag, and c
   assert.ok(input.length > 200 && input.length <= 1000, `guarded input is ${input.length} characters`);
 });
 
+test('a guarded permission_request from a guard with an allowlist says so; one without does not', () => {
+  const held = { ...base, kind: 'permission_request' as const, requestId: 'r', toolName: 'Write', input: { file_path: '/tmp/x.md' }, guarded: true, category: 'outside_repo' };
+  assert.equal(translate({ ...held, allowlist: true })?.data.allowlist, true);
+  assert.equal('allowlist' in (translate(held)?.data ?? {}), false);
+});
+
 test('an unguarded permission_request has neither category nor guarded', () => {
   const event = translate({ ...base, kind: 'permission_request', requestId: 'r', toolName: 'Bash', input: { command: 'ls' } });
   assert.ok(event);

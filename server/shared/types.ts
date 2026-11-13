@@ -1429,6 +1429,8 @@ export type ClaudeRuntimeEvent = { sessionId: string; projectPath: string | null
       guarded?: boolean;
       /** Why the guarded call was risky: `command`, `secret` or `outside_repo`. */
       category?: string | null;
+      /** True when the guard that held the call has an allowlist of plain-file write directories (so a scratch-looking write held anyway was held for a reason). */
+      allowlist?: boolean;
     }
   /** A permission prompt ended: answered by a client or the bridge, timed out, or cancelled by an abort. */
   | { kind: 'permission_resolved'; requestId: string }

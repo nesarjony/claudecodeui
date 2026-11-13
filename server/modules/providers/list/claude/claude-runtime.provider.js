@@ -1230,7 +1230,7 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
 
       const requestId = createRequestId();
       ws.send(createNormalizedMessage({ kind: 'permission_request', requestId, toolName, input, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
-      emitRunEvent({ kind: 'permission_request', requestId, toolName, input, ...(policy ? { guarded: true, category: policy.category ?? null } : {}) });
+      emitRunEvent({ kind: 'permission_request', requestId, toolName, input, ...(policy ? { guarded: true, category: policy.category ?? null, ...(policy.allowlist === true ? { allowlist: true } : {}) } : {}) });
       emitNotification(createNotificationEvent({
         provider: 'claude',
         sessionId: sessionId || capturedSessionId || null,
