@@ -3,12 +3,32 @@ import path from 'node:path';
 import { readBridgeToken } from '@/modules/foreman/foreman-auth.service.js';
 import { resolveForemanBaseUrl } from '@/modules/foreman/foreman-suggestions.service.js';
 
+/** One subagent Foreman lets its workers delegate to (an entry of the runtime config's `delegation.agents`). */
+type ForemanDelegatedAgent = {
+  description: string;
+  prompt: string;
+  tools: string[];
+  model: string;
+  /**
+   * Regex sources one Bash command of this agent must match (case-insensitive, against the whole trimmed command). Not an SDK
+   * field: cloudcli enforces it with a PreToolUse hook. Absent on an agent that has Bash means it may run no command at all.
+   */
+  bashAllow?: string[];
+  maxTurns?: number;
+};
+
 /** What Foreman's `GET /foreman/runtime-config` tells cloudcli: the repos it manages and the hook settings. */
 type ForemanRuntimeConfig = {
   repos: Array<{ name: string; path: string }>;
   workerAutoCompactPct: number;
   hooks: { enabled: boolean; preCompactBudgetMs: number; sessionStartMaxChars: number };
+  /** The subagents of bridge-started sessions; absent when Foreman sent none or sent a malformed one. */
+  delegation?: { enabled: boolean; agents: Record<string, ForemanDelegatedAgent> };
 };
+
+/** The SDK's `AgentDefinition` as the bridge fills it (`bashAllow` stays behind: the SDK does not know it). */
+// Consumed by the Claude runtime provider, which merges these into the run's `agents` option.
+export type SdkAgentDefinition = { description: string; prompt: string; tools: string[]; model: string; maxTurns?: number };
 
 /** One SDK hook callback: it gets the hook input and answers with the hook's JSON output. It must never throw. */
 type RuntimeHookCallback = (input: unknown, toolUseId: string | undefined, options: { signal: AbortSignal }) => Promise<Record<string, unknown>>;
@@ -23,7 +43,9 @@ type RuntimeHookMatcher = { matcher?: string; hooks: RuntimeHookCallback[]; time
 // Consumed by the Claude runtime provider (through providers/index.ts), which merges it into each run's SDK options.
 export type ClaudeRuntimeAdditions = {
   env?: Record<string, string>;
-  hooks?: Partial<Record<'PreCompact' | 'SessionStart', RuntimeHookMatcher[]>>;
+  hooks?: Partial<Record<'PreCompact' | 'SessionStart' | 'PreToolUse', RuntimeHookMatcher[]>>;
+  /** Subagents the run's main agent may launch (bridge-started sessions only); merged into the SDK's `agents` option. */
+  agents?: Record<string, SdkAgentDefinition>;
 };
 
 /** The session a run belongs to, as the runtime knows it (the stable app session id, not the CLI's own id). */
@@ -34,8 +56,13 @@ type RuntimeHooksDependencies = {
   tokenFile: string;
   /** Foreman's origin. Defaults to `FOREMAN_URL`, then the origin of `FOREMAN_EVENTS_URL`, then Foreman's local address. */
   baseUrl?: string;
-  /** Was this session started through the Foreman bridge? Only those get the autocompact threshold. */
+  /** Was this session started through the Foreman bridge? Only those get the autocompact threshold and the subagents. */
   isManagedSession: (sessionId: string) => boolean;
+  /**
+   * Is this project path a worktree the bridge created (or inside one)? Such a worktree lives outside the configured repos but
+   * gets their PreCompact/SessionStart hooks. Without it only the configured repos count.
+   */
+  isForemanWorktree?: (projectPath: string) => boolean;
   fetchImpl?: typeof fetch;
   /** How long a fetched config is trusted before it is fetched again (stale config is used while Foreman is down). */
   configTtlMs?: number;
@@ -51,6 +78,8 @@ const SESSION_START_TIMEOUT_MS = 6_000;
 const PRE_COMPACT_SLACK_MS = 4_000;
 /** The autocompact percentage when Foreman cannot be asked (its config default). */
 const DEFAULT_AUTOCOMPACT_PCT = 70;
+// In seconds, like every hook `timeout`; the subagent Bash rule is a local check with no I/O.
+const SUBAGENT_BASH_HOOK_TIMEOUT_S = 5;
 
 const asRecord = (value: unknown): Record<string, unknown> | null =>
   value !== null && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
@@ -60,6 +89,120 @@ function isInsideRepo(projectPath: string, repoPath: string): boolean {
   const project = path.resolve(projectPath);
   const root = path.resolve(repoPath);
   return project === root || project.startsWith(root.endsWith(path.sep) ? root : `${root}${path.sep}`);
+}
+
+// Agent names as the CLI shows them to the model (Foreman's own schema is stricter: lower case).
+const AGENT_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+const isStringList = (value: unknown): value is string[] => Array.isArray(value) && value.every((entry) => typeof entry === 'string');
+const isText = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0;
+
+/** One `delegation.agents` entry, or null when it is malformed (it is then left out; the other agents still apply). */
+function parseDelegatedAgent(value: unknown): ForemanDelegatedAgent | null {
+  const agent = asRecord(value);
+  if (!agent || !isText(agent.description) || !isText(agent.prompt) || !isText(agent.model) || !isStringList(agent.tools)) {
+    return null;
+  }
+  // A malformed allow-list drops the agent rather than reading as "no list", which would quietly change what it may run.
+  if (agent.bashAllow !== undefined && !isStringList(agent.bashAllow)) {
+    return null;
+  }
+  const maxTurns = typeof agent.maxTurns === 'number' && Number.isInteger(agent.maxTurns) && agent.maxTurns > 0 ? agent.maxTurns : undefined;
+  return {
+    description: agent.description,
+    prompt: agent.prompt,
+    tools: agent.tools,
+    model: agent.model,
+    ...(agent.bashAllow !== undefined ? { bashAllow: agent.bashAllow } : {}),
+    ...(maxTurns !== undefined ? { maxTurns } : {}),
+  };
+}
+
+/** The config's optional `delegation`; a malformed one is ignored (undefined), never fatal for the rest of the config. */
+function parseDelegation(value: unknown): ForemanRuntimeConfig['delegation'] {
+  const delegation = asRecord(value);
+  const agents = asRecord(delegation?.agents);
+  if (!delegation || typeof delegation.enabled !== 'boolean' || !agents) {
+    return undefined;
+  }
+  const parsed: Record<string, ForemanDelegatedAgent> = {};
+  for (const [name, raw] of Object.entries(agents)) {
+    const agent = AGENT_NAME_PATTERN.test(name) ? parseDelegatedAgent(raw) : null;
+    if (agent) {
+      parsed[name] = agent;
+    }
+  }
+  return { enabled: delegation.enabled, agents: parsed };
+}
+
+// `;`, `|`, `&`, `<`, `>`, a backtick, `$(` and line breaks: anything that chains, pipes, redirects or substitutes.
+const SHELL_CONTROL = /[;|&<>`\r\n]|\$\(/;
+// Merges stderr into the output the agent reads, which is how test runners are usually called; it is not judged.
+const TRAILING_STDERR_MERGE = /\s+2>&1$/;
+
+/**
+ * May a subagent run this Bash command under its allow-list? Only a single command: no shell control operators at all (a
+ * trailing `2>&1` is tolerated and ignored), and the whole trimmed command must match one of the regex sources
+ * (case-insensitively, anchored at its start so a source can never match in the middle of a command). A source that is not a
+ * valid regular expression matches nothing; an empty list allows nothing.
+ */
+// Consumed by the subagent Bash hook below and by the runtime hooks tests.
+export function isAllowedSubagentBash(command: string, allow: readonly string[]): boolean {
+  const trimmed = command.trim().replace(TRAILING_STDERR_MERGE, '').trim();
+  if (!trimmed || SHELL_CONTROL.test(trimmed)) {
+    return false;
+  }
+  return allow.some((source) => {
+    try {
+      return new RegExp(`^(?:${source})`, 'i').test(trimmed);
+    } catch {
+      return false;
+    }
+  });
+}
+
+/** Can this agent call Bash at all? An empty list inherits every tool from the parent, Bash included. */
+const hasBashTool = (tools: readonly string[]) =>
+  tools.length === 0 || tools.some((tool) => tool === 'Bash' || tool === '*' || tool.startsWith('Bash('));
+
+/**
+ * The PreToolUse hook (matcher `Bash`) that keeps each configured subagent to the commands its `bashAllow` names. The real CLI
+ * does not do this by itself: a `Bash(npm test:*)` entry in an agent's `tools` did not stop that agent from running
+ * `touch file` (Claude Code 2.1.286). Only calls from inside a configured agent that has Bash are judged (the hook input's
+ * `agent_type` names it); the main worker (no `agent_type`) and agents Foreman did not configure are left alone. An agent with
+ * Bash but no allow-list may run nothing (fail closed). A refusal is a `deny`, which holds in every permission mode; the guard's
+ * own hook still runs next to this one. Never throws.
+ */
+function subagentBashHook(agents: Record<string, ForemanDelegatedAgent>): RuntimeHookCallback {
+  const deny = (reason: string) => ({
+    hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason },
+  });
+  return async (input) => {
+    const hook = asRecord(input);
+    const agentType = typeof hook?.agent_type === 'string' ? hook.agent_type : null;
+    if (!hook || hook.tool_name !== 'Bash' || !agentType || !Object.hasOwn(agents, agentType)) {
+      return {};
+    }
+    try {
+      const agent = agents[agentType];
+      if (!hasBashTool(agent.tools)) {
+        return {};
+      }
+      if (!agent.bashAllow) {
+        return deny(`${agentType} may only run the commands Foreman allows it, and Foreman allows it none: Bash is denied for this agent.`);
+      }
+      const toolInput = asRecord(hook.tool_input);
+      const command = typeof toolInput?.command === 'string' ? toolInput.command : '';
+      if (isAllowedSubagentBash(command, agent.bashAllow)) {
+        return {};
+      }
+      return deny(
+        `${agentType} may only run single commands its allow-list permits (no ;, |, &, <, >, backticks, $( or line breaks): `
+        + `"${command.trim().slice(0, 200)}" is not one of them. Report what you were asked to run instead of working around it.`,
+      );
+    } catch {
+      return deny(`${agentType} may only run commands Foreman allows it; this one could not be checked, so it was denied.`);
+    }
+  };
 }
 
 /** Narrows Foreman's answer to the config shape, or null when it is not one. */
@@ -73,7 +216,9 @@ function parseRuntimeConfig(value: unknown): ForemanRuntimeConfig | null {
     const r = asRecord(repo);
     return r && typeof r.name === 'string' && typeof r.path === 'string' ? [{ name: r.name, path: r.path }] : [];
   });
+  const delegation = parseDelegation(body.delegation);
   return {
+    ...(delegation ? { delegation } : {}),
     repos,
     workerAutoCompactPct: Math.min(99, Math.max(1, Math.round(body.workerAutoCompactPct))),
     hooks: {
@@ -88,9 +233,12 @@ function parseRuntimeConfig(value: unknown): ForemanRuntimeConfig | null {
  * Decides, per Claude run, what the Foreman bridge adds to it, and builds the hooks.
  *
  * - Hooks (`PreCompact`, `SessionStart`) are added only for sessions inside a repo Foreman manages (its config `repos`, read
- *   from Foreman and cached). `PreCompact` asks Foreman to write the session's notes and appends its instructions to the
- *   compaction; `SessionStart` hands the notes back after a compaction (or on resuming a handed-off session).
+ *   from Foreman and cached) or inside a worktree the bridge created for a task. `PreCompact` asks Foreman to write the
+ *   session's notes and appends its instructions to the compaction; `SessionStart` hands the notes back after a compaction
+ *   (or on resuming a handed-off session).
  * - `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` is added only for sessions started through the bridge.
+ * - Subagents (`agents`, from the config's `delegation`) are added only for sessions started through the bridge, with a
+ *   PreToolUse hook that keeps each agent's Bash to its `bashAllow` commands.
  * - Nothing here can break a session: every call has a strict timeout, any failure (Foreman down, slow, refusing) makes a hook a
  *   no-op, and nothing touches `~/.claude/settings.json` or any other user-level hook configuration.
  */
@@ -217,9 +365,29 @@ export function createForemanRuntimeHooks(dependencies: RuntimeHooksDependencies
           additions.env = { CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: String(config?.workerAutoCompactPct ?? DEFAULT_AUTOCOMPACT_PCT) };
         }
         const managedRepo =
-          config?.hooks.enabled === true && session.projectPath !== null && config.repos.some((repo) => isInsideRepo(session.projectPath as string, repo.path));
+          config?.hooks.enabled === true && session.projectPath !== null && (
+            config.repos.some((repo) => isInsideRepo(session.projectPath as string, repo.path))
+            // A worktree the bridge made for a task sits outside the repos but is worked on like one of them.
+            || dependencies.isForemanWorktree?.(session.projectPath) === true
+          );
         if (config && managedRepo) {
           additions.hooks = buildHooks(session, config);
+        }
+        // Subagents only for sessions started through the bridge, always together with the hook that keeps their Bash to the
+        // allowed commands (a run that has the agents also has the rule).
+        const delegation = config?.delegation;
+        if (delegation?.enabled && Object.keys(delegation.agents).length > 0 && dependencies.isManagedSession(session.sessionId)) {
+          additions.agents = Object.fromEntries(Object.entries(delegation.agents).map(([name, agent]) => [name, {
+            description: agent.description,
+            prompt: agent.prompt,
+            tools: agent.tools,
+            model: agent.model,
+            ...(agent.maxTurns !== undefined ? { maxTurns: agent.maxTurns } : {}),
+          }]));
+          additions.hooks = {
+            ...additions.hooks,
+            PreToolUse: [{ matcher: 'Bash', hooks: [subagentBashHook(delegation.agents)], timeout: SUBAGENT_BASH_HOOK_TIMEOUT_S }],
+          };
         }
         return additions;
       } catch (error) {

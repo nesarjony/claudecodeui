@@ -496,3 +496,95 @@ test('a Bash command keeps up to 300 characters of shortInput on one line', () =
   assert.equal(clipped.shortInput.length, 300);
   assert.ok(clipped.shortInput.endsWith('…'));
 });
+
+// ---------------------------------------------------------------------------------------------
+// Milestone 6: subagent use is visible
+// ---------------------------------------------------------------------------------------------
+
+test('a call that launches a subagent names its type; other calls carry no subagentType at all', () => {
+  const digest = buildSessionDigest(
+    parseTranscriptLines([
+      user('check the tests'),
+      assistant('m1', [
+        toolUse('tu_agent', 'Agent', { description: 'Run tests', prompt: 'Run npm test', subagent_type: 'test-runner' }),
+        toolUse('tu_task', 'Task', { description: 'Look around', prompt: 'Find the handler', subagent_type: 'explorer' }),
+        toolUse('tu_plain', 'Agent', { description: 'General help', prompt: 'Do it' }),
+        toolUse('tu_read', 'Read', { file_path: '/repo/a.ts' }),
+      ], 'tool_use'),
+      assistant('m2', [text('done')], 'end_turn'),
+    ].join('\n')),
+    { turns: 1 },
+  );
+  assert.deepEqual(digest.toolCalls.map((call) => [call.name, call.subagentType]), [
+    ['Agent', 'test-runner'],
+    ['Task', 'explorer'],
+    ['Agent', null],
+    ['Read', undefined],
+  ]);
+  assert.equal('subagentType' in digest.toolCalls[3]!, false);
+  assert.equal(digest.subagentToolCalls, 0, 'no subagent reported any tool calls');
+});
+
+test('subagent tool calls are counted from inline sidechain rows, which stay out of the existing fields', () => {
+  const rows = parseTranscriptLines([
+      // An older turn whose subagent work is outside the window.
+      user('earlier'),
+      line({ type: 'assistant', isSidechain: true, timestamp: at(), message: { id: 'old', model: 'claude-haiku-4-5', content: [toolUse('o1', 'Read', { file_path: '/a' })], stop_reason: 'tool_use' } }),
+      assistant('m0', [text('ok')], 'end_turn'),
+      // The digested turn.
+      user('delegate the review'),
+      assistant('m1', [toolUse('tu_agent', 'Task', { prompt: 'review', subagent_type: 'reviewer' })], 'tool_use'),
+      line({ type: 'user', isSidechain: true, timestamp: at(), message: { role: 'user', content: 'review' } }),
+      line({ type: 'assistant', isSidechain: true, timestamp: at(), message: { id: 'sub1', model: 'claude-haiku-4-5', content: [toolUse('s1', 'Bash', { command: 'git diff --stat' })], stop_reason: 'tool_use' } }),
+      line({ type: 'user', isSidechain: true, timestamp: at(), message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 's1', content: '2 files changed' }] } }),
+      line({ type: 'assistant', isSidechain: true, timestamp: at(), message: { id: 'sub2', model: 'claude-haiku-4-5', content: [toolUse('s2', 'Read', { file_path: '/repo/a.ts' })], stop_reason: 'tool_use' } }),
+      // An SDK-shaped row that names its parent tool call counts as subagent work as well.
+      line({ type: 'assistant', parent_tool_use_id: 'tu_agent', timestamp: at(), message: { id: 'sub3', model: 'claude-haiku-4-5', content: [toolUse('s3', 'Grep', { pattern: 'TODO' })], stop_reason: 'tool_use' } }),
+      // The CLI also reports a total on the result; the inline rows win, so nothing is counted twice.
+      toolResult('tu_agent', 'Looks fine.', false, { toolUseResult: { agentType: 'reviewer', status: 'completed', totalToolUseCount: 3 } }),
+      assistant('m2', [text('reviewed')], 'end_turn'),
+  ].join('\n'));
+  const digest = buildSessionDigest(rows, { turns: 1 });
+  assert.equal(digest.subagentToolCalls, 3);
+  // The existing fields are unchanged: sidechain rows stay skipped (a row that only names its parent was listed before too).
+  assert.deepEqual(digest.toolCalls.map((call) => call.name), ['Task', 'Grep']);
+  assert.equal(digest.toolCalls[0]!.subagentType, 'reviewer');
+  assert.equal(digest.toolCalls[0]!.resultTail, 'Looks fine.');
+  assert.equal(digest.finalAssistantText, 'reviewed');
+
+  // Two turns take the older turn's subagent call in as well.
+  assert.equal(buildSessionDigest(rows, { turns: 2 }).subagentToolCalls, 4);
+});
+
+test('with the subagent rows in a file of their own (current CLIs), the totals the CLI reports on each result are summed', () => {
+  // Shaped like Claude Code 2.1.286: the main transcript holds the Agent call and its result (with `toolUseResult`), and the
+  // subagent's rows go to <session>/subagents/agent-<id>.jsonl. A background launch reports no total yet.
+  const digest = buildSessionDigest(
+    parseTranscriptLines([
+      user('verify and explore'),
+      assistant('m1', [toolUse('tu_a', 'Agent', { description: 'Run tests', prompt: 'npm test', subagent_type: 'test-runner' })], 'tool_use'),
+      toolResult('tu_a', 'PASS', false, {
+        toolUseResult: { agentId: 'a1', agentType: 'test-runner', status: 'completed', totalToolUseCount: 2, totalTokens: 900, totalDurationMs: 4000 },
+      }),
+      assistant('m2', [toolUse('tu_b', 'Agent', { description: 'Explore', prompt: 'find it', subagent_type: 'explorer' })], 'tool_use'),
+      toolResult('tu_b', 'Found in src/a.ts:3', false, { toolUseResult: { agentId: 'a2', agentType: 'explorer', status: 'completed', totalToolUseCount: 5 } }),
+      assistant('m3', [toolUse('tu_c', 'Agent', { description: 'Background', prompt: 'later', subagent_type: 'explorer', run_in_background: true })], 'tool_use'),
+      toolResult('tu_c', 'Async agent launched', false, { toolUseResult: { agentId: 'a3', isAsync: true, status: 'async_launched' } }),
+      // A non-agent result with a number of the same name is not a subagent's report.
+      assistant('m4', [toolUse('tu_d', 'Bash', { command: 'ls' })], 'tool_use'),
+      toolResult('tu_d', 'a.ts', false, { toolUseResult: { totalToolUseCount: 99 } }),
+      assistant('m5', [text('all good')], 'end_turn'),
+    ].join('\n')),
+    { turns: 1 },
+  );
+  assert.equal(digest.subagentToolCalls, 7);
+  assert.deepEqual(digest.toolCalls.map((call) => call.subagentType), ['test-runner', 'explorer', 'explorer', undefined]);
+  assert.equal(digest.toolCallCount, 4, 'the existing count is unchanged: main-thread calls only');
+});
+
+test('a transcript with no subagent use digests to subagentToolCalls 0, and the existing digest shape is unchanged', () => {
+  const digest = buildSessionDigest(parseTranscriptLines(fixtureLines().join('\n')), { turns: 1 });
+  assert.equal(digest.subagentToolCalls, 0);
+  assert.ok(digest.toolCalls.every((call) => !('subagentType' in call)));
+  assert.equal(buildSessionDigest([], { turns: 1 }).subagentToolCalls, 0);
+});

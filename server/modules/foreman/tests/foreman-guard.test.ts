@@ -335,6 +335,38 @@ test('a tool call the hook cannot read is asked about, and the hook never throws
   assert.deepEqual(await runHook({ tool_name: 'TodoRead' }), {});
 });
 
+test('a subagent\'s calls are held exactly like the main worker\'s: agent_id and agent_type change nothing', async () => {
+  // Shaped like what Claude Code 2.1.286 sends for a tool call made inside a subagent (seen in a real run): the hook input
+  // carries agent_id and agent_type, and canUseTool's options carry agentID. The guard reads none of them.
+  const fromSubagent = (toolName: string, toolInput: unknown, agentType: string) =>
+    ({ ...preToolUse(toolName, toolInput), agent_id: 'a98c5140240c80a8e', agent_type: agentType });
+
+  const risky = await runHook(fromSubagent('Bash', { command: 'git push origin main' }, 'test-runner'));
+  assert.equal(risky.hookSpecificOutput.permissionDecision, 'ask');
+  assert.match(risky.hookSpecificOutput.permissionDecisionReason, /a risky command/);
+  const secret = await runHook(fromSubagent('Read', { file_path: `${REPO}/.env` }, 'explorer'));
+  assert.equal(secret.hookSpecificOutput.permissionDecision, 'ask');
+  assert.match(secret.hookSpecificOutput.permissionDecisionReason, /a secret or credential path/);
+  const shellSecret = await runHook(fromSubagent('Bash', { command: 'cat .env' }, 'reviewer'));
+  assert.equal(shellSecret.hookSpecificOutput.permissionDecision, 'ask');
+
+  // The very same answers the main worker gets for those calls.
+  assert.deepEqual(risky, await runHook(preToolUse('Bash', { command: 'git push origin main' })));
+  assert.deepEqual(secret, await runHook(preToolUse('Read', { file_path: `${REPO}/.env` })));
+
+  // In a mode that cannot hold a call, a subagent's risky call is denied outright, like the main worker's.
+  const bypass = await runHook({ ...fromSubagent('Bash', { command: 'git push' }, 'test-runner'), permission_mode: 'bypassPermissions' });
+  assert.equal(bypass.hookSpecificOutput.permissionDecision, 'deny');
+  // A subagent's safe call is not waved through by the hook either: it answers nothing, as for the main worker.
+  assert.deepEqual(await runHook(fromSubagent('Read', { file_path: `${REPO}/src/app.ts` }, 'explorer')), {});
+
+  // canUseTool hands the policy the tool name and input only (never the agent), so a subagent's call is judged the same.
+  const policy = createToolPolicy(guard());
+  assert.equal(policy('Bash', { command: 'git push origin main' }).decision, 'ask');
+  const read = policy('Read', { file_path: `${REPO}/.env` });
+  assert.equal(read.decision === 'ask' && read.category, 'secret');
+});
+
 // ---------------------------------------------------------------------------------------------
 // The per-session policy handed to the runtime
 // ---------------------------------------------------------------------------------------------

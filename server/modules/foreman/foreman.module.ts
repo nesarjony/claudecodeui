@@ -16,7 +16,9 @@ import {
 } from '@/modules/foreman/foreman-suggestions.service.js';
 import { createTaskIdStore } from '@/modules/foreman/foreman-task-ids.service.js';
 import { createForemanUiRouter } from '@/modules/foreman/foreman-ui.routes.js';
+import { createForemanWorktreeRegistry, createForemanWorktreesService } from '@/modules/foreman/foreman-worktrees.service.js';
 import { createForemanRouter } from '@/modules/foreman/foreman.routes.js';
+import { createProject, deleteOrArchiveProject, restoreArchivedProject } from '@/modules/projects/index.js';
 import {
   getActiveClaudeSDKSessions,
   getClaudeSessionContextUsage,
@@ -80,11 +82,19 @@ export function createForemanModule() {
     get: (key) => appConfigDb.get(key),
     set: (key, value) => appConfigDb.set(key, value),
   });
-  // Foreman's PreCompact/SessionStart hooks (Foreman repos only) and the autocompact threshold (bridge sessions only) are
-  // added to each Claude run through this provider; it never throws and a Foreman that is down just means no additions.
+  // The worktrees the bridge created for tasks, also kept in app_config so they survive restarts.
+  const worktreeRegistry = createForemanWorktreeRegistry({
+    get: (key) => appConfigDb.get(key),
+    set: (key, value) => appConfigDb.set(key, value),
+    delete: (key) => appConfigDb.delete(key),
+  });
+  // Foreman's PreCompact/SessionStart hooks (Foreman repos and their task worktrees only), the autocompact threshold and the
+  // subagents (bridge sessions only) are added to each Claude run through this provider; it never throws and a Foreman that is
+  // down just means no additions.
   const runtimeHooks = createForemanRuntimeHooks({
     tokenFile,
     isManagedSession: (sessionId) => managed.has(sessionId),
+    isForemanWorktree: (projectPath) => worktreeRegistry.contains(projectPath),
     warn: (message) => console.warn(`[Foreman bridge] ${message}`),
     debug: (message) => {
       if (debugEnabled) {
@@ -173,6 +183,26 @@ export function createForemanModule() {
     authMiddleware: createBridgeAuthMiddleware({ tokenFile }),
     sessions,
     git: createForemanGitService({ projectsDb }),
+    // A worktree is registered as a project the way the Worktrees module registers one it opens (the add-project path).
+    worktrees: createForemanWorktreesService({
+      projects: {
+        getProjectByPath: (projectPath) => projectsDb.getProjectPath(projectPath),
+        // The path is one the worktree service computed itself, inside its worktrees directory next to a project cloudcli already
+        // knows. The workspace-root rule (paths under the user's home) is meant for a path a person types: applied here it would
+        // refuse every worktree of a repository that lives outside the home directory (/mnt/dev/...).
+        createProject: (input) =>
+          createProject(input, {
+            validatePath: async (projectPath) => ({ valid: true, resolvedPath: projectPath }),
+            ensureWorkspaceDirectory: async () => undefined,
+            persistProjectPath: (projectPath, customName) => projectsDb.createProjectPath(projectPath, customName),
+            getProjectByPath: (projectPath) => projectsDb.getProjectPath(projectPath),
+          }),
+        restoreProject: (projectId) => restoreArchivedProject(projectId),
+        archiveProject: (projectId) => deleteOrArchiveProject(projectId, false),
+      },
+      registry: worktreeRegistry,
+      worktreesDir: process.env.FOREMAN_WORKTREES_DIR || undefined,
+    }),
     // Foreman's suggestions go to every open chat socket; each chat keeps the ones for its own session.
     suggestions: createSuggestionBroadcaster({ clients: () => connectedClients, openState: WS_OPEN_STATE }),
   });

@@ -71,7 +71,8 @@ const DIFF_EXCLUDE_PATHSPECS = [
 // switched off on the diff calls themselves).
 const GIT_BASE_ARGS = ['--no-pager', '-c', 'core.quotepath=false', '-c', 'core.fsmonitor=false'];
 
-const defaultRunGit: GitRunner = (args, { cwd, timeoutMs }) =>
+// Also consumed by foreman-worktrees.service.ts, which runs its worktree commands with the same hardening.
+export const defaultRunGit: GitRunner = (args, { cwd, timeoutMs }) =>
   new Promise((resolve, reject) => {
     execFile(
       'git',

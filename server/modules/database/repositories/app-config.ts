@@ -37,6 +37,12 @@ export const appConfigDb = {
     ).run(key, value);
   },
 
+  /** Removes a config key; a key that is not there is not an error. Used by the Foreman bridge's worktree registry. */
+  delete(key: string): void {
+    const db = getConnection();
+    db.prepare('DELETE FROM app_config WHERE key = ?').run(key);
+  },
+
   /**
    * Returns the JWT signing secret, generating and persisting one
    * if it does not already exist. This ensures the secret survives
