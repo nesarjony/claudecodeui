@@ -394,7 +394,9 @@ export function createForemanEventPusher(dependencies: EventPusherDependencies) 
         if (translated.type === 'refusal') {
           const at = Date.parse(translated.ts);
           const previous = lastRefusalAt.get(translated.sessionId);
-          if (previous !== undefined && at - previous < REFUSAL_DEDUPE_MS) {
+          // The fallback notice is the only signal that says the run moves to another model, and the refused message may be
+          // reported just before it: it always goes through (a later report of the same refusal is still folded into it).
+          if (translated.data.fallback !== true && previous !== undefined && at - previous < REFUSAL_DEDUPE_MS) {
             return;
           }
           lastRefusalAt.set(translated.sessionId, at);

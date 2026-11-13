@@ -17,6 +17,17 @@ type ForemanDelegatedAgent = {
   maxTurns?: number;
 };
 
+/** What Foreman tells cloudcli about its worker sessions (the runtime config's `workers`). */
+type ForemanWorkersConfig = {
+  /**
+   * The model to retry on when the run's model refuses a request: `models` maps a primary model id to its fallback. Keys are
+   * stored normalized (see `modelKey`), values as Foreman sent them (trimmed).
+   */
+  refusalFallback: { enabled: boolean; models: Record<string, string> };
+  /** Tools (or tool patterns) a worker may never use, whatever its permission mode. */
+  disallowedTools: string[];
+};
+
 /** What Foreman's `GET /foreman/runtime-config` tells cloudcli: the repos it manages and the hook settings. */
 type ForemanRuntimeConfig = {
   repos: Array<{ name: string; path: string }>;
@@ -24,6 +35,8 @@ type ForemanRuntimeConfig = {
   hooks: { enabled: boolean; preCompactBudgetMs: number; sessionStartMaxChars: number };
   /** The subagents of bridge-started sessions; absent when Foreman sent none or sent a malformed one. */
   delegation?: { enabled: boolean; agents: Record<string, ForemanDelegatedAgent> };
+  /** The refusal fallback and denied tools of bridge-started sessions; absent when Foreman sent none or sent a malformed one. */
+  workers?: ForemanWorkersConfig;
 };
 
 /** The SDK's `AgentDefinition` as the bridge fills it (`bashAllow` stays behind: the SDK does not know it). */
@@ -37,8 +50,8 @@ type RuntimeHookCallback = (input: unknown, toolUseId: string | undefined, optio
 type RuntimeHookMatcher = { matcher?: string; hooks: RuntimeHookCallback[]; timeout?: number };
 
 /**
- * What the Foreman bridge adds to a Claude run: in-process hooks for the events Foreman cares about and environment
- * variables for the CLI. The runtime merges both into the SDK options of the run.
+ * What the Foreman bridge adds to a Claude run: in-process hooks for the events Foreman cares about, environment variables
+ * for the CLI, subagents, a refusal fallback model and denied tools. The runtime merges them into the SDK options of the run.
  */
 // Consumed by the Claude runtime provider (through providers/index.ts), which merges it into each run's SDK options.
 export type ClaudeRuntimeAdditions = {
@@ -46,17 +59,24 @@ export type ClaudeRuntimeAdditions = {
   hooks?: Partial<Record<'PreCompact' | 'SessionStart' | 'PreToolUse', RuntimeHookMatcher[]>>;
   /** Subagents the run's main agent may launch (bridge-started sessions only); merged into the SDK's `agents` option. */
   agents?: Record<string, SdkAgentDefinition>;
+  /** The model the run retries on when its own model refuses a request (bridge-started sessions only); the SDK's `fallbackModel`. */
+  fallbackModel?: string;
+  /** Tools the run may never use (bridge-started sessions only); merged into the SDK's `disallowedTools`, which a person cannot override. */
+  disallowedTools?: string[];
 };
 
-/** The session a run belongs to, as the runtime knows it (the stable app session id, not the CLI's own id). */
+/**
+ * The session a run belongs to, as the runtime knows it (the stable app session id, not the CLI's own id). `model` is the
+ * run's SDK model (without the `@api` marker); the refusal fallback is chosen by it.
+ */
 // Consumed by the Claude runtime provider when it asks for a run's additions.
-export type ClaudeRuntimeSession = { sessionId: string; projectPath: string | null };
+export type ClaudeRuntimeSession = { sessionId: string; projectPath: string | null; model?: string };
 
 type RuntimeHooksDependencies = {
   tokenFile: string;
   /** Foreman's origin. Defaults to `FOREMAN_URL`, then the origin of `FOREMAN_EVENTS_URL`, then Foreman's local address. */
   baseUrl?: string;
-  /** Was this session started through the Foreman bridge? Only those get the autocompact threshold and the subagents. */
+  /** Was this session started through the Foreman bridge? Only those get the autocompact threshold, the subagents, the refusal fallback and the denied tools. */
   isManagedSession: (sessionId: string) => boolean;
   /**
    * Is this project path a worktree the bridge created (or inside one)? Such a worktree lives outside the configured repos but
@@ -90,6 +110,12 @@ function isInsideRepo(projectPath: string, repoPath: string): boolean {
   const root = path.resolve(repoPath);
   return project === root || project.startsWith(root.endsWith(path.sep) ? root : `${root}${path.sep}`);
 }
+
+// The suffix that marks the 1M-context variant of a model id; it does not make a different model for the fallback map.
+const ONE_MILLION_CONTEXT_SUFFIX = /\[1m\]$/i;
+
+/** A model id as the fallback map compares it: trimmed, without a trailing `[1m]`, lower case. */
+const modelKey = (model: string): string => model.trim().replace(ONE_MILLION_CONTEXT_SUFFIX, '').trim().toLowerCase();
 
 // Agent names as the CLI shows them to the model (Foreman's own schema is stricter: lower case).
 const AGENT_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
@@ -132,6 +158,47 @@ function parseDelegation(value: unknown): ForemanRuntimeConfig['delegation'] {
     }
   }
   return { enabled: delegation.enabled, agents: parsed };
+}
+
+/** The config's optional `workers.refusalFallback`; undefined when it is malformed (the fallback is then off). Never fatal. */
+function parseRefusalFallback(value: unknown): ForemanWorkersConfig['refusalFallback'] | undefined {
+  const fallback = asRecord(value);
+  if (!fallback || typeof fallback.enabled !== 'boolean') {
+    return undefined;
+  }
+  const models: Record<string, string> = {};
+  for (const [primary, target] of Object.entries(asRecord(fallback.models) ?? {})) {
+    // An entry needs both ends; a half entry is left out and the others still apply.
+    if (isText(target) && modelKey(primary)) {
+      models[modelKey(primary)] = target.trim();
+    }
+  }
+  return { enabled: fallback.enabled, models };
+}
+
+/** The config's optional `workers`; a malformed one is ignored (undefined), never fatal for the rest of the config. */
+function parseWorkers(value: unknown): ForemanWorkersConfig | undefined {
+  const workers = asRecord(value);
+  if (!workers) {
+    return undefined;
+  }
+  const disallowedTools = Array.isArray(workers.disallowedTools)
+    ? [...new Set(workers.disallowedTools.filter(isText).map((tool) => tool.trim()))]
+    : [];
+  return { refusalFallback: parseRefusalFallback(workers.refusalFallback) ?? { enabled: false, models: {} }, disallowedTools };
+}
+
+/**
+ * The model to retry on after a refusal of `model`, or null: the fallback must be enabled, the model (compared by `modelKey`)
+ * must have a map entry, and that entry must be a different model than the model itself.
+ */
+function refusalFallbackFor(fallback: ForemanWorkersConfig['refusalFallback'], model: string | undefined): string | null {
+  if (!fallback.enabled || typeof model !== 'string') {
+    return null;
+  }
+  const key = modelKey(model);
+  const target = key && Object.hasOwn(fallback.models, key) ? fallback.models[key] : undefined;
+  return target && modelKey(target) !== key ? target : null;
 }
 
 // `;`, `|`, `&`, `<`, `>`, a backtick, `$(` and line breaks: anything that chains, pipes, redirects or substitutes.
@@ -217,8 +284,10 @@ function parseRuntimeConfig(value: unknown): ForemanRuntimeConfig | null {
     return r && typeof r.name === 'string' && typeof r.path === 'string' ? [{ name: r.name, path: r.path }] : [];
   });
   const delegation = parseDelegation(body.delegation);
+  const workers = parseWorkers(body.workers);
   return {
     ...(delegation ? { delegation } : {}),
+    ...(workers ? { workers } : {}),
     repos,
     workerAutoCompactPct: Math.min(99, Math.max(1, Math.round(body.workerAutoCompactPct))),
     hooks: {
@@ -239,6 +308,10 @@ function parseRuntimeConfig(value: unknown): ForemanRuntimeConfig | null {
  * - `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` is added only for sessions started through the bridge.
  * - Subagents (`agents`, from the config's `delegation`) are added only for sessions started through the bridge, with a
  *   PreToolUse hook that keeps each agent's Bash to its `bashAllow` commands.
+ * - A refusal fallback model (`fallbackModel`, from the config's `workers.refusalFallback`, chosen by the run's model) and the
+ *   denied tools (`disallowedTools`, from `workers.disallowedTools`) are added only for sessions started through the bridge.
+ *   An armed fallback comes with `CLAUDE_CODE_REFUSAL_FALLBACK_CATCH_ALL`: Claude Code 2.1.286 has no category route for the
+ *   `reasoning_extraction` refusal, so without it the fallback model would never be used for that category.
  * - Nothing here can break a session: every call has a strict timeout, any failure (Foreman down, slow, refusing) makes a hook a
  *   no-op, and nothing touches `~/.claude/settings.json` or any other user-level hook configuration.
  */
@@ -361,8 +434,21 @@ export function createForemanRuntimeHooks(dependencies: RuntimeHooksDependencies
       try {
         const additions: ClaudeRuntimeAdditions = {};
         const config = await loadConfig();
-        if (dependencies.isManagedSession(session.sessionId)) {
+        const managed = dependencies.isManagedSession(session.sessionId);
+        if (managed) {
           additions.env = { CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: String(config?.workerAutoCompactPct ?? DEFAULT_AUTOCOMPACT_PCT) };
+        }
+        // A person's own chat gets neither of these, nor does a bridge session when Foreman is down or sent no `workers`.
+        const workers = managed ? config?.workers : undefined;
+        if (workers) {
+          const fallbackModel = refusalFallbackFor(workers.refusalFallback, session.model);
+          if (fallbackModel) {
+            additions.fallbackModel = fallbackModel;
+            additions.env = { ...additions.env, CLAUDE_CODE_REFUSAL_FALLBACK_CATCH_ALL: '1' };
+          }
+          if (workers.disallowedTools.length > 0) {
+            additions.disallowedTools = [...workers.disallowedTools];
+          }
         }
         const managedRepo =
           config?.hooks.enabled === true && session.projectPath !== null && (
@@ -376,7 +462,7 @@ export function createForemanRuntimeHooks(dependencies: RuntimeHooksDependencies
         // Subagents only for sessions started through the bridge, always together with the hook that keeps their Bash to the
         // allowed commands (a run that has the agents also has the rule).
         const delegation = config?.delegation;
-        if (delegation?.enabled && Object.keys(delegation.agents).length > 0 && dependencies.isManagedSession(session.sessionId)) {
+        if (delegation?.enabled && Object.keys(delegation.agents).length > 0 && managed) {
           additions.agents = Object.fromEntries(Object.entries(delegation.agents).map(([name, agent]) => [name, {
             description: agent.description,
             prompt: agent.prompt,

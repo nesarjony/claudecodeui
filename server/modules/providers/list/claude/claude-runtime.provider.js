@@ -68,15 +68,26 @@ export function subscribeClaudeRuntimeEvents(listener) {
   };
 }
 
-// The Foreman bridge's hook into each run: it answers with extra SDK hooks, environment variables and subagents for a session.
-// Registered once by the foreman module; the runtime knows nothing else about Foreman.
+// The Foreman bridge's hook into each run: it answers with extra SDK hooks, environment variables, subagents, a refusal fallback
+// model and denied tools for a session. Registered once by the foreman module; the runtime knows nothing else about Foreman.
 let runtimeAdditionsProvider = null;
 
 /**
+ * What a run is identified by when the provider is asked for its additions: the app session id, the project path and the run's SDK model.
+ * @typedef {{ sessionId: string, projectPath: string | null, model?: string }} RuntimeAdditionsSession
+ */
+
+/**
+ * What the provider may add to a run: extra SDK hooks, environment variables, subagents, the model to retry on after a refusal and
+ * tools the run may never use.
+ * @typedef {{ env?: Record<string, string>, hooks?: Record<string, unknown[]>, agents?: Record<string, { description: string, prompt: string, tools: string[], model: string, maxTurns?: number }>, fallbackModel?: string, disallowedTools?: string[] }} RuntimeAdditions
+ */
+
+/**
  * Registers the provider that adds in-process hooks and environment variables to a run (Foreman's PreCompact and SessionStart
- * hooks, and the autocompact threshold of sessions it started), and the subagents a session it started may delegate to (with
- * the PreToolUse hook that limits their Bash).
- * @param {((session: { sessionId: string, projectPath: string | null }) => Promise<{ env?: Record<string, string>, hooks?: Record<string, unknown[]>, agents?: Record<string, { description: string, prompt: string, tools: string[], model: string, maxTurns?: number }> }>) | null} provider
+ * hooks, and the autocompact threshold of sessions it started), the subagents a session it started may delegate to (with
+ * the PreToolUse hook that limits their Bash), and, for those sessions, the refusal fallback model and the denied tools.
+ * @param {((session: RuntimeAdditionsSession) => Promise<RuntimeAdditions>) | null} provider
  */
 export function setClaudeRuntimeAdditionsProvider(provider) {
   runtimeAdditionsProvider = provider;
@@ -87,8 +98,8 @@ const RUNTIME_ADDITIONS_TIMEOUT_MS = 3000;
 /**
  * Asks the registered provider what to add to a run. Never throws and never waits longer than a few seconds: a provider that
  * is missing, slow or failing means the run goes ahead without additions.
- * @param {{ sessionId: string | undefined, projectPath: string | null }} session
- * @returns {Promise<{ env?: Record<string, string>, hooks?: Record<string, unknown[]>, agents?: Record<string, { description: string, prompt: string, tools: string[], model: string, maxTurns?: number }> }>}
+ * @param {Omit<RuntimeAdditionsSession, 'sessionId'> & { sessionId: string | undefined }} session
+ * @returns {Promise<RuntimeAdditions>}
  */
 async function resolveRuntimeAdditions(session) {
   if (!runtimeAdditionsProvider || !session.sessionId) {
@@ -108,6 +119,42 @@ async function resolveRuntimeAdditions(session) {
   } finally {
     clearTimeout(timer);
   }
+}
+
+const nonEmptyStrings = (value) => (Array.isArray(value) ? value.filter((entry) => typeof entry === 'string' && entry.trim()) : []);
+
+/**
+ * Folds the model and tool additions of a run into its SDK options: `fallbackModel` is set (the model the CLI retries on after a
+ * refusal) and the denied tools join `disallowedTools` (deduplicated, every existing entry kept). Returns the denied tools the
+ * additions made, which a person's "always allow" must never remove again (see `removeRememberedDenial`).
+ * @param {{ fallbackModel?: string, disallowedTools?: string[] }} sdkOptions
+ * @param {RuntimeAdditions} additions
+ * @returns {string[]}
+ */
+// Consumed by queryClaudeSDK below and by the Claude runtime tests.
+export function applyRuntimeModelAndToolAdditions(sdkOptions, additions) {
+  if (typeof additions.fallbackModel === 'string' && additions.fallbackModel.trim()) {
+    sdkOptions.fallbackModel = additions.fallbackModel.trim();
+  }
+  const enforced = [...new Set(nonEmptyStrings(additions.disallowedTools))];
+  if (enforced.length > 0) {
+    const existing = Array.isArray(sdkOptions.disallowedTools) ? sdkOptions.disallowedTools : [];
+    sdkOptions.disallowedTools = [...existing, ...enforced.filter((entry) => !existing.includes(entry))];
+  }
+  return enforced;
+}
+
+/**
+ * The disallowed tools left after a person ticks "always allow" for `entry`: the entry is dropped, unless the run's additions
+ * (`enforced`, from `applyRuntimeModelAndToolAdditions`) denied it, which no person can undo.
+ * @param {string[]} disallowedTools
+ * @param {string} entry
+ * @param {readonly string[]} enforced
+ * @returns {string[]}
+ */
+// Consumed by the permission callback below and by the Claude runtime tests.
+export function removeRememberedDenial(disallowedTools, entry, enforced) {
+  return disallowedTools.filter((denied) => denied !== entry || enforced.includes(denied));
 }
 
 function emitRuntimeEvent(event) {
@@ -1169,10 +1216,13 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
 
     // Foreman-managed sessions get in-process PreCompact/SessionStart hooks (project and Foreman's own repos only) and,
     // when started through the bridge, the worker autocompact threshold. Appended to the hooks above, never replacing them.
-    const runtimeAdditions = await resolveRuntimeAdditions({ sessionId, projectPath: options.projectPath || options.cwd || null });
+    const runtimeAdditions = await resolveRuntimeAdditions({ sessionId, projectPath: options.projectPath || options.cwd || null, model: sdkOptions.model });
     if (runtimeAdditions.env) {
       sdkOptions.env = { ...sdkOptions.env, ...runtimeAdditions.env };
     }
+    // The refusal fallback model and the tools Foreman denies its workers. The denied tools are kept apart so a stored or
+    // ticked "always allow" below cannot take them out of the run again.
+    const enforcedDisallowedTools = applyRuntimeModelAndToolAdditions(sdkOptions, runtimeAdditions);
     for (const [event, matchers] of Object.entries(runtimeAdditions.hooks ?? {})) {
       sdkOptions.hooks[event] = [...(sdkOptions.hooks[event] ?? []), ...matchers];
     }
@@ -1209,6 +1259,10 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
         // A call the guard policy holds goes to a person whatever else is configured: neither a bypass mode nor a stored
         // allow rule (for example one a person ticked "always allow" on for an earlier call) may wave it through.
         const heldByPolicy = policy?.decision === 'ask';
+        // A tool Foreman denies its workers is refused first of all: not even a bypass mode lets it through.
+        if (enforcedDisallowedTools.some(entry => matchesToolPermission(entry, toolName, input))) {
+          return { behavior: 'deny', message: 'Tool disallowed by settings' };
+        }
         if (sdkOptions.permissionMode === 'bypassPermissions' && !heldByPolicy) {
           return { behavior: 'allow', updatedInput: input };
         }
@@ -1280,7 +1334,7 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
             sdkOptions.allowedTools.push(decision.rememberEntry);
           }
           if (Array.isArray(sdkOptions.disallowedTools)) {
-            sdkOptions.disallowedTools = sdkOptions.disallowedTools.filter(entry => entry !== decision.rememberEntry);
+            sdkOptions.disallowedTools = removeRememberedDenial(sdkOptions.disallowedTools, decision.rememberEntry, enforcedDisallowedTools);
           }
         }
         return { behavior: 'allow', updatedInput: decision.updatedInput ?? input };
