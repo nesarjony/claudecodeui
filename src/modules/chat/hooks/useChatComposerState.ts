@@ -65,6 +65,11 @@ type UseChatComposerStateArgs = {
   addMessage: (msg: ChatMessage) => void;
   setIsUserScrolledUp: (isScrolledUp: boolean) => void;
   setPendingPermissionRequests: Dispatch<SetStateAction<PendingPermissionRequest[]>>;
+  /**
+   * Called with the text of every message the user submits from the composer (typed, or sent through `sendText`),
+   * just before it is sent or queued. The Foreman suggestion card uses it to report an edited suggestion.
+   */
+  onUserSubmit?: (text: string) => void;
 };
 
 type MentionableFile = {
@@ -176,7 +181,13 @@ export function useChatComposerState({
   addMessage,
   setIsUserScrolledUp,
   setPendingPermissionRequests,
+  onUserSubmit,
 }: UseChatComposerStateArgs) {
+  const onUserSubmitRef = useRef(onUserSubmit);
+  useEffect(() => {
+    onUserSubmitRef.current = onUserSubmit;
+  }, [onUserSubmit]);
+
   // The composer text together with the chat scope it belongs to. They are one
   // state rather than a value plus a ref because they have to move in lockstep:
   // on a session switch there is one commit where the scope has already changed
@@ -631,6 +642,11 @@ export function useChatComposerState({
         return;
       }
 
+      // A queued draft being dispatched was already reported when it was queued.
+      if (!queuedSubmission) {
+        onUserSubmitRef.current?.(currentInput);
+      }
+
       // A turn is already in flight: stash this message instead of sending it.
       // Upload attached files now so the queued record contains durable image
       // descriptors that can be sent even if another session is open later.
@@ -951,6 +967,21 @@ export function useChatComposerState({
     if (send) handleSubmitRef.current?.(createFakeSubmitEvent());
   }, [setInput]);
 
+  // Sends `text` through the ordinary send path, exactly as if it had been typed and submitted (attachments, slash
+  // commands and queueing behind a running turn all apply). Whatever the user had typed in the box is put back after.
+  const sendText = useCallback((text: string) => {
+    const previous = inputValueRef.current;
+    setInput(text);
+    inputValueRef.current = text;
+    const submitted = handleSubmitRef.current?.(createFakeSubmitEvent());
+    void Promise.resolve(submitted).then(() => {
+      if (previous.trim()) {
+        setInput(previous);
+        inputValueRef.current = previous;
+      }
+    });
+  }, [setInput]);
+
   useEffect(() => {
     inputValueRef.current = input;
   }, [input]);
@@ -1253,6 +1284,7 @@ export function useChatComposerState({
     editQueuedDraft,
     deleteQueuedDraft,
     handleVoiceTranscript,
+    sendText,
     handleInputChange,
     handleKeyDown,
     handlePaste,

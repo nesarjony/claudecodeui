@@ -115,6 +115,8 @@ type ChatComposerProps = {
   sendByCtrlEnter?: boolean;
   /** Quick-commands control rendered in the toolbar (button, palette and pinned chips). */
   quickCommands?: ReactNode;
+  /** The "Foreman suggests" card; sits between the permission banner and the input, in the composer's own column. */
+  foremanSuggestion?: ReactNode;
 };
 
 /**
@@ -189,6 +191,7 @@ export default function ChatComposer({
   isTextareaExpanded,
   sendByCtrlEnter,
   quickCommands,
+  foremanSuggestion,
 }: ChatComposerProps) {
   const { t } = useTranslation('chat');
   const fileDropdownRef = useRef<HTMLDivElement | null>(null);
@@ -288,6 +291,8 @@ export default function ChatComposer({
           />
         </div>
       )}
+
+      {foremanSuggestion}
 
       <ScheduledMessageList
         scheduledMessages={scheduledMessages}

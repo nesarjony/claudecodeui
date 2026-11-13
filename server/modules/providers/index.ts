@@ -16,3 +16,15 @@ export { closeSessionsWatcher } from './services/sessions-watcher.service.js';
 // getLiveAgentTasks/getLiveBackgroundTasks/stopClaudeAgentTask: used by the agents module to
 // report and stop live subagents and background shells.
 export { getLiveAgentTasks, getLiveBackgroundTasks, stopClaudeAgentTask } from './list/claude/claude-runtime.provider.js';
+
+// subscribeClaudeRuntimeEvents/setClaudeSessionModel/getClaudeSessionContextUsage/hasClaudeApiKey/
+// isClaudeSDKSessionActive/getActiveClaudeSDKSessions: used by the foreman module to observe and
+// steer live Claude sessions on behalf of the Foreman service.
+export {
+  getActiveClaudeSDKSessions,
+  getClaudeSessionContextUsage,
+  hasClaudeApiKey,
+  isClaudeSDKSessionActive,
+  setClaudeSessionModel,
+  subscribeClaudeRuntimeEvents,
+} from './list/claude/claude-runtime.provider.js';

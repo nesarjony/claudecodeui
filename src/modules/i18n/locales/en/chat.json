@@ -146,6 +146,40 @@
     "count_other": "{{count}} steps",
     "failed": "{{count}} failed"
   },
+  "foreman": {
+    "title": "Foreman suggests",
+    "aria": "Foreman suggestion",
+    "actions": {
+      "continue": "Continue",
+      "steer": "Steer",
+      "demand_evidence": "Ask for evidence",
+      "answer": "Answer",
+      "delegate": "Delegate",
+      "split": "Split the task",
+      "switch_model": "Switch model",
+      "write_notes": "Write notes",
+      "compact": "Compact",
+      "handoff": "Hand off",
+      "run_judge": "Run the judge",
+      "needs_user": "Needs you",
+      "stop": "Stop"
+    },
+    "send": "Send",
+    "edit": "Edit",
+    "dismiss": "Dismiss",
+    "switchTo": "Switch to {{model}}",
+    "switchHint": "Move this session to {{model}}.",
+    "why": "Why",
+    "confidence": "{{percent}}% sure",
+    "confidenceTitle": "How sure Foreman is",
+    "risk": {
+      "low": "Low risk",
+      "medium": "Medium risk",
+      "high": "High risk"
+    },
+    "secondOpinion": "{{model}} · 2nd opinion",
+    "unavailable": "Not available in shadow mode yet"
+  },
   "composer": {
     "reasoning": "Reasoning",
     "model": "Model",

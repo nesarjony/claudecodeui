@@ -50,6 +50,37 @@ const abortedSessionIds = new Set();
 // entry, the abort flag, and all client-facing events belong to the new run.
 const supersededInstances = new WeakSet();
 
+// In-process subscribers to this runtime's lifecycle events (the ClaudeRuntimeEvent shapes in
+// server/shared/types.ts). The Foreman bridge is the only subscriber today; the runtime itself
+// knows nothing about it. Listeners run synchronously inside the run loop, so a faulty one is
+// isolated here and can never break or slow a run.
+const runtimeEventListeners = new Set();
+
+/**
+ * Subscribes to the Claude runtime's lifecycle events.
+ * @param {(event: import("@/shared/types.js").ClaudeRuntimeEvent) => void} listener - Must return immediately and never throw
+ * @returns {() => void} Unsubscribe function
+ */
+export function subscribeClaudeRuntimeEvents(listener) {
+  runtimeEventListeners.add(listener);
+  return () => {
+    runtimeEventListeners.delete(listener);
+  };
+}
+
+function emitRuntimeEvent(event) {
+  for (const listener of runtimeEventListeners) {
+    try {
+      listener(event);
+    } catch (error) {
+      console.warn('Claude runtime event listener failed:', error?.message || error);
+    }
+  }
+}
+
+// SDK system messages that are reported to runtime subscribers.
+const OBSERVED_SYSTEM_SUBTYPES = new Set(['compact_boundary', 'model_refusal_fallback', 'model_refusal_no_fallback']);
+
 const TOOL_APPROVAL_TIMEOUT_MS = parseInt(process.env.CLAUDE_TOOL_APPROVAL_TIMEOUT_MS, 10) || 55000;
 
 // How long background work is allowed to keep running after a turn ends. This drives
@@ -313,6 +344,37 @@ export async function stopClaudeAgentTask(sessionId, taskId) {
   if (!session?.instance?.stopTask) return false;
   await session.instance.stopTask(taskId);
   return true;
+}
+
+/**
+ * Changes the model of the session's live CLI process.
+ * @returns {Promise<boolean>} False when no process of this server runs the session
+ */
+export async function setClaudeSessionModel(sessionId, model) {
+  const session = getSession(sessionId);
+  if (!session?.instance?.setModel) return false;
+  await session.instance.setModel(model);
+  return true;
+}
+
+/**
+ * Context-window usage reported by the session's live CLI process. The summary form answers from
+ * the last response's usage and local estimates, without per-category token-count calls.
+ * @returns {Promise<import('@anthropic-ai/claude-agent-sdk').SDKControlGetContextUsageResponse|null>} The SDK's context usage report; null when no process runs the session
+ */
+export async function getClaudeSessionContextUsage(sessionId) {
+  const session = getSession(sessionId);
+  if (!session?.instance?.getContextUsage) return null;
+  return session.instance.getContextUsage({ detail: 'summary' });
+}
+
+/** True when the API-key billing file holds a key. The key itself never leaves this module. */
+export function hasClaudeApiKey() {
+  try {
+    return readFileSync(API_KEY_FILE, 'utf8').trim().length > 0;
+  } catch {
+    return false;
+  }
 }
 
 function mapCliOptionsToSDK(options = {}) {
@@ -960,6 +1022,22 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
   // still owns the activeSessions entry (or was superseded by a newer run).
   let queryInstance = null;
 
+  // Reports this run's lifecycle to runtime subscribers. Events are keyed by the app session id
+  // (the `sessionId` option); runs started without one (legacy direct callers) are not reported,
+  // because provider-native ids are not addressable through the app's APIs.
+  let runStartedEmitted = false;
+  let runEndReason = 'completed';
+  const emitRunEvent = (event) => {
+    if (!sessionId) return false;
+    emitRuntimeEvent({ ...event, sessionId, projectPath: options.projectPath || options.cwd || null });
+    return true;
+  };
+  // Main-thread activity since the last turn result, reported with the next one (subagent
+  // traffic carries parent_tool_use_id and is left out). Sets, so a repeated block counts once.
+  const turnToolUseIds = new Set();
+  const turnToolErrorIds = new Set();
+  let turnModel = null;
+
   try {
     const resolvedModel = await context.resolveResumeModel(sessionId, options.model);
     let effortModels = CLAUDE_PREDEFINED_MODELS;
@@ -1048,6 +1126,7 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
 
       const requestId = createRequestId();
       ws.send(createNormalizedMessage({ kind: 'permission_request', requestId, toolName, input, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
+      emitRunEvent({ kind: 'permission_request', requestId, toolName, input });
       emitNotification(createNotificationEvent({
         provider: 'claude',
         sessionId: sessionId || capturedSessionId || null,
@@ -1134,6 +1213,12 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
     }
 
     // Process streaming messages
+    runStartedEmitted = emitRunEvent({
+      kind: 'run_started',
+      resumed: Boolean(providerSessionId),
+      model: resolvedModel || options.model || null,
+      permissionMode: options.permissionMode || null
+    });
     console.log('Starting async generator loop for session:', capturedSessionId || 'NEW');
     for await (const message of queryInstance) {
       // Capture session ID from first message
@@ -1189,9 +1274,34 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
         backgroundWorkPending = true;
       }
       trackAgentTask(sessionKey(), message);
+      if (message.type === 'assistant' && !message.parent_tool_use_id && message.message?.stop_reason === 'refusal') {
+        emitRunEvent({ kind: 'assistant_refusal', message });
+      } else if (message.type === 'system' && OBSERVED_SYSTEM_SUBTYPES.has(message.subtype)) {
+        emitRunEvent({ kind: 'system_message', message });
+      }
+      if (!message.parent_tool_use_id && (message.type === 'assistant' || message.type === 'user')) {
+        const blocks = Array.isArray(message.message?.content) ? message.message.content : [];
+        if (message.type === 'assistant') {
+          const answeredBy = message.message?.model;
+          if (typeof answeredBy === 'string' && !answeredBy.startsWith('<')) turnModel = answeredBy;
+          for (const block of blocks) {
+            if (block?.type === 'tool_use' && block.id) turnToolUseIds.add(block.id);
+          }
+        } else {
+          for (const block of blocks) {
+            if (block?.type === 'tool_result' && block.is_error === true && block.tool_use_id) {
+              turnToolErrorIds.add(block.tool_use_id);
+            }
+          }
+        }
+      }
       if (
         injectedTurnUuid
-        && message.type === 'assistant'
+        // A reply is an assistant message stamped with the turn's uuid. A slash command such as
+        // /compact is answered by its `result` alone (its output is an unstamped local-command
+        // message), so a stamped result counts too; without this its result was skipped and the
+        // turn only ended when the idle hold released the process.
+        && (message.type === 'assistant' || message.type === 'result')
         && !message.parent_tool_use_id
         && (message.user_message_uuid === injectedTurnUuid || message.user_message_uuids?.includes(injectedTurnUuid))
       ) {
@@ -1214,6 +1324,17 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
         injectedTurnUuid = null;
         // The turn is done as far as the client is concerned.
         const abortPending = sessionKey() ? abortedSessionIds.has(sessionKey()) : false;
+        if (!abortPending) {
+          emitRunEvent({
+            kind: 'turn_result',
+            message,
+            model: turnModel,
+            toolCalls: turnToolUseIds.size,
+            toolErrors: turnToolErrorIds.size
+          });
+        }
+        turnToolUseIds.clear();
+        turnToolErrorIds.clear();
         if (!turnCompleteSent && !abortPending) {
           turnCompleteSent = true;
           ws.send(createCompleteMessage({ provider: 'claude', sessionId: capturedSessionId || sessionId || null, exitCode: 0 }));
@@ -1269,6 +1390,7 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
     // terminal `complete` (aborted: true) was already sent by abort-session, and
     // for runs that already reported completion when their `result` arrived.
     const wasAborted = !superseded && sessionKey() ? abortedSessionIds.delete(sessionKey()) : false;
+    runEndReason = wasAborted ? 'aborted' : 'completed';
     if (!turnCompleteSent && !superseded) {
       turnCompleteSent = true;
       if (!wasAborted) {
@@ -1301,6 +1423,7 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
 
     const wasAborted = sessionKey() ? abortedSessionIds.delete(sessionKey()) : false;
     if (wasAborted) {
+      runEndReason = 'aborted';
       // The abort already produced the terminal complete; a generator throw
       // caused by interrupt() is expected noise, not a user-facing error.
       return;
@@ -1315,6 +1438,8 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
     // Send error to WebSocket, then the terminal complete. A run that already
     // reported completion and then failed during its post-turn hold still
     // surfaces the error, but must not emit a second terminal complete.
+    runEndReason = 'error';
+    emitRunEvent({ kind: 'run_error', message: String(errorContent) });
     ws.send(createNormalizedMessage({ kind: 'error', content: errorContent, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
     if (!turnCompleteSent) {
       ws.send(createCompleteMessage({ provider: 'claude', sessionId: capturedSessionId || sessionId || null, exitCode: 1 }));
@@ -1327,6 +1452,10 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
       error
     });
   } finally {
+    // A superseded run winds down silently; the run that replaced it reports for the session.
+    if (runStartedEmitted && !supersededInstances.has(queryInstance)) {
+      emitRunEvent({ kind: 'run_ended', reason: runEndReason });
+    }
     heldForBackgroundWork = false;
     finishInjectedTurn();
     // Always close stdin — otherwise an aborted or failed run leaves the CLI

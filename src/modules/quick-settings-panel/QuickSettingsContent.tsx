@@ -1,6 +1,7 @@
 import {
   Brain,
   Eye,
+  HardHat,
   Languages,
   Mic,
   Moon,
@@ -46,6 +47,14 @@ const INPUT_SETTING_TOGGLES: PreferenceToggleItem[] = [
     key: 'voiceEnabled',
     labelKey: 'quickSettings.voiceEnabled',
     icon: Mic,
+  },
+];
+
+const FOREMAN_TOGGLES: PreferenceToggleItem[] = [
+  {
+    key: 'showForemanSuggestions',
+    labelKey: 'quickSettings.showForemanSuggestions',
+    icon: HardHat,
   },
 ];
 
@@ -103,6 +112,13 @@ export default function QuickSettingsContent({
         {renderToggleRows(inputSettingToggles)}
         <p className="ml-3 text-xs text-muted-foreground">
           {t('quickSettings.sendByCtrlEnterDescription')}
+        </p>
+      </QuickSettingsSection>
+
+      <QuickSettingsSection title={t('quickSettings.sections.foreman')}>
+        {renderToggleRows(FOREMAN_TOGGLES)}
+        <p className="ml-3 text-xs text-muted-foreground">
+          {t('quickSettings.showForemanSuggestionsDescription')}
         </p>
       </QuickSettingsSection>
     </div>

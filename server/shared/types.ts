@@ -1349,3 +1349,76 @@ export type CliApplication = {
 export type SandboxCommandService = {
   execute(argumentsList: string[]): Promise<number>;
 };
+
+// ---------------------------
+//----------------- FOREMAN BRIDGE ------------
+/**
+ * How a Claude session is billed. `api-key` sessions carry the `@api` model marker and run
+ * on the Anthropic API key; `subscription` sessions run on the Claude subscription.
+ *
+ * Used by the Foreman bridge for session listings, digests, and event payloads.
+ */
+export type ForemanBilling = 'api-key' | 'subscription';
+
+/**
+ * Event kinds cloudcli pushes to the Foreman service. The list is the wire contract
+ * documented in Foreman's `docs/BRIDGE.md`; adding a kind is additive, renaming one is not.
+ */
+export type ForemanEventType =
+  | 'turn_end'
+  | 'permission_request'
+  | 'error'
+  | 'refusal'
+  | 'compact_boundary'
+  | 'session_started'
+  | 'session_ended';
+
+/**
+ * Body POSTed to Foreman's events endpoint for every observed Claude session event.
+ *
+ * `sessionId` is always the stable cloudcli app session id (never the provider-native id),
+ * `projectPath` is the run's project directory (empty only if it could not be determined),
+ * `ts` is an ISO-8601 timestamp taken when the runtime observed the event, and `data` holds the
+ * per-type payload (kept small: long text is clipped before it is placed here). Every `data` also
+ * carries `billing` (null only if the session row cannot be found) and `title`, plus `taskId` for
+ * sessions that Foreman started with a `taskId`. The envelope is exactly these five keys so a
+ * receiver that validates the top level strictly keeps working as the payloads grow.
+ */
+export type ForemanEvent = {
+  type: ForemanEventType;
+  sessionId: string;
+  projectPath: string;
+  ts: string;
+  data: Record<string, unknown>;
+};
+
+/**
+ * Lifecycle events the Claude runtime publishes to in-process subscribers.
+ *
+ * The runtime knows nothing about Foreman: it emits these raw observations (carrying the SDK
+ * message where one exists) and the Foreman bridge translates them into `ForemanEvent`s.
+ * `sessionId` is the app session id; `projectPath` is the run's working directory when known.
+ * Subscribers run synchronously inside the runtime loop and must return immediately.
+ */
+export type ClaudeRuntimeEvent = { sessionId: string; projectPath: string | null } & (
+  | {
+      kind: 'run_started';
+      /** True when an existing provider transcript is being resumed. */
+      resumed: boolean;
+      /** Model as selected for the session, including the `@api` billing marker when present. */
+      model: string | null;
+      permissionMode: string | null;
+    }
+  | { kind: 'run_ended'; reason: 'completed' | 'aborted' | 'error' }
+  | { kind: 'run_error'; message: string }
+  /**
+   * The SDK `result` message that ended a turn, with what the runtime counted over that turn:
+   * the model that answered and the main-thread tool calls / tool errors (subagent traffic excluded).
+   */
+  | { kind: 'turn_result'; message: Record<string, unknown>; model: string | null; toolCalls: number; toolErrors: number }
+  /** An SDK `system` message of an observed subtype (compact boundary, model refusal). */
+  | { kind: 'system_message'; message: Record<string, unknown> }
+  /** An SDK `assistant` message whose stop reason is `refusal`. */
+  | { kind: 'assistant_refusal'; message: Record<string, unknown> }
+  | { kind: 'permission_request'; requestId: string; toolName: string; input: unknown }
+);

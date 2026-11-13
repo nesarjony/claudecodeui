@@ -29,8 +29,10 @@ function QuickSettingsPanelView() {
     showThinking: preferences.showThinking,
     sendByCtrlEnter: preferences.sendByCtrlEnter,
     voiceEnabled: preferences.voiceEnabled,
+    showForemanSuggestions: preferences.showForemanSuggestions,
   }), [
     preferences.sendByCtrlEnter,
+    preferences.showForemanSuggestions,
     preferences.showRawParameters,
     preferences.showThinking,
     preferences.voiceEnabled,

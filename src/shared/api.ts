@@ -328,6 +328,14 @@ export const api = {
     cancel: (id: string) => del(`/api/scheduled-messages/${encodeURIComponent(id)}`),
   },
 
+  // Foreman suggestions: the supervisor's suggested next step for a session, and what the user did with it.
+  foreman: {
+    pendingSuggestion: (sessionId: string) =>
+      get(`/api/foreman-suggestions/pending${query({ sessionId })}`),
+    suggestionFeedback: (suggestionId: string, body: { action: 'sent' | 'edited' | 'dismissed'; finalText?: string }) =>
+      post(`/api/foreman-suggestions/${encodeURIComponent(suggestionId)}/feedback`, body),
+  },
+
   // Workspace file tree
   readFile: (projectId: string, filePath: string) =>
     get(`/api/file-tree/projects/${projectId}/file${query({ filePath })}`),

@@ -1199,3 +1199,94 @@ export function findApplicationRoot(startDirectory: string): string {
     ? path.dirname(parentDirectory)
     : parentDirectory;
 }
+
+// ---------------------------
+//----------------- TEXT CLIPPING UTILITIES ------------
+/**
+ * Clips text to at most `maxLength` characters, keeping both ends of long text.
+ *
+ * Text within the limit is returned untouched. Longer text keeps its head and its tail
+ * (`tailRatio` of the remaining budget, 0.6 by default, goes to the tail because the end of a
+ * message is usually its conclusion) joined by a marker stating how many characters were
+ * removed. The result never exceeds `maxLength`. Below 40 characters there is no room for the
+ * marker, so the head is simply cut and suffixed with an ellipsis.
+ */
+export function clipText(text: string, maxLength: number, tailRatio = 0.6): string {
+  if (text.length <= maxLength) {
+    return text;
+  }
+
+  if (maxLength < 40) {
+    return `${text.slice(0, Math.max(0, maxLength - 1))}…`;
+  }
+
+  // The marker's own length depends on how many digits the removed count has, so settle it
+  // with a couple of passes; it converges after at most one digit-boundary correction.
+  let removed = text.length - maxLength;
+  let marker = '';
+  let budget = 0;
+  for (let pass = 0; pass < 3; pass += 1) {
+    marker = `\n…[${removed} chars clipped]…\n`;
+    budget = Math.max(0, maxLength - marker.length);
+    const settled = text.length - budget;
+    if (settled === removed) {
+      break;
+    }
+    removed = settled;
+  }
+
+  const tailLength = Math.floor(budget * tailRatio);
+  const headLength = budget - tailLength;
+  return `${text.slice(0, headLength)}${marker}${tailLength > 0 ? text.slice(text.length - tailLength) : ''}`;
+}
+
+// ---------------------------
+//----------------- TOOL INPUT SUMMARY UTILITIES ------------
+// Keys checked, in order, when describing a tool call in one line: the most telling field first.
+const TOOL_INPUT_SUMMARY_KEYS = [
+  'command',
+  'file_path',
+  'notebook_path',
+  'path',
+  'pattern',
+  'url',
+  'query',
+  'description',
+  'prompt',
+  'skill',
+  'subject',
+] as const;
+
+/**
+ * Describes a tool call's input as one short line.
+ *
+ * Picks the first telling string field (a command, file path, pattern, URL, ...) and falls back to
+ * the input's JSON. Whitespace is collapsed and the result is clipped to `maxLength`. Never throws,
+ * so it is safe to use on any input a model produced.
+ */
+export function summarizeToolInput(input: unknown, maxLength = 200): string {
+  // One line only: the head of the text, cut with an ellipsis (clipText's marker spans lines).
+  const collapse = (text: string) => {
+    const flat = text.replace(/\s+/g, ' ').trim();
+    return flat.length <= maxLength ? flat : `${flat.slice(0, Math.max(0, maxLength - 1))}…`;
+  };
+  if (typeof input === 'string') {
+    return collapse(input);
+  }
+  if (input === null || typeof input !== 'object' || Array.isArray(input)) {
+    return '';
+  }
+
+  const record = input as Record<string, unknown>;
+  for (const key of TOOL_INPUT_SUMMARY_KEYS) {
+    const value = record[key];
+    if (typeof value === 'string' && value.trim()) {
+      return collapse(value);
+    }
+  }
+  try {
+    return collapse(JSON.stringify(record) ?? '');
+  } catch {
+    return '';
+  }
+}
