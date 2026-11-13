@@ -5,6 +5,7 @@ export const riskTone = (risk: string): ChipTone => (risk === 'high' ? 'bad' : r
 export const statusTone = (status: string | undefined): ChipTone => {
   switch (status) {
     case 'running':
+    case 'claiming':
     case 'planning':
     case 'verifying':
     case 'sent':

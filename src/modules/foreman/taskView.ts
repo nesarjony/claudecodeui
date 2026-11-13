@@ -1,7 +1,7 @@
 import type { Lesson, TaskSummary } from '@/modules/foreman/types';
 
 /** Statuses of a task that is still in flight. Everything else counts as finished. */
-export const ACTIVE_TASK_STATUSES = ['queued', 'planning', 'running', 'needs_user', 'verifying'] as const;
+export const ACTIVE_TASK_STATUSES = ['queued', 'claiming', 'planning', 'running', 'needs_user', 'verifying'] as const;
 
 export const isActiveTask = (task: TaskSummary): boolean => (ACTIVE_TASK_STATUSES as readonly string[]).includes(task.status ?? '');
 

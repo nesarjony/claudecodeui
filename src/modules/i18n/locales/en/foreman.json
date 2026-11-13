@@ -82,6 +82,7 @@
     "emptyFiltered": "No tasks in this view.",
     "status": {
       "queued": "Queued",
+      "claiming": "Starting",
       "planning": "Planning",
       "running": "Running",
       "needs_user": "Needs you",
@@ -90,6 +91,7 @@
       "completed": "Done",
       "failed": "Failed",
       "killed": "Stopped",
+      "cancelled": "Cancelled",
       "taken_over": "Taken over",
       "unknown": "Unknown"
     },

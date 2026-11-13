@@ -47,6 +47,9 @@ describe('lastDecisionLine, evidenceLines, isActiveTask', () => {
     expect(isActiveTask({ id: '1', status: 'running' })).toBe(true);
     expect(isActiveTask({ id: '1', status: 'needs_user' })).toBe(true);
     expect(isActiveTask({ id: '1', status: 'done' })).toBe(false);
+    // The statuses the autonomous worker really writes (src/tasks/types.ts in Foreman).
+    expect(isActiveTask({ id: '1', status: 'claiming' })).toBe(true);
+    for (const status of ['completed', 'failed', 'cancelled', 'taken_over']) expect(isActiveTask({ id: '1', status })).toBe(false);
     expect(isActiveTask({ id: '1' })).toBe(false);
   });
 });
