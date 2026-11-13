@@ -5,7 +5,7 @@ import type { ChatMessage, DiffLine, LLMProvider, Project } from '@/shared/types
 import { TranscriptRenderContext } from '@/modules/chat/context/TranscriptRenderContext';
 import MessageComponent from '@/modules/chat/transcript/MessageComponent';
 import ToolGroupContainer from '@/modules/chat/transcript/ToolGroupContainer';
-import { groupConsecutiveTools, isToolGroupItem } from '@/modules/chat/utils/toolGrouping';
+import { groupTranscriptSteps, isToolGroupItem } from '@/modules/chat/utils/toolGrouping';
 
 type TranscriptExportDocumentProps = {
   messages: ChatMessage[];
@@ -35,8 +35,9 @@ export function TranscriptExportDocument({
   selectedProject,
 }: TranscriptExportDocumentProps) {
   // Thinking blocks are included: an export is a record of what happened, and
-  // the on-screen toggle is about noise in a live conversation.
-  const grouped = groupConsecutiveTools(messages, true);
+  // the on-screen toggle is about noise in a live conversation. Steps rows
+  // render open in an export, so folding costs the reader nothing.
+  const grouped = groupTranscriptSteps(messages);
   let previousMessage: ChatMessage | null = null;
 
   return (
@@ -52,7 +53,7 @@ export function TranscriptExportDocument({
                 <ToolGroupContainer
                   key={`group-${index}`}
                   group={item}
-                  prevMessage={groupPreviousMessage}
+                  opensTurn={groupPreviousMessage?.type !== 'assistant'}
                   createDiff={createDiff}
                   getMessageKey={(message: ChatMessage) => String(message.timestamp)}
                   showRawParameters={false}

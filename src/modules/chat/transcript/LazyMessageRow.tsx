@@ -34,6 +34,17 @@ type LazyMessageRowProps = {
    * placeholder and mounts when scrolled toward.
    */
   initiallyNearViewport: boolean;
+  /**
+   * The row just arrived at the live end. Read once, at mount: the row eases in
+   * and later renders leave it alone, so a re-render mid-animation cannot cut
+   * the animation short.
+   */
+  animateEntry?: boolean;
+  /**
+   * `|`-joined timestamps of the messages folded into a steps row, so a search
+   * jump to one of them finds this row even while the row is unmounted.
+   */
+  foldedTimestamps?: string;
   children: ReactNode;
 };
 
@@ -41,9 +52,14 @@ export default function LazyMessageRow({
   lazyRows,
   timestamp,
   initiallyNearViewport,
+  animateEntry = false,
+  foldedTimestamps,
   children,
 }: LazyMessageRowProps) {
   const [isNearViewport, setIsNearViewport] = useState(initiallyNearViewport);
+  // Whether this row mounted as a new arrival; fixed for the row's lifetime so
+  // the entry animation plays exactly once.
+  const [entersAnimated] = useState(animateEntry);
   const [measuredHeight, setMeasuredHeight] = useState<number | null>(null);
   const elementRef = useRef<HTMLDivElement | null>(null);
 
@@ -71,6 +87,8 @@ export default function LazyMessageRow({
     <div
       ref={elementRef}
       data-message-timestamp={timestamp || undefined}
+      data-step-timestamps={foldedTimestamps}
+      className={entersAnimated ? 'chat-row-enter' : undefined}
       style={isMounted ? undefined : { height: measuredHeight ?? ESTIMATED_ROW_HEIGHT_PX }}
     >
       {isMounted ? children : null}

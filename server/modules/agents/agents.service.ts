@@ -1,8 +1,9 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
+import { listBackgroundShells, type BackgroundShell } from '@/modules/agents/background-shells.service.js';
 import { sessionsDb } from '@/modules/database/index.js';
-import { getLiveAgentTasks } from '@/modules/providers/index.js';
+import { getLiveAgentTasks, getLiveBackgroundTasks } from '@/modules/providers/index.js';
 import { AppError } from '@/shared/utils.js';
 
 export type AgentStatus = 'running' | 'done' | 'interrupted' | 'cut-off' | 'failed' | 'empty';
@@ -35,6 +36,7 @@ export type AgentSummary = {
 
 export type SessionAgents = {
   sessionId: string;
+  sessionName: string | null;
   /** Start of the session's current working stretch (after its last long pause). */
   stretchStartedAt: string | null;
   /** Agents last active before the current stretch; listed only when asked for. */
@@ -44,6 +46,8 @@ export type SessionAgents = {
   apiKeyBilled: boolean;
   totals: { running: number; done: number; unfinished: number; costUsd: number };
   agents: AgentSummary[];
+  /** Background shells and monitors of the current stretch, running first. */
+  background: BackgroundShell[];
 };
 
 type Price = { input: number; output: number; cacheRead: number };
@@ -235,10 +239,10 @@ async function summarizeAgent(file: string, live: ReturnType<typeof getLiveAgent
   };
 }
 
-/** Start time of the main transcript's current stretch, read from its tail. */
-async function findStretchStart(jsonlPath: string): Promise<number | null> {
+/** Whole lines of the main transcript's tail, oldest first. */
+async function readTranscriptTail(jsonlPath: string): Promise<string[]> {
   const handle = await fs.open(jsonlPath, 'r').catch(() => null);
-  if (!handle) return null;
+  if (!handle) return [];
   try {
     const { size } = await handle.stat();
     const length = Math.min(size, STRETCH_SCAN_BYTES);
@@ -246,26 +250,32 @@ async function findStretchStart(jsonlPath: string): Promise<number | null> {
     await handle.read(buffer, 0, length, size - length);
     const lines = buffer.toString('utf8').split('\n');
     if (length < size) lines.shift(); // first line is cut mid-way
-    const times: number[] = [];
-    for (const line of lines) {
-      const match = /"timestamp":"([^"]+)"/.exec(line);
-      const time = match ? Date.parse(match[1]) : NaN;
-      if (!Number.isNaN(time)) times.push(time);
-    }
-    if (times.length === 0) return null;
-    for (let i = times.length - 1; i > 0; i--) {
-      if (times[i] - times[i - 1] >= STRETCH_GAP_MS) return times[i];
-    }
-    return times[0];
+    return lines;
   } finally {
     await handle.close();
   }
 }
 
+/** Start time of the main transcript's current stretch, from its tail's timestamps. */
+function findStretchStart(lines: string[]): number | null {
+  const times: number[] = [];
+  for (const line of lines) {
+    const match = /"timestamp":"([^"]+)"/.exec(line);
+    const time = match ? Date.parse(match[1]) : NaN;
+    if (!Number.isNaN(time)) times.push(time);
+  }
+  if (times.length === 0) return null;
+  for (let i = times.length - 1; i > 0; i--) {
+    if (times[i] - times[i - 1] >= STRETCH_GAP_MS) return times[i];
+  }
+  return times[0];
+}
+
 /**
- * Subagents of one cloudcli session, read from the provider's transcript folder.
- * By default only agents active in the session's current working stretch (and
- * any still running) are read; `includeEarlier` adds the rest.
+ * Subagents and background shells of one cloudcli session, read from the
+ * provider's transcript folder. By default only agents active in the session's
+ * current working stretch (and any still running) are read; `includeEarlier`
+ * adds the rest. Background shells are always the current stretch's.
  */
 export async function listSessionAgents(sessionId: string, includeEarlier = false): Promise<SessionAgents> {
   const session = sessionsDb.getSessionById(sessionId);
@@ -280,7 +290,8 @@ export async function listSessionAgents(sessionId: string, includeEarlier = fals
     : [];
 
   const live = getLiveAgentTasks(sessionId);
-  const stretchStart = jsonlPath ? await findStretchStart(jsonlPath) : null;
+  const tail = jsonlPath ? await readTranscriptTail(jsonlPath) : [];
+  const stretchStart = findStretchStart(tail);
   const runningToolUseIds = new Set(
     [...live.entries()].filter(([, task]) => task.status === 'running').map(([toolUseId]) => toolUseId),
   );
@@ -310,8 +321,22 @@ export async function listSessionAgents(sessionId: string, includeEarlier = fals
       })
     : agents;
 
+  const liveBackground = getLiveBackgroundTasks(sessionId);
+  const background = jsonlPath
+    ? await listBackgroundShells({
+        jsonlPath,
+        lines: tail,
+        stretchStart,
+        live: {
+          liveTaskIds: liveBackground ? new Set(liveBackground.map((task) => task.taskId)) : null,
+          tracked: new Map([...live.values()].map((task) => [task.taskId, task.status])),
+        },
+      })
+    : [];
+
   return {
     sessionId,
+    sessionName: session.custom_name ?? null,
     stretchStartedAt: stretchStart ? new Date(stretchStart).toISOString() : null,
     earlierCount,
     includesEarlier: includeEarlier,
@@ -324,5 +349,6 @@ export async function listSessionAgents(sessionId: string, includeEarlier = fals
       costUsd: current.reduce((sum, agent) => sum + agent.costUsd, 0),
     },
     agents,
+    background,
   };
 }

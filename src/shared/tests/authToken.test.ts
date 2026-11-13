@@ -5,9 +5,11 @@ import { test } from 'vitest';
 import {
   AUTH_SESSION_EXPIRED_EVENT,
   AUTH_TOKEN_REFRESHED_EVENT,
+  expireAuthSession,
   getAuthTokenRefreshDelay,
   getStoredAuthToken,
   isAuthTokenExpired,
+  readSignOutLog,
   storeAuthToken,
   TOKEN_EXPIRY_SKEW_MS,
 } from '@/shared/authToken';
@@ -101,6 +103,49 @@ test('getStoredAuthToken: an expired token is dropped and the expiry is announce
   assert.equal(token, null, 'an expired token must not be handed to a request');
   assert.equal(localStorage.getItem('auth-token'), null);
   assert.equal(expiries, 1);
+});
+
+test('expireAuthSession: a tab holding an old token adopts the fresh stored one instead of signing everyone out', () => {
+  localStorage.clear();
+  const now = Math.floor(Date.now() / 1000);
+  const stale = makeToken({ iat: now - 40 * 86400, exp: now - 10 * 86400 });
+  const fresh = makeToken({ iat: now - 60, exp: now + 30 * 86400 });
+  localStorage.setItem('auth-token', fresh);
+
+  let expiries = 0;
+  let adopted: string | null = null;
+  const onExpired = () => {
+    expiries += 1;
+  };
+  const onRefresh = (event: Event) => {
+    adopted = (event as CustomEvent<string>).detail;
+  };
+  window.addEventListener(AUTH_SESSION_EXPIRED_EVENT, onExpired);
+  window.addEventListener(AUTH_TOKEN_REFRESHED_EVENT, onRefresh);
+
+  expireAuthSession('test: stale socket token', stale);
+
+  window.removeEventListener(AUTH_SESSION_EXPIRED_EVENT, onExpired);
+  window.removeEventListener(AUTH_TOKEN_REFRESHED_EVENT, onRefresh);
+  assert.equal(localStorage.getItem('auth-token'), fresh, 'the fresh token must survive');
+  assert.equal(expiries, 0);
+  assert.equal(adopted, fresh);
+  assert.equal(readSignOutLog().length, 0, 'nothing was signed out');
+});
+
+test('expireAuthSession: records why and when the session ended, with the token lifetime', () => {
+  localStorage.clear();
+  const now = Math.floor(Date.now() / 1000);
+  const token = makeToken({ iat: now - 7200, exp: now - 3600 });
+  localStorage.setItem('auth-token', token);
+
+  expireAuthSession('test: server said expired', token);
+
+  const [record] = readSignOutLog();
+  assert.equal(localStorage.getItem('auth-token'), null);
+  assert.equal(record.reason, 'test: server said expired');
+  assert.equal(record.tokenExpiresAt, new Date((now - 3600) * 1000).toISOString());
+  assert.equal(record.tokenIssuedAt, new Date((now - 7200) * 1000).toISOString());
 });
 
 test('getStoredAuthToken: a live token is returned and left in storage', () => {

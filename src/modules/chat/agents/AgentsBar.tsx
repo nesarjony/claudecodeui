@@ -1,4 +1,4 @@
-import React, { memo, useEffect, useMemo, useRef, useState } from 'react';
+import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   AlertTriangle,
@@ -22,6 +22,7 @@ import {
   type SessionAgents,
 } from '@/modules/chat/agents/useSessionAgents';
 import { useChatHeaderSlot } from '@/modules/chat/agents/ChatHeaderStatus';
+import BackgroundBar from '@/modules/chat/agents/BackgroundBar';
 
 type AgentsBarProps = {
   sessionId: string | null;
@@ -99,15 +100,24 @@ const resumePrompt = (agent: SessionAgent) =>
  * Subagents of one chat session: a one-line summary above the transcript that
  * opens a panel (bottom sheet on phones, side drawer on desktop) listing every
  * agent with live status, tool use, tokens and cost, plus stop and resume.
+ * The session's background shells get their own chip beside it, fed by the
+ * same poll.
  */
 function AgentsBar({ sessionId, isProcessing, setInput, onSubmit }: AgentsBarProps) {
   const [open, setOpen] = useState(false);
   const [showEarlier, setShowEarlier] = useState(false);
+  // The session whose background panel is open, so switching sessions closes it.
+  const [backgroundOpenFor, setBackgroundOpenFor] = useState<string | null>(null);
+  const backgroundOpen = sessionId !== null && backgroundOpenFor === sessionId;
+  const setBackgroundOpen = useCallback(
+    (value: boolean) => setBackgroundOpenFor(value ? sessionId : null),
+    [sessionId],
+  );
   const anchorRef = useRef<HTMLSpanElement>(null);
   // In a header with a status slot the summary is a compact chip there,
   // so it costs the transcript no row; otherwise it is a row of its own.
   const headerSlot = useChatHeaderSlot(anchorRef, 'data-chat-header-status');
-  const { data, stopAgent } = useSessionAgents(sessionId, isProcessing, showEarlier);
+  const { data, stopAgent } = useSessionAgents(sessionId, isProcessing, showEarlier, backgroundOpen);
   const isDesktop = useMediaQuery('(min-width: 640px)');
 
   useEffect(() => {
@@ -125,7 +135,9 @@ function AgentsBar({ sessionId, isProcessing, setInput, onSubmit }: AgentsBarPro
   }, [open]);
 
   const currentCount = data ? data.agents.length - (data.includesEarlier ? data.earlierCount : 0) : 0;
-  if (!data || currentCount === 0) return <span ref={anchorRef} hidden />;
+  const background = data?.background ?? [];
+  if (!data || (currentCount === 0 && background.length === 0)) return <span ref={anchorRef} hidden />;
+  const hasAgents = currentCount > 0;
   const { totals, apiKeyBilled } = data;
   const anyCostKnown = data.agents.some((agent) => agent.costKnown);
 
@@ -153,14 +165,15 @@ function AgentsBar({ sessionId, isProcessing, setInput, onSubmit }: AgentsBarPro
           {totals.running}
         </span>
       )}
+      {/* Narrow headers show one count: running if any, else finished. */}
       {totals.done > 0 && (
-        <span className="flex items-center gap-0.5 text-muted-foreground">
+        <span className={`${totals.running > 0 ? 'hidden sm:flex' : 'flex'} items-center gap-0.5 text-muted-foreground`}>
           <CheckCircle2 className="h-3 w-3 text-emerald-500" />
           {totals.done}
         </span>
       )}
       {totals.unfinished > 0 && (
-        <span className="flex items-center gap-0.5 text-muted-foreground">
+        <span className="hidden items-center gap-0.5 text-muted-foreground sm:flex">
           <PauseCircle className="h-3 w-3 text-amber-500" />
           {totals.unfinished}
         </span>
@@ -169,10 +182,21 @@ function AgentsBar({ sessionId, isProcessing, setInput, onSubmit }: AgentsBarPro
     </button>
   );
 
+  const backgroundChip = background.length > 0 && (
+    <BackgroundBar
+      shells={background}
+      sessionName={data.sessionName}
+      isDesktop={isDesktop}
+      open={backgroundOpen}
+      onOpenChange={setBackgroundOpen}
+      onStop={stopAgent}
+    />
+  );
+
   return (
     <>
       <span ref={anchorRef} hidden />
-      {headerSlot ? createPortal(chip, headerSlot) : (
+      {headerSlot ? createPortal(<>{hasAgents && chip}{backgroundChip}</>, headerSlot) : hasAgents ? (
       <button
           type="button"
           onClick={() => setOpen(true)}
@@ -199,9 +223,12 @@ function AgentsBar({ sessionId, isProcessing, setInput, onSubmit }: AgentsBarPro
           </span>
           <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
         </button>
+      ) : null}
+      {!headerSlot && backgroundChip && (
+        <div className="flex flex-shrink-0 justify-end border-b border-border/50 bg-card/60 px-3 py-2">{backgroundChip}</div>
       )}
 
-      {open &&
+      {open && hasAgents &&
         createPortal(
           <AgentsPanel
             data={data}

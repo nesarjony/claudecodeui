@@ -73,10 +73,9 @@ describe('diff stats in the tool header', () => {
   });
 });
 
-// A run of consecutive same-tool calls collapses into one row showing `x4` and
-// a filename. Without a total, the collapsed row says nothing about how large
-// the batch of edits actually is.
-describe('diff stats on a collapsed tool group', () => {
+// A run of consecutive tool calls folds into one steps row. Without a total,
+// the folded row says nothing about how large the batch of edits actually is.
+describe('diff stats on a folded steps row', () => {
   const editMessage = (oldString: string, newString: string): ChatMessage => ({
     type: 'assistant',
     content: '',
@@ -90,19 +89,18 @@ describe('diff stats on a collapsed tool group', () => {
     }),
   } as unknown as ChatMessage);
 
-  const renderGroup = (toolName: string, messages: ChatMessage[]) => {
-    const group = {
+  const renderGroup = (messages: ChatMessage[]) => {
+    const group: ToolGroupItem = {
       _isGroup: true,
-      toolName,
       messages,
+      steps: messages,
       timestamp: messages[0].timestamp,
-      preview: 'a.js',
-    } as ToolGroupItem;
+    };
 
     return renderToStaticMarkup(
       React.createElement(ToolGroupContainer, {
         group,
-        prevMessage: null,
+        opensTurn: false,
         createDiff,
         getMessageKey: (message: ChatMessage) => String(message.timestamp),
         provider: 'claude' as const,
@@ -111,7 +109,7 @@ describe('diff stats on a collapsed tool group', () => {
   };
 
   it('totals the added and removed lines across the group', () => {
-    const markup = renderGroup('Edit', [
+    const markup = renderGroup([
       editMessage('a\nb', 'a\nB'),
       editMessage('one\ntwo\nthree', 'one\ntwo\nthree\nfour\nfive'),
     ]);
@@ -129,6 +127,6 @@ describe('diff stats on a collapsed tool group', () => {
       toolInput: serializeToolInput({ file_path: '/tmp/demo/a.js' }),
     } as unknown as ChatMessage;
 
-    expect(renderGroup('Read', [readMessage, readMessage])).not.toContain('lines added');
+    expect(renderGroup([readMessage, readMessage])).not.toContain('lines added');
   });
 });

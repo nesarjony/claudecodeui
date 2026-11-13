@@ -8,7 +8,9 @@ import { SESSION_MESSAGES_PAGE_SIZE } from '@/modules/chat/utils/sessionMessageP
 import { createMessageHistoryRefreshCoordinator } from '@/modules/chat/utils/messageHistoryRefreshCoordinator';
 import { createCachedDiffCalculator } from '@/modules/chat/utils/messageTransforms';
 import { normalizedToChatMessages } from '@/modules/chat/hooks/useChatMessages';
+import { useTranscriptFollow } from '@/modules/chat/hooks/useTranscriptFollow';
 import { findSearchTargetIndex, resolveSearchWindowSize } from '@/modules/chat/utils/searchTargetLocator';
+import { countTranscriptRowsAfter } from '@/modules/chat/utils/toolGrouping';
 import { readSelectedProvider } from '@/shared/selectedProvider';
 import type { SearchTarget } from '@/modules/chat/utils/searchTargetLocator';
 
@@ -32,9 +34,12 @@ const SEARCH_SCROLL_RETRY_DELAY_MS = 150;
  * may not be committed yet, and accepting the nearest row then would scroll to
  * an arbitrary message and flash the highlight on it — the silent wrong answer
  * this rewrite exists to remove. `allowNearest` is used on the final attempt
- * because a hit on the second or later call of a collapsed tool group has no row
- * of its own; groupConsecutiveTools stamps the group with the run's FIRST
- * timestamp, so the group row is the nearest, not an exact, match.
+ * because a hit can land on a message that draws no row of its own (hidden
+ * reasoning, for one).
+ *
+ * A call folded into a steps row has no row of its own either, but the row's
+ * wrapper lists every folded message's timestamp in `data-step-timestamps`, so
+ * such a hit resolves exactly to the steps row that contains it.
  */
 function findRenderedMessageElement(
   container: HTMLElement,
@@ -53,7 +58,10 @@ function findRenderedMessageElement(
     if (!candidateTimestamp) {
       continue;
     }
-    if (candidateTimestamp === targetTimestamp) {
+    if (
+      candidateTimestamp === targetTimestamp
+      || candidate.getAttribute('data-step-timestamps')?.split('|').includes(targetTimestamp)
+    ) {
       return candidate;
     }
 
@@ -198,7 +206,6 @@ export function useChatSessionState({
   const [isLoadingMoreMessages, setIsLoadingMoreMessages] = useState(false);
   const [hasMoreMessages, setHasMoreMessages] = useState(false);
   const [totalMessages, setTotalMessages] = useState(0);
-  const [isUserScrolledUp, setIsUserScrolledUp] = useState(false);
   const [tokenBudget, setTokenBudget] = useState<Record<string, unknown> | null>(null);
   const [visibleMessageCount, setVisibleMessageCount] = useState(INITIAL_VISIBLE_MESSAGES);
   const [allMessagesLoaded, setAllMessagesLoaded] = useState(false);
@@ -207,6 +214,8 @@ export function useChatSessionState({
   const [showLoadAllOverlay, setShowLoadAllOverlay] = useState(false);
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  /** The transcript's row column inside the scroll container; following watches its height. */
+  const scrollContentRef = useRef<HTMLDivElement>(null);
   const wasNearTopRef = useRef(false);
   // The sidebar-search hit this transcript still owes the user a scroll to.
   // State rather than a ref because resolving it widens the render window,
@@ -218,13 +227,6 @@ export function useChatSessionState({
    * cancel a jump that belongs to the transcript the user just left.
    */
   const searchScrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  /**
-   * `isUserScrolledUp` readable from a timer callback. Both deferred
-   * scroll-to-bottom calls are armed while the user is at the bottom and fire
-   * tens to hundreds of milliseconds later; without re-reading this at fire
-   * time, a scroll-up inside that window is silently undone.
-   */
-  const isUserScrolledUpRef = useRef(false);
   const isLoadingMoreRef = useRef(false);
   const allMessagesLoadedRef = useRef(false);
   const topLoadLockRef = useRef(false);
@@ -428,35 +430,66 @@ export function useChatSessionState({
     }
   }, [activeSessionId, sessionStore]);
 
-  // Mirrors the state into a ref so the two deferred scroll-to-bottom timers
-  // can re-read it at fire time. An effect rather than assignments next to each
-  // `setIsUserScrolledUp` call, because the setter is also returned from this
-  // hook and driven from the composer.
-  useEffect(() => {
-    isUserScrolledUpRef.current = isUserScrolledUp;
-  }, [isUserScrolledUp]);
+  /* ---------------------------------------------------------------- */
+  /*  Following the live end                                           */
+  /* ---------------------------------------------------------------- */
+
+  // The last row in the transcript when the user scrolled away from the live
+  // end, so the jump-to-latest pill can count what arrived after it.
+  const [unseenBaseline, setUnseenBaseline] = useState<{ message: ChatMessage | null; time: number } | null>(null);
+  const chatMessagesRef = useRef(chatMessages);
+  useLayoutEffect(() => {
+    chatMessagesRef.current = chatMessages;
+  });
+
+  // `isUserScrolledUp` keeps its name for the composer and the tab-restore
+  // path below; it now means "detached from the live end", which only user
+  // intent sets.
+  const {
+    isDetached: isUserScrolledUp,
+    isDetachedRef,
+    setDetached: setIsUserScrolledUp,
+    writeScrollTop,
+    pinToBottom,
+    jumpToLatest,
+  } = useTranscriptFollow({
+    scrollContainerRef,
+    scrollContentRef,
+    canFollow: () => (
+      isActiveRef.current
+      && !pendingScrollRestoreRef.current
+      && !isLoadingMoreRef.current
+      && !searchScrollActiveRef.current
+    ),
+    onDetach: () => {
+      const latest = chatMessagesRef.current[chatMessagesRef.current.length - 1] ?? null;
+      setUnseenBaseline({ message: latest, time: latest ? new Date(latest.timestamp).getTime() : 0 });
+    },
+  });
+
+  // Rows that arrived below what the user is reading: the pill's "N new".
+  const newMessageCount = useMemo(
+    () => (isUserScrolledUp && unseenBaseline ? countTranscriptRowsAfter(chatMessages, unseenBaseline) : 0),
+    [chatMessages, isUserScrolledUp, unseenBaseline],
+  );
 
   const scrollToBottom = useCallback(() => {
     const container = scrollContainerRef.current;
     if (!container) return;
-    container.scrollTop = container.scrollHeight;
-  }, []);
+    writeScrollTop(container.scrollHeight);
+  }, [writeScrollTop]);
 
+  // The jump-to-latest pill. A transcript widened by "load all" is trimmed
+  // back to its tail as well, so returning to the live end does not keep
+  // thousands of rows mounted.
   const scrollToBottomAndReset = useCallback(() => {
-    scrollToBottom();
+    jumpToLatest();
     if (allMessagesLoaded) {
       setVisibleMessageCount(INITIAL_VISIBLE_MESSAGES);
       setAllMessagesLoaded(false);
       allMessagesLoadedRef.current = false;
     }
-  }, [allMessagesLoaded, scrollToBottom]);
-
-  const isNearBottom = useCallback(() => {
-    const container = scrollContainerRef.current;
-    if (!container) return false;
-    const { scrollTop, scrollHeight, clientHeight } = container;
-    return scrollHeight - scrollTop - clientHeight < 50;
-  }, []);
+  }, [allMessagesLoaded, jumpToLatest]);
 
   const loadOlderMessages = useCallback(
     async (container: HTMLDivElement) => {
@@ -518,13 +551,15 @@ export function useChatSessionState({
     [hasMoreMessages, isActive, isLoadingMoreMessages, selectedProject, selectedSession, sessionStore],
   );
 
+  // Paging older history in from the top. Whether the view follows the live
+  // end is useTranscriptFollow's call, made from scroll direction and intent;
+  // re-deriving it here from distance-to-bottom is what used to switch
+  // following off whenever content grew between two scroll events.
   const handleScroll = useCallback(async () => {
     if (!isActive) return;
     const container = scrollContainerRef.current;
     if (!container) return;
 
-    const nearBottom = isNearBottom();
-    setIsUserScrolledUp(!nearBottom);
     scrollPositionRef.current = {
       height: container.scrollHeight,
       top: container.scrollTop,
@@ -557,7 +592,7 @@ export function useChatSessionState({
       const didLoad = await loadOlderMessages(container);
       if (didLoad) topLoadLockRef.current = true;
     }
-  }, [hasMoreMessages, isActive, isNearBottom, loadOlderMessages]);
+  }, [hasMoreMessages, isActive, loadOlderMessages]);
 
   const wasChatActiveRef = useRef(isActive);
   useLayoutEffect(() => {
@@ -573,20 +608,20 @@ export function useChatSessionState({
           anchor.getBoundingClientRect().top
           - container.getBoundingClientRect().top
         );
-        container.scrollTop += nextAnchorOffset - anchorOffset;
+        writeScrollTop(container.scrollTop + nextAnchorOffset - anchorOffset);
       } else {
-        container.scrollTop = top + Math.max(container.scrollHeight - height, 0);
+        writeScrollTop(top + Math.max(container.scrollHeight - height, 0));
       }
       pendingScrollRestoreRef.current = null;
       return;
     }
 
     if (becameActive) {
-      container.scrollTop = isUserScrolledUp
+      writeScrollTop(isUserScrolledUp
         ? scrollPositionRef.current.top
-        : container.scrollHeight;
+        : container.scrollHeight);
     }
-  }, [chatMessages.length, isActive, isUserScrolledUp]);
+  }, [chatMessages.length, isActive, isUserScrolledUp, writeScrollTop]);
 
   // Reset scroll/pagination state on session change
   useEffect(() => {
@@ -613,7 +648,7 @@ export function useChatSessionState({
     pendingScrollRestoreRef.current = null;
     wasNearTopRef.current = false;
     setIsUserScrolledUp(false);
-  }, [selectedProject?.projectId, selectedSession?.id]);
+  }, [selectedProject?.projectId, selectedSession?.id, setIsUserScrolledUp]);
 
   // Initial scroll to bottom — robust to lazy content reflow.
   // The previous implementation fired one scrollToBottom() at +200ms and
@@ -624,7 +659,8 @@ export function useChatSessionState({
   //
   // This version re-scrolls every animation frame while scrollHeight is
   // still growing, capped at ~1s (60 frames) or 3 consecutive stable
-  // frames. Cancels cleanly on session change via the pending flag.
+  // frames. Cancels cleanly on session change via the pending flag, and as
+  // soon as the user starts reading back.
   useEffect(() => {
     if (!isActive) return;
     if (!pendingInitialScrollRef.current || !scrollContainerRef.current || isLoadingSessionMessages) return;
@@ -639,7 +675,8 @@ export function useChatSessionState({
 
     const tick = () => {
       if (!pendingInitialScrollRef.current || !scrollContainerRef.current) return;
-      container.scrollTop = container.scrollHeight;
+      if (isDetachedRef.current) { pendingInitialScrollRef.current = false; return; }
+      writeScrollTop(container.scrollHeight);
       if (container.scrollHeight === lastHeight) {
         stableCount++;
       } else {
@@ -657,7 +694,7 @@ export function useChatSessionState({
     return () => {
       if (rafId) cancelAnimationFrame(rafId);
     };
-  }, [chatMessages.length, isActive, isLoadingSessionMessages, scrollToBottom]);
+  }, [chatMessages.length, isActive, isDetachedRef, isLoadingSessionMessages, writeScrollTop]);
 
   // Session replay/subscription remains active regardless of which main tab is
   // visible. Only persisted-history HTTP traffic is visibility-gated below.
@@ -805,16 +842,10 @@ export function useChatSessionState({
       try {
         // Skip store refresh during active streaming
         if (!isProcessing) {
-          const shouldStickToBottom = isActiveRef.current && isNearBottom();
           await requestLatestMessages(selectedSession.id);
-
-          if (shouldStickToBottom) {
-            setTimeout(() => {
-              if (!isUserScrolledUpRef.current) {
-                scrollToBottom();
-              }
-            }, 200);
-          }
+          // A no-op unless the view is following the live end; the resize
+          // observer catches whatever renders after this.
+          pinToBottom();
         }
       } catch (error) {
         console.error('Error reloading messages from external update:', error);
@@ -824,8 +855,8 @@ export function useChatSessionState({
     reloadExternalMessages();
   }, [
     externalMessageUpdate,
+    pinToBottom,
     requestLatestMessages,
-    scrollToBottom,
     selectedProject,
     selectedSession,
     isProcessing,
@@ -911,8 +942,8 @@ export function useChatSessionState({
         if (!container) return;
 
         // The target is inside the window by construction, so this only waits
-        // for React to commit the widened list. A target collapsed inside a
-        // tool group resolves to that group, which carries the same timestamp.
+        // for React to commit the widened list. A call folded into a steps
+        // row resolves to that row.
         const targetElement = findRenderedMessageElement(
           container,
           targetTimestamp,
@@ -920,6 +951,11 @@ export function useChatSessionState({
         );
 
         if (targetElement) {
+          // Reading back is the point of the jump: stop following first, or
+          // the next resize re-pins the view to the bottom mid-glide.
+          if (container.scrollHeight > container.clientHeight) {
+            setIsUserScrolledUp(true);
+          }
           targetElement.scrollIntoView({ block: 'center', behavior: 'smooth' });
           targetElement.classList.add('search-highlight-flash');
           setTimeout(() => targetElement.classList.remove('search-highlight-flash'), 4000);
@@ -985,20 +1021,14 @@ export function useChatSessionState({
     scrollPositionRef.current = { height: container.scrollHeight, top: container.scrollTop };
   });
 
-  useEffect(() => {
-    if (!isActive) return;
-    if (!scrollContainerRef.current || chatMessages.length === 0) return;
-    if (isLoadingMoreRef.current || isLoadingMoreMessages || pendingScrollRestoreRef.current) return;
-    if (searchScrollActiveRef.current) return;
-
-    if (!isUserScrolledUp) {
-      setTimeout(() => {
-        if (!isUserScrolledUpRef.current) {
-          scrollToBottom();
-        }
-      }, 50);
-    }
-  }, [chatMessages.length, isActive, isLoadingMoreMessages, isUserScrolledUp, scrollToBottom]);
+  // Follows every transcript change while attached — a new row, but also a
+  // streamed delta growing the last one — in the same commit, before paint.
+  // The resize observer in useTranscriptFollow covers growth that lands after
+  // the commit (highlighting, images, a result expanding a row).
+  useLayoutEffect(() => {
+    if (chatMessages.length === 0) return;
+    pinToBottom();
+  }, [chatMessages, isActive, pinToBottom]);
 
   useEffect(() => {
     const container = scrollContainerRef.current;
@@ -1125,6 +1155,8 @@ export function useChatSessionState({
     showLoadAllOverlay,
     createDiff,
     scrollContainerRef,
+    scrollContentRef,
+    newMessageCount,
     scrollToBottom,
     scrollToBottomAndReset,
     handleScroll,

@@ -277,6 +277,36 @@ export function getLiveAgentTasks(sessionId) {
   return liveAgentTasks.get(sessionId) || new Map();
 }
 
+// The latest `background_tasks_changed` list per app session, with the query
+// instance that reported it: the list is per process, so it only holds while
+// that process is still the session's live one.
+const reportedBackgroundTasks = new Map();
+
+function reportBackgroundTasks(sessionKey, instance, tasks) {
+  if (!sessionKey) return;
+  reportedBackgroundTasks.set(sessionKey, {
+    instance,
+    tasks: tasks.map((task) => ({
+      taskId: task.task_id,
+      type: task.task_type,
+      description: task.description,
+      ambient: Boolean(task.ambient),
+    })),
+  });
+}
+
+/**
+ * Background tasks (shells, monitors, agents) the session's live CLI process
+ * last reported; null when no process of this server runs the session.
+ * @returns {Array<{ taskId: string, type: string, description: string, ambient: boolean }> | null}
+ */
+export function getLiveBackgroundTasks(sessionId) {
+  const session = getSession(sessionId);
+  if (!session?.instance) return null;
+  const reported = reportedBackgroundTasks.get(sessionId);
+  return reported?.instance === session.instance ? reported.tasks : [];
+}
+
 /** Stops one running subagent of a live session; false when there is no live session. */
 export async function stopClaudeAgentTask(sessionId, taskId) {
   const session = getSession(sessionId);
@@ -391,6 +421,20 @@ function mapCliOptionsToSDK(options = {}) {
  * @param {Object} writer - WebSocket writer for reconnect support
  * @param {Function} releaseInput - Closes the held stdin stream so the CLI can exit
  */
+// Ends a run's CLI process. interrupt() only stops the current turn and closing
+// stdin only starts the CLI's print wind-down, which waits up to
+// BG_WAIT_CEILING_MS for background agents. A process left like that keeps
+// taking follow-up turns (agent results, messages from peer sessions) with no
+// client listening, so a stopped or superseded run went on editing the
+// workspace next to the run that replaced it.
+function closeQueryProcess(queryInstance) {
+  try {
+    queryInstance?.close?.();
+  } catch (error) {
+    console.error('Error closing Claude query process:', error?.message || error);
+  }
+}
+
 function addSession(sessionId, queryInstance, writer = null, releaseInput = null, injectTurn = null) {
   const existing = activeSessions.get(sessionId);
   // A different live instance under the same key means an earlier run was
@@ -405,11 +449,13 @@ function addSession(sessionId, queryInstance, writer = null, releaseInput = null
   );
   if (superseding) {
     supersededInstances.add(existing.instance);
+    const supersededInstance = existing.instance;
     Promise.resolve()
-      .then(() => existing.instance.interrupt())
+      .then(() => supersededInstance.interrupt())
       .catch((error) => {
         console.error(`Error interrupting superseded run for session ${sessionId}:`, error?.message || error);
-      });
+      })
+      .finally(() => closeQueryProcess(supersededInstance));
     existing.releaseInput?.();
   }
   const carried = superseding ? null : existing;
@@ -938,7 +984,17 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
     // Every turn uses streaming input so stdin stays open past the turn's
     // `result`. The message list is reusable, but each query attempt needs its
     // own stream because an async generator cannot be replayed once consumed.
-    const promptMessages = await buildPromptMessages(command, options.images, options.files, options.cwd);
+    // The opening turn is tracked like a sent-in one: a resumed CLI can first
+    // answer something it queued itself (e.g. the notice that a background
+    // shell from the previous process was stopped), and that reply's `result`
+    // must not end this turn for the client while the user's message still
+    // runs.
+    const openingTurnUuid = crypto.randomUUID();
+    const promptMessages = (await buildPromptMessages(command, options.images, options.files, options.cwd))
+      .map((message) => ({ ...message, uuid: openingTurnUuid }));
+    injectedTurnUuid = openingTurnUuid;
+    injectedTurnAnswered = false;
+    resultsSkippedForInjectedTurn = 0;
 
     sdkOptions.hooks = {
       Notification: [{
@@ -1143,6 +1199,7 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
       }
       if (message.type === 'system' && message.subtype === 'background_tasks_changed' && Array.isArray(message.tasks)) {
         liveBackgroundTasks = new Set(message.tasks.filter((task) => !task.ambient).map((task) => task.task_id));
+        reportBackgroundTasks(sessionKey(), queryInstance, message.tasks);
       }
 
       if (message.type === 'result') {
@@ -1308,6 +1365,11 @@ async function abortClaudeSDKSession(sessionId) {
     // Release the held stdin stream; without this the CLI stays up for the rest
     // of the post-turn hold even though the user cancelled.
     session.releaseInput?.();
+
+    // Stop ends the run, background agents included. This entry is removed
+    // below, so a process left alive here could never be reached again and the
+    // next message would start a second copy of the conversation beside it.
+    closeQueryProcess(session.instance);
 
     // Update session status
     session.status = 'aborted';

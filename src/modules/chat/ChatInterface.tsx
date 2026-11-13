@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ArrowDownIcon } from 'lucide-react';
 
 import { useTasksSettings } from '@/modules/task-master';
 import { useWebSocket } from '@/shared/context/WebSocketContext';
@@ -24,6 +23,7 @@ import {
   useSessionProtectionActions,
 } from '@/shared/context/SessionProtectionContext';
 import ChatMessagesPane from '@/modules/chat/transcript/ChatMessagesPane';
+import JumpToLatestPill from '@/modules/chat/transcript/JumpToLatestPill';
 import ChatComposer from '@/modules/chat/composer/ChatComposer';
 import CommandResultModal from '@/modules/chat/modals/CommandResultModal';
 import QuickCommandsControl from '@/modules/chat/quick-commands/QuickCommandsControl';
@@ -154,6 +154,8 @@ function ChatInterface({
     showLoadAllOverlay,
     createDiff,
     scrollContainerRef,
+    scrollContentRef,
+    newMessageCount,
     scrollToBottom,
     scrollToBottomAndReset,
     handleScroll,
@@ -437,6 +439,7 @@ function ChatInterface({
         <ChatMessagesPane
           newSessionTrigger={newSessionTrigger}
           scrollContainerRef={scrollContainerRef}
+          scrollContentRef={scrollContentRef}
           // Not redundant with the `scroll` listener. A first page is 20 rows,
           // tool results fold into their calls, and the "load earlier" link is
           // hidden while more pages exist — so a short transcript is often not
@@ -491,17 +494,11 @@ function ChatInterface({
 
         <div className="relative flex-shrink-0">
           {isUserScrolledUp && chatMessages.length > 0 && (
-            <div className="pointer-events-none absolute -top-11 right-3 z-20 flex justify-end">
-              <button
-                type="button"
-                onClick={scrollToBottomAndReset}
-                aria-label={t('input.scrollToBottom', { defaultValue: 'Scroll to bottom' })}
-                className="pointer-events-auto flex h-9 w-9 items-center justify-center rounded-full border border-border bg-card text-muted-foreground shadow-md transition-all duration-200 hover:bg-accent hover:text-foreground"
-                title={t('input.scrollToBottom', { defaultValue: 'Scroll to bottom' })}
-              >
-                <ArrowDownIcon className="h-4 w-4" aria-hidden />
-              </button>
-            </div>
+            <JumpToLatestPill
+              newMessageCount={newMessageCount}
+              isRaised={hasActivityIndicator}
+              onJumpToLatest={scrollToBottomAndReset}
+            />
           )}
 
           <ChatComposer

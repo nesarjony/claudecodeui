@@ -29,8 +29,28 @@ export type SessionAgent = {
   activity: AgentActivity[];
 };
 
+export type BackgroundShellStatus = 'running' | 'done' | 'failed' | 'stopped';
+
+/** A Bash command run in (or moved to) the background, or a Monitor watch. */
+export type BackgroundShell = {
+  taskId: string;
+  toolUseId: string | null;
+  kind: 'shell' | 'monitor';
+  description: string;
+  command: string;
+  status: BackgroundShellStatus;
+  summary: string | null;
+  exitCode: number | null;
+  movedToBackground: boolean;
+  startedAt: string | null;
+  endedAt: string | null;
+  durationMs: number;
+  outputTail: string[];
+};
+
 export type SessionAgents = {
   sessionId: string;
+  sessionName: string | null;
   stretchStartedAt: string | null;
   earlierCount: number;
   includesEarlier: boolean;
@@ -38,6 +58,7 @@ export type SessionAgents = {
   apiKeyBilled: boolean;
   totals: { running: number; done: number; unfinished: number; costUsd: number };
   agents: SessionAgent[];
+  background: BackgroundShell[];
 };
 
 // Transcripts are re-read while anything is running; otherwise a slow refresh
@@ -46,11 +67,12 @@ const ACTIVE_POLL_MS = 3000;
 const IDLE_POLL_MS = 20000;
 
 /**
- * Polls the subagents of one session's current working stretch (agents from
- * before its last long pause only with `includeEarlier`). Each chat pane holds
- * its own copy.
+ * Polls the subagents and background shells of one session's current working
+ * stretch (agents from before its last long pause only with `includeEarlier`).
+ * Each chat pane holds its own copy; `watching` (a panel showing live output is
+ * open) polls at the fast rate.
  */
-export function useSessionAgents(sessionId: string | null, isProcessing: boolean, includeEarlier = false) {
+export function useSessionAgents(sessionId: string | null, isProcessing: boolean, includeEarlier = false, watching = false) {
   const [data, setData] = useState<SessionAgents | null>(null);
   const requestRef = useRef(0);
 
@@ -77,11 +99,21 @@ export function useSessionAgents(sessionId: string | null, isProcessing: boolean
     void refresh();
   }, [refresh]);
 
-  const active = isProcessing || (data?.totals.running ?? 0) > 0;
+  const active =
+    isProcessing ||
+    watching ||
+    (data?.totals.running ?? 0) > 0 ||
+    (data?.background ?? []).some((shell) => shell.status === 'running');
   useEffect(() => {
     if (!sessionId) return;
+    // Look again soon after the pace changes: a turn that just ended may have
+    // left background work running, and an opened panel wants fresh output.
+    const soon = setTimeout(() => void refresh(), 500);
     const timer = setInterval(() => void refresh(), active ? ACTIVE_POLL_MS : IDLE_POLL_MS);
-    return () => clearInterval(timer);
+    return () => {
+      clearTimeout(soon);
+      clearInterval(timer);
+    };
   }, [sessionId, active, refresh]);
 
   const stopAgent = useCallback(

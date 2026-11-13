@@ -10,7 +10,7 @@ import type { ChatMessage,
   ProviderModelActions,
   ProviderModelsDefinition } from '@/shared/types';
 import { getIntrinsicMessageKey } from '@/modules/chat/utils/messageKeys';
-import { groupConsecutiveTools, isToolGroupItem } from '@/modules/chat/utils/toolGrouping';
+import { groupTranscriptSteps, isToolGroupItem } from '@/modules/chat/utils/toolGrouping';
 import { useLazyRowObserver } from '@/modules/chat/hooks/useLazyRowObserver';
 import LazyMessageRow from '@/modules/chat/transcript/LazyMessageRow';
 import MessageComponent from '@/modules/chat/transcript/MessageComponent';
@@ -26,10 +26,59 @@ import ChatExportMenu from '@/modules/chat/transcript/ChatExportMenu';
  */
 const INITIAL_MOUNTED_TAIL_ROWS = 30;
 
+const NO_ENTERING_ROWS: ReadonlySet<string> = new Set();
+
+/**
+ * The rows that were appended at the live end since the previous key list —
+ * the only rows that ease in.
+ *
+ * Bounded by how much the list grew, so a history refresh that swaps a live
+ * row for its persisted twin (same place, new key) does not replay the
+ * animation on it, and prepended history (new keys at the top) never counts.
+ * A list sharing no key with the previous one is a different transcript
+ * opening, which appears as a whole.
+ */
+function findAppendedRowKeys(previousKeys: string[], nextKeys: string[]): ReadonlySet<string> {
+  const growth = nextKeys.length - previousKeys.length;
+  if (previousKeys.length === 0 || growth <= 0) {
+    return NO_ENTERING_ROWS;
+  }
+
+  const known = new Set(previousKeys);
+  const appended = new Set<string>();
+  for (let index = nextKeys.length - 1; index >= 0 && appended.size < growth; index -= 1) {
+    if (known.has(nextKeys[index])) break;
+    appended.add(nextKeys[index]);
+  }
+  return appended.size === nextKeys.length ? NO_ENTERING_ROWS : appended;
+}
+
+/**
+ * Tracks which row keys just arrived, derived while rendering from the
+ * previous key list (React's "storing information from previous renders"
+ * pattern). Compared by a joined signature, so the per-tick re-renders of a
+ * streaming reply — same keys, fresh array — cost a string compare and no
+ * extra render.
+ */
+function useEnteringRowKeys(rowKeys: string[]): ReadonlySet<string> {
+  const signature = rowKeys.join('\n');
+  // The key list of the previous change and the rows that change appended.
+  const [tracked, setTracked] = useState({ signature, keys: rowKeys, entering: NO_ENTERING_ROWS });
+  if (tracked.signature === signature) {
+    return tracked.entering;
+  }
+
+  const entering = findAppendedRowKeys(tracked.keys, rowKeys);
+  setTracked({ signature, keys: rowKeys, entering });
+  return entering;
+}
+
 type ChatMessagesPaneProps = {
   /** Incremented for every explicit New Session click, including repeated clicks on a blank composer. */
   newSessionTrigger?: number;
   scrollContainerRef: RefObject<HTMLDivElement>;
+  /** The row column; the transcript's follow logic watches its height. */
+  scrollContentRef: RefObject<HTMLDivElement>;
   onWheel: () => void;
   onTouchMove: () => void;
   isLoadingSessionMessages: boolean;
@@ -87,6 +136,7 @@ type ChatMessagesPaneProps = {
 function ChatMessagesPane({
   newSessionTrigger,
   scrollContainerRef,
+  scrollContentRef,
   onWheel,
   onTouchMove,
   isLoadingSessionMessages,
@@ -133,8 +183,8 @@ function ChatMessagesPane({
   const { t } = useTranslation('chat');
   const lazyRows = useLazyRowObserver(scrollContainerRef);
   const groupedVisibleMessages = useMemo(
-    () => groupConsecutiveTools(visibleMessages, Boolean(showThinking)),
-    [visibleMessages, showThinking],
+    () => groupTranscriptSteps(visibleMessages),
+    [visibleMessages],
   );
 
   // Stable, deterministic keys for the messages rendered this pass.
@@ -168,6 +218,27 @@ function ChatMessagesPane({
       messageKeyMap.get(message) ?? getIntrinsicMessageKey(message) ?? 'message-generated',
     [messageKeyMap],
   );
+
+  const rowKeys = useMemo(
+    () => groupedVisibleMessages.map((item) => (
+      isToolGroupItem(item) ? `tool-group-${getMessageKey(item.messages[0])}` : getMessageKey(item)
+    )),
+    [getMessageKey, groupedVisibleMessages],
+  );
+  const enteringRowKeys = useEnteringRowKeys(rowKeys);
+
+  // The steps row that shows the step in flight: the last row the user can
+  // see, while the session works. Hidden reasoning after it renders nothing,
+  // so it does not end the run as far as the user is concerned.
+  const liveRowIndex = useMemo(() => {
+    if (!isProcessing) return -1;
+    for (let index = groupedVisibleMessages.length - 1; index >= 0; index -= 1) {
+      const item = groupedVisibleMessages[index];
+      if (isToolGroupItem(item)) return index;
+      if (!(item.isThinking && !showThinking)) return -1;
+    }
+    return -1;
+  }, [groupedVisibleMessages, isProcessing, showThinking]);
 
   // The nearest enclosing header that offers a chat-actions slot (the split
   // pane's row, or the single view's workspace header).
@@ -208,7 +279,7 @@ function ChatMessagesPane({
           <div className="pointer-events-auto">{exportMenu}</div>
         </div>
       )}
-      <div className="mx-auto w-full max-w-[54.25rem] space-y-3 px-4 sm:space-y-4">
+      <div ref={scrollContentRef} className="mx-auto w-full max-w-[54.25rem] space-y-3 px-4 sm:space-y-4">
       {(isLoadingSessionMessages || isProcessing) && chatMessages.length === 0 ? (
         <div className="mt-8 text-center text-gray-500 dark:text-gray-400">
           <div className="flex items-center justify-center space-x-2">
@@ -293,20 +364,25 @@ function ChatMessagesPane({
               // start as placeholders and mount when scrolled toward.
               const initiallyNearViewport = index >= rowCount - INITIAL_MOUNTED_TAIL_ROWS;
 
+              const rowKey = rowKeys[index];
+
               if (isToolGroupItem(item)) {
                 const groupPrevMessage = prevMessage;
                 prevMessage = item.messages[item.messages.length - 1] || prevMessage;
 
                 return (
                   <LazyMessageRow
-                    key={`tool-group-${getMessageKey(item.messages[0])}`}
+                    key={rowKey}
                     lazyRows={lazyRows}
                     timestamp={item.timestamp}
                     initiallyNearViewport={initiallyNearViewport}
+                    animateEntry={enteringRowKeys.has(rowKey)}
+                    foldedTimestamps={item.messages.map((message) => String(message.timestamp)).join('|')}
                   >
                     <ToolGroupContainer
                       group={item}
-                      prevMessage={groupPrevMessage}
+                      opensTurn={groupPrevMessage?.type !== 'assistant'}
+                      isLive={index === liveRowIndex}
                       createDiff={createDiff}
                       getMessageKey={getMessageKey}
                       onFileOpen={onFileOpen}
@@ -326,10 +402,11 @@ function ChatMessagesPane({
 
               return (
                 <LazyMessageRow
-                  key={getMessageKey(item)}
+                  key={rowKey}
                   lazyRows={lazyRows}
                   timestamp={item.timestamp}
                   initiallyNearViewport={initiallyNearViewport}
+                  animateEntry={enteringRowKeys.has(rowKey)}
                 >
                   <MessageComponent
                     message={item}

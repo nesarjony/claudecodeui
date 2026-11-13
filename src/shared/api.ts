@@ -111,7 +111,7 @@ export const authenticatedFetch = (
       // request raced a sign-out, and tearing the session down for those turns
       // a recoverable blip into a "session expired" screen.
       if (response.headers.get('X-Auth-Error') === 'session-expired') {
-        expireAuthSession();
+        expireAuthSession(`the server answered ${url.split('?')[0]} with session-expired`, token ?? undefined);
       }
       // The edge challenge is recoverable by re-running its login at the top
       // level, so reload instead of touching the stored token.

@@ -11,6 +11,10 @@ const toMessageKeyPart = (value: unknown): string | null => {
 
 export const getIntrinsicMessageKey = (message: ChatMessage): string | null => {
   const candidates = [
+    // First: a streamed reply has no other stable identity. Its timestamp and
+    // text change on every delta, so the timestamp/content fallback below
+    // remounted the whole reply ten times a second.
+    message.renderKey,
     message.id,
     message.messageId,
     message.toolId,

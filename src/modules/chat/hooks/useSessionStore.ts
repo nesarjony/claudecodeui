@@ -810,6 +810,7 @@ export function useSessionStore() {
   const updateStreaming = useCallback((sessionId: string, accumulatedText: string, msgProvider: LLMProvider) => {
     const slot = getSlot(sessionId);
     const streamId = `__streaming_${sessionId}`;
+    const idx = slot.realtimeMessages.findIndex(m => m.id === streamId);
     const msg: NormalizedMessage = {
       id: streamId,
       sessionId,
@@ -817,8 +818,11 @@ export function useSessionStore() {
       provider: msgProvider,
       kind: 'stream_delta',
       content: accumulatedText,
+      // The timestamp and text change on every delta, and `id` changes when
+      // the reply is finalized, so neither can key the transcript row.
+      renderKey: (idx >= 0 ? slot.realtimeMessages[idx].renderKey : undefined)
+        ?? `stream_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
     };
-    const idx = slot.realtimeMessages.findIndex(m => m.id === streamId);
     if (idx >= 0) {
       slot.realtimeMessages = [...slot.realtimeMessages];
       slot.realtimeMessages[idx] = msg;

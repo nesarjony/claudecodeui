@@ -43,6 +43,33 @@ type MessageComponentProps = {
 const COPY_HIDDEN_TOOL_NAMES = new Set(['Bash', 'Edit', 'Write', 'ApplyPatch']);
 
 /**
+ * The provider's logo and name that opens an assistant turn.
+ *
+ * Used by MessageComponent and by ToolGroupContainer, whose steps row draws it
+ * when a turn opens with tool calls — the steps folded inside it render as
+ * continuation rows and never draw a header of their own.
+ */
+export function AssistantTurnHeader({ provider }: { provider: LLMProvider | string }) {
+  const { t } = useTranslation('chat');
+  const label = provider === 'cursor'
+    ? t('messageTypes.cursor')
+    : provider === 'codex'
+      ? t('messageTypes.codex')
+      : provider === 'opencode'
+        ? t('messageTypes.opencode', { defaultValue: 'OpenCode' })
+        : t('messageTypes.claude');
+
+  return (
+    <div className="mb-2 flex items-center space-x-3">
+      <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full p-1 text-sm text-foreground">
+        <LLMProviderLogo provider={provider} className="h-full w-full" />
+      </div>
+      <div className="text-sm font-medium text-gray-900 dark:text-white">{label}</div>
+    </div>
+  );
+}
+
+/**
  * Rendered by chat's ChatMessagesPane and ToolGroupContainer to draw one
  * transcript entry — user turn, assistant turn, or a tool call and its result.
  */
@@ -111,10 +138,10 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
             )}
             {userCopyContent.trim().length > 0 || (!message.images?.length && !message.files?.length) ? (
               <div className="group max-w-full rounded-2xl rounded-br-md border border-border/60 bg-muted/60 px-3 py-2 text-foreground shadow-sm dark:bg-gray-800/60 sm:px-4">
-                <div dir="auto" className="break-words font-serif text-sm">
+                <div dir="auto" className="break-words text-sm">
                   <Markdown
                     breaks
-                    className="prose prose-sm max-w-none font-serif dark:prose-invert"
+                    className="prose prose-sm max-w-none dark:prose-invert"
                   >
                     {message.content}
                   </Markdown>
@@ -172,36 +199,24 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
       ) : (
         /* Claude/Error/Tool messages on the left */
         <div className="w-full">
-          {!isGrouped && (
+          {!isGrouped && (message.type === 'error' || message.type === 'tool' ? (
             <div className="mb-2 flex items-center space-x-3">
               {message.type === 'error' ? (
                 <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-red-600 text-sm text-white">
                   !
                 </div>
-              ) : message.type === 'tool' ? (
+              ) : (
                 <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-gray-600 text-sm text-white dark:bg-gray-700">
                   🔧
                 </div>
-              ) : (
-                <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full p-1 text-sm text-foreground">
-                  <LLMProviderLogo provider={provider} className="h-full w-full" />
-                </div>
               )}
               <div className="text-sm font-medium text-gray-900 dark:text-white">
-                {message.type === 'error'
-                  ? t('messageTypes.error')
-                  : message.type === 'tool'
-                    ? t('messageTypes.tool')
-                    : (provider === 'cursor'
-                        ? t('messageTypes.cursor')
-                        : provider === 'codex'
-                          ? t('messageTypes.codex')
-                          : provider === 'opencode'
-                              ? t('messageTypes.opencode', { defaultValue: 'OpenCode' })
-                              : t('messageTypes.claude'))}
+                {message.type === 'error' ? t('messageTypes.error') : t('messageTypes.tool')}
               </div>
             </div>
-          )}
+          ) : (
+            <AssistantTurnHeader provider={provider} />
+          ))}
 
           <div className="w-full">
 
@@ -221,7 +236,7 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
               <>
                 <div className="flex flex-col">
                   <div className="flex flex-col">
-                    <Markdown className="prose prose-sm max-w-none font-serif dark:prose-invert">
+                    <Markdown className="prose prose-sm max-w-none dark:prose-invert">
                       {String(message.displayText || '')}
                     </Markdown>
                   </div>
@@ -275,7 +290,7 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
               <Reasoning defaultOpen={isExporting}>
                 <ReasoningTrigger />
                 <ReasoningContent>
-                  <Markdown className="prose prose-sm prose-gray max-w-none font-serif dark:prose-invert">
+                  <Markdown className="prose prose-sm prose-gray max-w-none dark:prose-invert">
                     {message.content}
                   </Markdown>
                   {!isExporting && (
@@ -339,7 +354,7 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
                     <StreamingMarkdown
                       content={content}
                       isStreaming={Boolean(message.isStreaming)}
-                      className="prose prose-sm prose-gray max-w-none font-serif dark:prose-invert"
+                      className="prose prose-sm prose-gray max-w-none dark:prose-invert"
                     />
                   ) : (
                     <div className="whitespace-pre-wrap">

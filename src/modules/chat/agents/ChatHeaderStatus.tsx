@@ -105,11 +105,13 @@ function ChatHeaderStatus({ isProcessing, startedAt, waitingCount, lastMessageTy
   }, [state]);
 
   const idleAgo = formatAgo(lastMessageAt);
+  // On a phone (or a narrow desktop pane, which is its own page) the chip
+  // shrinks to its icon and idle hides, so the session title keeps its room.
   const content = (
     <span
       data-pane-state={state}
       title={state === 'waiting' ? `${waitingCount} request${waitingCount === 1 ? '' : 's'} waiting for you` : undefined}
-      className={`flex h-6 shrink-0 items-center gap-1 whitespace-nowrap rounded-full px-2 text-[11px] font-medium tabular-nums ${STYLES[state]}`}
+      className={`${state === 'idle' ? 'hidden sm:flex' : 'flex'} h-6 shrink-0 items-center gap-1 whitespace-nowrap rounded-full px-2 text-[11px] font-medium tabular-nums ${STYLES[state]}`}
     >
       {state === 'working' && (
         <>
@@ -119,17 +121,17 @@ function ChatHeaderStatus({ isProcessing, startedAt, waitingCount, lastMessageTy
       )}
       {state === 'waiting' && (
         <>
-          <AlertCircle className="h-3 w-3" /> Waiting for you
+          <AlertCircle className="h-3 w-3" /> <span className="sr-only sm:not-sr-only">Waiting for you</span>
         </>
       )}
       {state === 'failed' && (
         <>
-          <XCircle className="h-3 w-3" /> Failed
+          <XCircle className="h-3 w-3" /> <span className="sr-only sm:not-sr-only">Failed</span>
         </>
       )}
       {state === 'new' && (
         <>
-          <CheckCircle2 className="h-3 w-3" /> Done
+          <CheckCircle2 className="h-3 w-3" /> <span className="sr-only sm:not-sr-only">Done</span>
         </>
       )}
       {state === 'idle' && <>{idleAgo ? `Idle ${idleAgo}` : 'Idle'}</>}

@@ -195,6 +195,8 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
       // Carried through so a rendered user bubble can address its own
       // transcript row when the user edits or forks from it.
       transcriptAnchorId: msg.transcriptAnchorId,
+      // Set on a streamed reply only; keys its row from first delta to final.
+      renderKey: msg.renderKey,
     };
 
     switch (msg.kind) {

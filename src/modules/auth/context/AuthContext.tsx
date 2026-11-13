@@ -4,7 +4,18 @@ import type { ReactNode } from 'react';
 
 import { IS_PLATFORM } from '@/shared/utils';
 import { api, isEdgeAuthChallenge } from '@/shared/api';
-import { AUTH_SESSION_EXPIRED_EVENT, AUTH_TOKEN_REFRESHED_EVENT, getAuthTokenRefreshDelay, isValidRefreshedToken, storeAuthToken } from '@/shared/authToken';
+import {
+  AUTH_SESSION_EXPIRED_EVENT,
+  AUTH_TOKEN_REFRESHED_EVENT,
+  getAuthTokenRefreshDelay,
+  isAuthTokenExpired,
+  isValidRefreshedToken,
+  markSignedIn,
+  readSignOutLog,
+  recordSignOut,
+  storeAuthToken,
+  wasSignedIn,
+} from '@/shared/authToken';
 import { hydrateChatDrafts, resetChatDrafts } from '@/shared/chatDrafts';
 import { hydrateUserPreferences, resetUserPreferences } from '@/shared/userSettings';
 /** The signed-in account held by AuthContext - a required `username` plus an optional id and any additional fields the auth API returns - and should be read through `useAuth()` rather than re-derived from raw auth responses. */
@@ -15,6 +26,7 @@ type AuthUser = {
 };
 
 const AUTH_TOKEN_STORAGE_KEY = 'auth-token';
+const SIGN_OUT_LOG_UPLOADED_KEY = 'auth-sign-out-log-uploaded';
 
 const AUTH_ERROR_MESSAGES = {
   authStatusCheckFailed: 'errors.authStatusCheckFailed',
@@ -138,9 +150,36 @@ export function AuthProvider({ children }: AuthProviderProps) {
     if (!userKey) {
       return;
     }
+    markSignedIn();
     void hydrateUserPreferences();
     void hydrateChatDrafts();
+
+    // Copy why earlier sessions on this device ended to the server, where a
+    // sign-out on a phone can be diagnosed without the phone in hand.
+    const signOutLog = readSignOutLog();
+    const latest = signOutLog.at(-1)?.at;
+    if (latest && localStorage.getItem(SIGN_OUT_LOG_UPLOADED_KEY) !== latest) {
+      void api.user
+        .savePreferences({ 'debug.signOutLog': { userAgent: navigator.userAgent, records: signOutLog } })
+        .then((response) => {
+          if (response.ok) localStorage.setItem(SIGN_OUT_LOG_UPLOADED_KEY, latest);
+        })
+        .catch(() => undefined);
+    }
   }, [userKey]);
+
+  // Every tab shares the stored token but keeps its own copy in state, so a
+  // token renewed in one tab is adopted by the others instead of each tab
+  // aging out on the token it loaded with.
+  useEffect(() => {
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key === AUTH_TOKEN_STORAGE_KEY && isValidRefreshedToken(event.newValue) && !isAuthTokenExpired(event.newValue)) {
+        setToken(event.newValue);
+      }
+    };
+    window.addEventListener('storage', handleStorage);
+    return () => window.removeEventListener('storage', handleStorage);
+  }, []);
 
   const checkOnboardingStatus = useCallback(async () => {
     try {
@@ -221,6 +260,9 @@ export function AuthProvider({ children }: AuthProviderProps) {
       setNeedsSetup(false);
 
       if (!token) {
+        if (wasSignedIn()) {
+          recordSignOut('the page opened with no stored token although this browser was signed in (browser storage cleared?)', null);
+        }
         return;
       }
 
@@ -236,7 +278,12 @@ export function AuthProvider({ children }: AuthProviderProps) {
         const rejectedByOurApi =
           (userResponse.status === 401 || userResponse.status === 403) &&
           !isEdgeAuthChallenge(userResponse);
-        if (rejectedByOurApi) {
+        // No stored token means the request went out without one because the
+        // session had already ended (and been recorded) a moment earlier.
+        if (rejectedByOurApi && readStoredToken()) {
+          recordSignOut(
+            `the server rejected the token on /api/auth/user (${userResponse.status} ${userResponse.headers.get('X-Auth-Error') ?? 'no X-Auth-Error'})`,
+          );
           clearSession();
         }
         return;
@@ -244,6 +291,9 @@ export function AuthProvider({ children }: AuthProviderProps) {
 
       const userPayload = await parseJsonSafely<AuthUserPayload>(userResponse);
       if (!userPayload?.user) {
+        recordSignOut(
+          `/api/auth/user answered ${userResponse.status} without a user (${userResponse.headers.get('Content-Type') ?? 'no content type'})`,
+        );
         clearSession();
         return;
       }
@@ -360,6 +410,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
   const logout = useCallback(() => {
     // JWT logout is client-side: the server endpoint does not maintain a
     // revocation list, so clearing the session is the complete operation.
+    recordSignOut('signed out from the app');
     clearSession();
   }, [clearSession]);
 

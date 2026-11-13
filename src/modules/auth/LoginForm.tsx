@@ -7,6 +7,7 @@ import { useAuth } from '@/modules/auth/context/AuthContext';
 import AuthErrorAlert from '@/modules/auth/AuthErrorAlert';
 import AuthInputField from '@/modules/auth/AuthInputField';
 import AuthScreenLayout from '@/modules/auth/AuthScreenLayout';
+import { readSignOutLog } from '@/shared/authToken';
 
 type LoginFormState = {
   username: string;
@@ -17,6 +18,28 @@ const initialState: LoginFormState = {
   username: '',
   password: '',
 };
+
+const RECENT_SIGN_OUT_MS = 24 * 60 * 60 * 1000;
+
+const formatWhen = (iso: string | undefined): string =>
+  iso ? new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) : 'unknown';
+
+/** Why this browser was last signed out, so an unexpected sign-out can be traced. */
+function LastSignOutNote() {
+  const [record] = useState(() => {
+    const latest = readSignOutLog().at(-1);
+    return latest && Date.now() - new Date(latest.at).getTime() <= RECENT_SIGN_OUT_MS ? latest : null;
+  });
+  if (!record) {
+    return null;
+  }
+  return (
+    <p className="break-words text-[11px] leading-snug text-muted-foreground">
+      Last sign-out {formatWhen(record.at)}: {record.reason}.
+      {record.tokenIssuedAt && ` Token issued ${formatWhen(record.tokenIssuedAt)}, expiring ${formatWhen(record.tokenExpiresAt)}.`}
+    </p>
+  );
+}
 
 /**
  * Login form component.
@@ -88,6 +111,7 @@ export default function LoginForm() {
         />
 
         <AuthErrorAlert errorMessage={errorMessage || sessionError || ''} />
+        <LastSignOutNote />
 
         <button
           type="submit"

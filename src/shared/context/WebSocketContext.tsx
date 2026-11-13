@@ -38,7 +38,9 @@ const buildWebSocketUrl = (token: string | null) => {
   if (IS_PLATFORM) return `${protocol}//${window.location.host}/ws`; // Platform mode: Use same domain as the page (goes through proxy)
   if (!token) return null;
   if (isAuthTokenExpired(token)) {
-    expireAuthSession();
+    // `token` is this tab's in-memory copy; if another tab has since stored a
+    // fresh one, this adopts it and the socket reconnects with that instead.
+    expireAuthSession('the chat connection was about to reconnect with an expired token', token);
     return null;
   }
   return `${protocol}//${window.location.host}/ws?token=${encodeURIComponent(token)}`; // OSS mode: Use same host:port that served the page

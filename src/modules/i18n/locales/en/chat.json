@@ -129,6 +129,9 @@
     "showAllCommands": "Show all commands",
     "clearInput": "Clear input",
     "scrollToBottom": "Scroll to bottom",
+    "newMessages": "{{count}} new",
+    "newMessagesBelow_one": "{{count}} new message below — jump to latest",
+    "newMessagesBelow_other": "{{count}} new messages below — jump to latest",
     "queue": {
       "sendNext": "Queue next message",
       "update": "Update queued message",
@@ -137,6 +140,11 @@
       "edit": "Edit queued message",
       "delete": "Delete queued message"
     }
+  },
+  "steps": {
+    "count_one": "{{count}} step",
+    "count_other": "{{count}} steps",
+    "failed": "{{count}} failed"
   },
   "composer": {
     "reasoning": "Reasoning",

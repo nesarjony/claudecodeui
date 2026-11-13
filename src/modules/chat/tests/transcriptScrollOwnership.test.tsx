@@ -6,10 +6,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { NormalizedMessage, Project, ProjectSession } from '@/shared/types';
 
 /**
- * The transcript's scroll position is written from five places coordinated by
- * refs and timers rather than by one owner. These are the two cases where that
- * coordination was observably wrong; both are timing bugs, so they are driven
- * on fake timers rather than by clicking.
+ * The transcript's scroll position is written from several places: following
+ * the live end, the restore after older history is prepended, the search jump
+ * and the initial scroll. These pin the cases where that coordination was
+ * observably wrong; they are timing bugs, so they are driven on fake timers
+ * and a scripted container rather than by clicking.
  */
 
 vi.mock('@/shared/api', () => ({
@@ -190,16 +191,189 @@ describe('deferred scroll-to-bottom', () => {
       ...messages.get(SESSION_A)!,
       buildMessage(1, '2026-01-01T00:00:01.000Z'),
     ]);
+    // Cleared before the new row lands rather than after: following now pins
+    // in the commit that adds the row, not on a timer some ms later, so the
+    // row is never painted below the fold first.
+    container.writes.length = 0;
     act(() => {
       rerender({ session: { id: SESSION_A } as ProjectSession });
     });
-    container.writes.length = 0;
 
     act(() => {
       vi.advanceTimersByTime(200);
     });
 
     expect(container.writes).toContain(container.scrollHeight);
+  });
+});
+
+/**
+ * A container whose geometry the test scripts: content height can grow
+ * without a message being added, and the user can move the view, the way a
+ * browser does it — by changing scrollTop and then firing `scroll`.
+ */
+function createScriptedContainer(scrollHeight: number, clientHeight: number) {
+  const element = document.createElement('div');
+  const geometry = { scrollHeight, clientHeight, scrollTop: scrollHeight - clientHeight };
+  const writes: number[] = [];
+
+  Object.defineProperty(element, 'scrollHeight', { get: () => geometry.scrollHeight });
+  Object.defineProperty(element, 'clientHeight', { get: () => geometry.clientHeight });
+  Object.defineProperty(element, 'scrollTop', {
+    get: () => geometry.scrollTop,
+    // Clamped like a browser, so "write scrollHeight" lands on the bottom.
+    set: (next: number) => {
+      geometry.scrollTop = Math.max(0, Math.min(next, geometry.scrollHeight - geometry.clientHeight));
+      writes.push(next);
+    },
+  });
+
+  // jsdom does not scroll; a smooth scrollTo is modelled as landing at once.
+  element.scrollTo = ((options: ScrollToOptions) => {
+    element.scrollTop = options.top ?? geometry.scrollTop;
+  }) as typeof element.scrollTo;
+
+  const userScrollTo = (top: number) => {
+    geometry.scrollTop = top;
+    element.dispatchEvent(new Event('scroll'));
+  };
+
+  return { element: element as HTMLDivElement, geometry, writes, userScrollTo };
+}
+
+/** Collects every ResizeObserver callback so a test can report a size change. */
+function stubResizeObserver() {
+  const callbacks: Array<() => void> = [];
+  class ScriptedResizeObserver {
+    constructor(callback: () => void) {
+      callbacks.push(callback);
+    }
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+  vi.stubGlobal('ResizeObserver', ScriptedResizeObserver);
+  return { reportResize: () => callbacks.forEach((callback) => callback()) };
+}
+
+async function renderFollowingTranscript() {
+  const resizeObserver = stubResizeObserver();
+  const messages = new Map<string, NormalizedMessage[]>([
+    [SESSION_A, [buildMessage(0, '2026-01-01T00:00:00.000Z'), buildMessage(1, '2026-01-01T00:00:01.000Z')]],
+  ]);
+  const store = createStore(messages);
+  const view = await renderChatSessionState({ session: { id: SESSION_A } as ProjectSession, store });
+  const container = createScriptedContainer(5000, 500);
+  (view.result.current.scrollContainerRef as { current: HTMLDivElement | null }).current = container.element;
+
+  // The follow listeners bind on the next commit after the container mounts.
+  act(() => {
+    view.rerender({ session: { id: SESSION_A } as ProjectSession });
+  });
+
+  const appendMessages = (...added: NormalizedMessage[]) => {
+    messages.set(SESSION_A, [...messages.get(SESSION_A)!, ...added]);
+    act(() => {
+      view.rerender({ session: { id: SESSION_A } as ProjectSession });
+    });
+  };
+
+  return { ...view, container, appendMessages, ...resizeObserver };
+}
+
+describe('following the live end', () => {
+  it('follows content that grows without a new message', async () => {
+    // A streamed delta, a tool result or an image loading makes the page
+    // taller without adding a message. Following used to be driven by the
+    // message count only, so none of these were followed.
+    const { container, reportResize } = await renderFollowingTranscript();
+
+    container.geometry.scrollHeight = 5600;
+    act(() => reportResize());
+
+    expect(container.geometry.scrollTop).toBe(5100);
+  });
+
+  it('does not read growth that arrives with a scroll event as the user scrolling up', async () => {
+    // The old handler re-derived "scrolled up" from distance-to-bottom on every
+    // scroll event; 300px of growth plus any scroll event switched following
+    // off for good.
+    const { result, container, reportResize } = await renderFollowingTranscript();
+
+    container.geometry.scrollHeight = 5300;
+    act(() => container.userScrollTo(container.geometry.scrollTop));
+
+    expect(result.current.isUserScrolledUp).toBe(false);
+    act(() => reportResize());
+    expect(container.geometry.scrollTop).toBe(4800);
+  });
+
+  it('detaches on a wheel up, and growth then leaves the view where the user put it', async () => {
+    const { result, container, reportResize } = await renderFollowingTranscript();
+
+    act(() => {
+      container.element.dispatchEvent(new WheelEvent('wheel', { deltaY: -120 }));
+    });
+    expect(result.current.isUserScrolledUp).toBe(true);
+
+    container.writes.length = 0;
+    container.geometry.scrollHeight = 6000;
+    act(() => reportResize());
+
+    assert.deepEqual(container.writes, []);
+  });
+
+  it('detaches when a drag moves the view up, even with no wheel or key', async () => {
+    const { result, container } = await renderFollowingTranscript();
+
+    act(() => container.userScrollTo(3000));
+
+    expect(result.current.isUserScrolledUp).toBe(true);
+  });
+
+  it('re-attaches when the user scrolls back to the bottom', async () => {
+    const { result, container, reportResize } = await renderFollowingTranscript();
+
+    act(() => container.userScrollTo(3000));
+    expect(result.current.isUserScrolledUp).toBe(true);
+
+    act(() => container.userScrollTo(4490));
+    expect(result.current.isUserScrolledUp).toBe(false);
+
+    container.geometry.scrollHeight = 5400;
+    act(() => reportResize());
+    expect(container.geometry.scrollTop).toBe(4900);
+  });
+
+  it('counts the rows that arrive while the user reads back', async () => {
+    const { result, container, appendMessages } = await renderFollowingTranscript();
+
+    act(() => container.userScrollTo(2000));
+    expect(result.current.newMessageCount).toBe(0);
+
+    appendMessages(
+      buildMessage(2, '2026-01-01T00:00:02.000Z'),
+      buildMessage(3, '2026-01-01T00:00:03.000Z'),
+    );
+
+    expect(result.current.newMessageCount).toBe(2);
+    // ...and the view stayed where the user left it.
+    expect(container.geometry.scrollTop).toBe(2000);
+  });
+
+  it('jump to latest re-attaches and returns to the bottom', async () => {
+    const { result, container, reportResize } = await renderFollowingTranscript();
+
+    act(() => container.userScrollTo(1000));
+    act(() => result.current.scrollToBottomAndReset());
+
+    expect(result.current.isUserScrolledUp).toBe(false);
+    expect(container.geometry.scrollTop).toBe(4500);
+
+    // Content landing mid-glide extends it to the new bottom.
+    container.geometry.scrollHeight = 5200;
+    act(() => reportResize());
+    expect(container.geometry.scrollTop).toBe(4700);
   });
 });
 

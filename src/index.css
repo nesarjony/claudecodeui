@@ -973,6 +973,25 @@
     animation: settings-fade-in 150ms ease-out;
   }
 
+  /* A transcript row that just arrived at the live end (and the jump-to-latest
+     pill) eases in instead of popping. No fill mode on purpose: a transform
+     left on the row afterwards would become the containing block for any
+     fixed-position overlay rendered inside a message. */
+  @keyframes chat-row-enter {
+    from { opacity: 0; transform: translateY(6px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  .chat-row-enter {
+    animation: chat-row-enter 150ms ease-out;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .chat-row-enter {
+      animation: none;
+    }
+  }
+
   @keyframes chat-activity-enter {
     0% {
       opacity: 0;

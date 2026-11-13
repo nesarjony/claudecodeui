@@ -125,8 +125,10 @@ const uploadFormDataWithProgress = (
       if (refreshedToken) {
         storeAuthToken(refreshedToken);
       }
-      if (xhr.getResponseHeader('X-Auth-Error')) {
-        expireAuthSession();
+      // Same rule as authenticatedFetch: only a genuinely expired token ends
+      // the session, not a missing header or a raced sign-out.
+      if (xhr.getResponseHeader('X-Auth-Error') === 'session-expired') {
+        expireAuthSession('the server answered a file upload with session-expired', token ?? undefined);
       }
 
       const payload = parseUploadResponse(xhr);

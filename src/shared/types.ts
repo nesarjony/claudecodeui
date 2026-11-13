@@ -318,6 +318,8 @@ export type ChatMessage = {
   memoryCitations?: MemoryCitation[];
   /** Lifecycle the provider reported for this tool call, when it reports one; otherwise the status is inferred from whether a result has arrived. */
   toolStatus?: string;
+  /** Stable transcript-row identity for a streamed reply, kept from its first delta through finalization so the row updates in place instead of remounting. */
+  renderKey?: string;
   [key: string]: unknown;
 };
 
@@ -480,6 +482,12 @@ export type NormalizedMessage = {
   /** Stored memory this reply drew on, when the provider reports it. */
   memoryCitations?: MemoryCitation[];
   isFinal?: boolean;
+  /**
+   * Client-only identity of a streamed reply. Assigned on its first delta and
+   * carried through `finalizeStreaming`, which swaps the record's id; the
+   * transcript keys the row on it so streaming never remounts the reply.
+   */
+  renderKey?: string;
   // Cursor-specific ordering
   sequence?: number;
   rowid?: number;
@@ -637,17 +645,15 @@ export type QueuedSendOptions = Record<string, unknown>;
 /** Function that turns an old/new string pair into rendered diff lines; the chat session state supplies one memoized, caching instance so each file diff is computed only once. */
 export type DiffCalculator = (oldStr: string, newStr: string) => DiffLine[];
 
-/** A synthetic transcript entry standing for a run of consecutive calls to the same tool, produced by the message grouping pass and identified by its `_isGroup` flag so the message list can collapse the run into one expandable block. */
+/** A synthetic transcript entry standing for a run of consecutive tool calls (a "steps" row), produced by the chat grouping pass and identified by its `_isGroup` flag so the message list can fold the run into one expandable row. */
 export type ToolGroupItem = {
   _isGroup: true;
-  toolName: string;
+  /** Every message in the run in transcript order: the tool calls and any reasoning between them. */
   messages: ChatMessage[];
+  /** The tool calls alone, which is what the row counts and summarizes. */
+  steps: ChatMessage[];
+  /** The first call's timestamp, which is what a search jump into the run matches on. */
   timestamp: ChatMessage['timestamp'];
-  /**
-   * Summary line for the collapsed group, built while grouping so the tool-input
-   * JSON parsing it needs never runs during render.
-   */
-  preview: string;
 };
 
 /** One line of a rendered file diff, marked 'added' or 'removed', with its text and line number. */

@@ -13,5 +13,6 @@ export { sessionsService } from './services/sessions.service.js';
 export { initializeSessionsWatcher } from './services/sessions-watcher.service.js';
 export { closeSessionsWatcher } from './services/sessions-watcher.service.js';
 
-// getLiveAgentTasks/stopClaudeAgentTask: used by the agents module to report and stop live subagents.
-export { getLiveAgentTasks, stopClaudeAgentTask } from './list/claude/claude-runtime.provider.js';
+// getLiveAgentTasks/getLiveBackgroundTasks/stopClaudeAgentTask: used by the agents module to
+// report and stop live subagents and background shells.
+export { getLiveAgentTasks, getLiveBackgroundTasks, stopClaudeAgentTask } from './list/claude/claude-runtime.provider.js';
