@@ -1181,7 +1181,10 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
       }
 
       if (!requiresInteraction) {
-        if (sdkOptions.permissionMode === 'bypassPermissions') {
+        // A call the guard policy holds goes to a person whatever else is configured: neither a bypass mode nor a stored
+        // allow rule (for example one a person ticked "always allow" on for an earlier call) may wave it through.
+        const heldByPolicy = policy?.decision === 'ask';
+        if (sdkOptions.permissionMode === 'bypassPermissions' && !heldByPolicy) {
           return { behavior: 'allow', updatedInput: input };
         }
 
@@ -1195,7 +1198,7 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
         const isAllowed = (sdkOptions.allowedTools || []).some(entry =>
           matchesToolPermission(entry, toolName, input)
         );
-        if (isAllowed) {
+        if (isAllowed && !heldByPolicy) {
           return { behavior: 'allow', updatedInput: input };
         }
       }

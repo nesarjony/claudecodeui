@@ -508,3 +508,110 @@ test('host hooks for an event the run already hooks are appended after its own m
   const hooks = await initializeHooks();
   assert.deepEqual(hooks.Notification.map((matcher) => matcher.matcher), ['', 'extra']);
 });
+
+// ---------------------------------------------------------------------------------------------
+// Foreman's two ways into a run side by side: its compaction hooks (the runtime additions provider) and the guard
+// (`options.toolPolicy` for canUseTool, `options.toolHooks` for PreToolUse)
+// ---------------------------------------------------------------------------------------------
+
+const FOREMAN_REPO = '/mnt/dev/repo'; // the project path runPrompt gives a run by default
+
+// Stand-ins shaped like what the Foreman bridge hands over (the real ones are exercised through the bridge module in
+// foreman-guard-integration.test.ts): the additions provider answers compaction hooks for a Foreman repo only, and a
+// guarded run carries a policy for canUseTool and a PreToolUse hook.
+const noopHook = { matcher: '', hooks: [async () => ({})] };
+const foremanAdditions = async (session: { sessionId: string; projectPath: string | null }) =>
+  session.projectPath === FOREMAN_REPO ? { hooks: { PreCompact: [noopHook], SessionStart: [noopHook] } } : {};
+const guardOptions = () => ({ toolPolicy: () => ({ decision: 'ask', category: 'command' }), toolHooks: { PreToolUse: [noopHook] } });
+
+test('a guarded Foreman session registers the guard (PreToolUse and canUseTool) and the compaction hooks together', async () => {
+  runtime.setClaudeRuntimeAdditionsProvider(foremanAdditions);
+  try {
+    const pending = runPrompt('ask', guardOptions(), 'app-session-both');
+    // canUseTool is wired: the risky Bash call is held, flagged as guarded.
+    const request = await waitForPermissionRequest('app-session-both');
+    assert.equal(request.guarded, true);
+    assert.equal(request.category, 'command');
+
+    const registered = await initializeHooks();
+    assert.deepEqual(Object.keys(registered).sort(), ['Notification', 'PreCompact', 'PreToolUse', 'SessionStart']);
+    for (const event of Object.keys(registered)) {
+      assert.equal(registered[event].length, 1, `${event} keeps exactly one matcher`);
+      assert.equal(registered[event][0].hookCallbackIds.length, 1, `${event} keeps exactly one callback`);
+    }
+
+    runtime.resolveToolApproval(request.requestId, { allow: false, message: 'Not in this task.' });
+    const outcome = await pending;
+    assert.ok(kinds(outcome).includes('turn_result'));
+    assert.equal((await permissionAnswers()).at(-1)?.response.behavior, 'deny');
+  } finally {
+    runtime.setClaudeRuntimeAdditionsProvider(null);
+  }
+});
+
+test('a session that is neither guarded nor in a Foreman repo gets neither the guard nor the compaction hooks', async () => {
+  runtime.setClaudeRuntimeAdditionsProvider(foremanAdditions);
+  try {
+    await runPrompt('hello', { projectPath: '/mnt/dev/elsewhere' }, 'app-session-neither');
+    assert.deepEqual(Object.keys(await initializeHooks()), ['Notification']);
+  } finally {
+    runtime.setClaudeRuntimeAdditionsProvider(null);
+  }
+});
+
+test('either half alone: the guard outside a Foreman repo adds only PreToolUse, a Foreman repo without a guard only the compaction hooks', async () => {
+  runtime.setClaudeRuntimeAdditionsProvider(foremanAdditions);
+  try {
+    await runPrompt('hello', { ...guardOptions(), projectPath: '/mnt/dev/elsewhere' }, 'app-session-guard-only');
+    assert.deepEqual(Object.keys(await initializeHooks()).sort(), ['Notification', 'PreToolUse']);
+
+    await runPrompt('hello', {}, 'app-session-compaction-only');
+    assert.deepEqual(Object.keys(await initializeHooks()).sort(), ['Notification', 'PreCompact', 'SessionStart']);
+  } finally {
+    runtime.setClaudeRuntimeAdditionsProvider(null);
+  }
+});
+
+// ---------------------------------------------------------------------------------------------
+// canUseTool: a call the guard holds is not waved through by a stored allow rule or a bypass mode
+// ---------------------------------------------------------------------------------------------
+
+const heldByPolicy = () => ({ decision: 'ask', category: 'command' });
+const settingsWith = (overrides: Record<string, unknown>) => ({ allowedTools: [], disallowedTools: [], skipPermissions: false, ...overrides });
+
+test('without a guard a stored allow rule or a bypass mode settles the call by itself, as before', async () => {
+  const before = (await permissionAnswers()).length;
+  const rule = await runPrompt('ask', { toolsSettings: settingsWith({ allowedTools: ['Bash'] }) }, 'app-session-rule-unguarded');
+  assert.ok(!kinds(rule).includes('permission_request'));
+  assert.equal((await permissionAnswers()).at(-1)?.response.behavior, 'allow');
+
+  const bypass = await runPrompt('ask', { toolsSettings: settingsWith({ skipPermissions: true }) }, 'app-session-bypass-unguarded');
+  assert.ok(!kinds(bypass).includes('permission_request'));
+  assert.equal((await permissionAnswers()).length, before + 2);
+});
+
+test('a call the policy holds is asked about even when a stored allow rule matches it', async () => {
+  const pending = runPrompt('ask', { toolPolicy: heldByPolicy, toolsSettings: settingsWith({ allowedTools: ['Bash'] }) }, 'app-session-rule-guarded');
+  const request = await waitForPermissionRequest('app-session-rule-guarded');
+  assert.equal(request.guarded, true);
+  runtime.resolveToolApproval(request.requestId, { allow: false, message: 'Held for a person.' });
+  await pending;
+  assert.equal((await permissionAnswers()).at(-1)?.response.message, 'Held for a person.');
+});
+
+test('a call the policy holds is asked about even in a bypass mode', async () => {
+  const pending = runPrompt('ask', { toolPolicy: heldByPolicy, toolsSettings: settingsWith({ skipPermissions: true }) }, 'app-session-bypass-guarded');
+  const request = await waitForPermissionRequest('app-session-bypass-guarded');
+  assert.equal(request.guarded, true);
+  runtime.resolveToolApproval(request.requestId, { allow: false, message: 'Held for a person.' });
+  await pending;
+  assert.equal((await permissionAnswers()).at(-1)?.response.behavior, 'deny');
+});
+
+test('a tool the settings disallow is still denied outright for a guarded run, with no prompt', async () => {
+  const outcome = await runPrompt('ask', { toolPolicy: heldByPolicy, toolsSettings: settingsWith({ disallowedTools: ['Bash'] }) }, 'app-session-disallowed-guarded');
+  assert.ok(!kinds(outcome).includes('permission_request'));
+  const answer = (await permissionAnswers()).at(-1);
+  assert.equal(answer?.response.behavior, 'deny');
+  assert.equal(answer?.response.message, 'Tool disallowed by settings');
+});
