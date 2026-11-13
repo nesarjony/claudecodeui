@@ -52,7 +52,14 @@ function fakeForeman(over: { config?: unknown; preCompact?: unknown; sessionStar
   return { fetchImpl, calls, state };
 }
 
-async function setup(options: { managed?: string[]; clock?: { now: number }; ttlMs?: number; foreman?: Parameters<typeof fakeForeman>[0]; token?: string | null } = {}) {
+async function setup(options: {
+  managed?: string[];
+  clock?: { now: number };
+  ttlMs?: number;
+  foreman?: Parameters<typeof fakeForeman>[0];
+  token?: string | null;
+  worktrees?: string[];
+} = {}) {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'foreman-runtime-hooks-'));
   const tokenFile = path.join(directory, 'bridge-token');
   if (options.token !== null) {
@@ -65,6 +72,7 @@ async function setup(options: { managed?: string[]; clock?: { now: number }; ttl
     tokenFile,
     baseUrl: 'http://foreman.test',
     isManagedSession: (id) => (options.managed ?? []).includes(id),
+    ...(options.worktrees ? { isForemanWorktree: (projectPath: string) => options.worktrees!.some((root) => projectPath === root || projectPath.startsWith(`${root}/`)) } : {}),
     fetchImpl: foreman.fetchImpl,
     configTtlMs: options.ttlMs,
     now: () => clock.now,
@@ -511,5 +519,44 @@ test('the Bash rule holds a configured subagent to its allow-list and leaves the
     assert.ok(denied(await rule({ ...bashCall('', 'test-runner'), tool_input: null }, 'tu_1', abort)));
   } finally {
     await t.cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------------------------
+// Milestone 6: worktrees the bridge created count as Foreman repos
+// ---------------------------------------------------------------------------------------------
+
+test('a session in a registered Foreman worktree outside the repos gets the compaction hooks, and the threshold when bridge-started', async () => {
+  const worktree = '/mnt/dev/moveon/.foreman-worktrees/desk-foreman-task-7';
+  const t = await setup({ managed: ['s1'], worktrees: [worktree] });
+  try {
+    const managed = await t.hooks.forSession(desk('s1', worktree));
+    assert.deepEqual(managed.env, { CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '70' });
+    assert.deepEqual(Object.keys(managed.hooks ?? {}).sort(), ['PreCompact', 'SessionStart']);
+    // A folder inside the worktree counts too; the hooks report the session's own project path to Foreman.
+    const inside = await t.hooks.forSession(desk('ui', `${worktree}/packages/api`));
+    assert.ok(inside.hooks?.PreCompact);
+    await preCompactHook(inside)({ hook_event_name: 'PreCompact', trigger: 'auto' }, undefined, abort);
+    assert.equal(t.foreman.calls.find((c) => c.url.endsWith('pre-compact'))!.body.projectPath, `${worktree}/packages/api`);
+    // A sibling folder of the worktree does not.
+    assert.deepEqual(await t.hooks.forSession(desk('ui', `${worktree}-old`)), {});
+  } finally {
+    await t.cleanup();
+  }
+});
+
+test('without a worktree registry, or with hooks switched off, a worktree path gets no hooks (unchanged behaviour)', async () => {
+  const worktree = '/mnt/dev/moveon/.foreman-worktrees/desk-foreman-task-7';
+  const plain = await setup({ managed: ['s1'] });
+  try {
+    assert.deepEqual(await plain.hooks.forSession(desk('s1', worktree)), { env: { CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '70' } });
+  } finally {
+    await plain.cleanup();
+  }
+  const off = await setup({ managed: ['s1'], worktrees: [worktree], foreman: { config: { ...RUNTIME_CONFIG, hooks: { ...RUNTIME_CONFIG.hooks, enabled: false } } } });
+  try {
+    assert.deepEqual(await off.hooks.forSession(desk('s1', worktree)), { env: { CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '70' } });
+  } finally {
+    await off.cleanup();
   }
 });

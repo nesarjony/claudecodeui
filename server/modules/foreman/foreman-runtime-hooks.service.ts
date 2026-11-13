@@ -58,6 +58,11 @@ type RuntimeHooksDependencies = {
   baseUrl?: string;
   /** Was this session started through the Foreman bridge? Only those get the autocompact threshold and the subagents. */
   isManagedSession: (sessionId: string) => boolean;
+  /**
+   * Is this project path a worktree the bridge created (or inside one)? Such a worktree lives outside the configured repos but
+   * gets their PreCompact/SessionStart hooks. Without it only the configured repos count.
+   */
+  isForemanWorktree?: (projectPath: string) => boolean;
   fetchImpl?: typeof fetch;
   /** How long a fetched config is trusted before it is fetched again (stale config is used while Foreman is down). */
   configTtlMs?: number;
@@ -228,8 +233,9 @@ function parseRuntimeConfig(value: unknown): ForemanRuntimeConfig | null {
  * Decides, per Claude run, what the Foreman bridge adds to it, and builds the hooks.
  *
  * - Hooks (`PreCompact`, `SessionStart`) are added only for sessions inside a repo Foreman manages (its config `repos`, read
- *   from Foreman and cached). `PreCompact` asks Foreman to write the session's notes and appends its instructions to the
- *   compaction; `SessionStart` hands the notes back after a compaction (or on resuming a handed-off session).
+ *   from Foreman and cached) or inside a worktree the bridge created for a task. `PreCompact` asks Foreman to write the
+ *   session's notes and appends its instructions to the compaction; `SessionStart` hands the notes back after a compaction
+ *   (or on resuming a handed-off session).
  * - `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` is added only for sessions started through the bridge.
  * - Subagents (`agents`, from the config's `delegation`) are added only for sessions started through the bridge, with a
  *   PreToolUse hook that keeps each agent's Bash to its `bashAllow` commands.
@@ -359,7 +365,11 @@ export function createForemanRuntimeHooks(dependencies: RuntimeHooksDependencies
           additions.env = { CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: String(config?.workerAutoCompactPct ?? DEFAULT_AUTOCOMPACT_PCT) };
         }
         const managedRepo =
-          config?.hooks.enabled === true && session.projectPath !== null && config.repos.some((repo) => isInsideRepo(session.projectPath as string, repo.path));
+          config?.hooks.enabled === true && session.projectPath !== null && (
+            config.repos.some((repo) => isInsideRepo(session.projectPath as string, repo.path))
+            // A worktree the bridge made for a task sits outside the repos but is worked on like one of them.
+            || dependencies.isForemanWorktree?.(session.projectPath) === true
+          );
         if (config && managedRepo) {
           additions.hooks = buildHooks(session, config);
         }

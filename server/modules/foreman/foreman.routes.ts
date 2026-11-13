@@ -7,6 +7,7 @@ import {
   parseForemanSuggestion,
   type ForemanSuggestionBroadcaster,
 } from '@/modules/foreman/foreman-suggestions.service.js';
+import { MAX_WORKTREE_BRANCH_LENGTH, type ForemanWorktreesService } from '@/modules/foreman/foreman-worktrees.service.js';
 import { AppError, asyncHandler, createApiSuccessResponse } from '@/shared/utils.js';
 import type { ForemanBilling } from '@/shared/types.js';
 
@@ -153,8 +154,10 @@ export function createForemanRouter(options: {
   suggestions?: ForemanSuggestionBroadcaster;
   /** Read-only git facts about a project; without it `GET /projects/git` answers 503. */
   git?: ForemanGitService;
+  /** Task worktrees; without it `POST` and `DELETE /projects/worktree` answer 503. */
+  worktrees?: ForemanWorktreesService;
 }) {
-  const { authMiddleware, sessions, suggestions, git } = options;
+  const { authMiddleware, sessions, suggestions, git, worktrees } = options;
   const router = express.Router();
 
   router.use(authMiddleware);
@@ -203,6 +206,46 @@ export function createForemanRouter(options: {
       throw invalid('path is required and must be an absolute path.');
     }
     response.json(createApiSuccessResponse(await git.inspect(requested.trim())));
+  }));
+
+  // A task worktree of a known project, registered as a cloudcli project: 201 when made now, 200 when it already existed.
+  router.post('/projects/worktree', asyncHandler(async (request, response) => {
+    if (!worktrees) {
+      throw new AppError('Worktree management is not available.', { code: 'WORKTREES_UNAVAILABLE', statusCode: 503 });
+    }
+    const body = readBody(request);
+    const projectPath = readRequiredText(body, 'projectPath', MAX_PATH_LENGTH).trim();
+    if (!projectPath.startsWith('/')) {
+      throw invalid('projectPath must be an absolute path of a known cloudcli project.');
+    }
+    // Branch rules are the service's (git's own); the length here only bounds what is read.
+    const result = await worktrees.create({
+      projectPath,
+      branch: readRequiredText(body, 'branch', MAX_WORKTREE_BRANCH_LENGTH + 100).trim(),
+      base: readOptionalText(body, 'base', MAX_WORKTREE_BRANCH_LENGTH + 100),
+    });
+    response.status(result.created ? 201 : 200).json(createApiSuccessResponse(result));
+  }));
+
+  router.delete('/projects/worktree', asyncHandler(async (request, response) => {
+    if (!worktrees) {
+      throw new AppError('Worktree management is not available.', { code: 'WORKTREES_UNAVAILABLE', statusCode: 503 });
+    }
+    const body = readBody(request);
+    const worktreePath = readRequiredText(body, 'path', MAX_PATH_LENGTH).trim();
+    if (!worktreePath.startsWith('/')) {
+      throw invalid('path must be the absolute path of a worktree the bridge created.');
+    }
+    for (const flag of ['deleteBranch', 'force']) {
+      if (body[flag] !== undefined && typeof body[flag] !== 'boolean') {
+        throw invalid(`${flag} must be a boolean.`);
+      }
+    }
+    response.json(createApiSuccessResponse(await worktrees.remove({
+      path: worktreePath,
+      deleteBranch: body.deleteBranch === true,
+      force: body.force === true,
+    })));
   }));
 
   router.get('/sessions/:id/digest', asyncHandler(async (request, response) => {
