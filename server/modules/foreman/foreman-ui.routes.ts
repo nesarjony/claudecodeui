@@ -10,6 +10,9 @@ import { AppError, asyncHandler, createApiSuccessResponse } from '@/shared/utils
  *
  * - `GET  /pending?sessionId=`  the session's pending suggestion, or `{ suggestion: null }`
  * - `POST /:id/feedback`        `{ action: 'sent' | 'edited' | 'dismissed', finalText? }`
+ * - `POST /:id/execute`         has Foreman carry out a `write_notes` or `handoff` suggestion; answers what it did
+ *                               (`result.newSessionId` for a handoff, `result.version` for notes)
+ * - `GET  /notes?sessionId=`    the latest task notes for a session, `{ notes: { content, version, turn, createdAt } | null }`
  */
 // Consumed by foreman.module.ts, which mounts it on the server entrypoint, and by the route tests.
 export function createForemanUiRouter(options: { client: ForemanSuggestionsClient }) {
@@ -27,6 +30,19 @@ export function createForemanUiRouter(options: { client: ForemanSuggestionsClien
       throw new AppError('sessionId is required.', { code: 'INVALID_REQUEST', statusCode: 400 });
     }
     response.json(createApiSuccessResponse({ suggestion: await client.getPending(sessionId) }));
+  }));
+
+  router.get('/notes', asyncHandler(async (request, response) => {
+    const sessionId = request.query.sessionId;
+    if (typeof sessionId !== 'string' || !sessionId) {
+      throw new AppError('sessionId is required.', { code: 'INVALID_REQUEST', statusCode: 400 });
+    }
+    response.json(createApiSuccessResponse({ notes: await client.getNotes(sessionId) }));
+  }));
+
+  router.post('/:id/execute', asyncHandler(async (request, response) => {
+    const suggestionId = typeof request.params.id === 'string' ? request.params.id : '';
+    response.json(createApiSuccessResponse(await client.execute(suggestionId)));
   }));
 
   router.post('/:id/feedback', asyncHandler(async (request, response) => {

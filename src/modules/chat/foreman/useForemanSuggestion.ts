@@ -5,7 +5,10 @@ import { useWebSocket } from '@/shared/context/WebSocketContext';
 import {
   isForemanSuggestion,
   planSuggestion,
+  type ForemanExecution,
   type ForemanFeedbackAction,
+  type ForemanNotes,
+  type ForemanNotesView,
   type ForemanSuggestion,
   type SuggestionPlan,
 } from '@/modules/chat/foreman/foremanSuggestion';
@@ -23,6 +26,8 @@ type UseForemanSuggestionOptions = {
   fillComposer: (text: string) => void;
   /** The existing model switch path (the composer's model picker). */
   switchModel: (model: string) => Promise<void> | void;
+  /** Opens a session in the chat (the app's own navigation); used to land on the fresh session a handoff created. */
+  openSession?: (sessionId: string) => void;
   /**
    * Filled with a function the composer calls with the text of every message the user submits, so an edited
    * suggestion can be reported with what was finally sent.
@@ -46,6 +51,7 @@ export function useForemanSuggestion({
   sendText,
   fillComposer,
   switchModel,
+  openSession,
   submitListenerRef,
 }: UseForemanSuggestionOptions) {
   const { subscribe } = useWebSocket();
@@ -54,6 +60,13 @@ export function useForemanSuggestion({
   // even for one frame.
   const [held, setHeld] = useState<{ sessionId: string; suggestion: ForemanSuggestion } | null>(null);
   const suggestion = enabled && held && held.sessionId === sessionId ? held.suggestion : null;
+  // The last press of "Write the notes now" or "Hand off", with a snapshot of its suggestion: Foreman marks the suggestion
+  // sent when the action works, which would remove the card, but the card has to stay to say what was done. Tied to its
+  // session the same way as `held`, so it never shows on another chat.
+  const [executionState, setExecutionState] = useState<ForemanExecution | null>(null);
+  const execution = enabled && executionState && executionState.suggestion.sessionId === sessionId ? executionState : null;
+  // The notes panel: closed until the user asks to view the notes, then the request's progress and result.
+  const [notesView, setNotesView] = useState<ForemanNotesView>({ phase: 'closed' });
   // Suggestions that left the pending state, so a slow initial fetch cannot bring one back.
   const settledIdsRef = useRef(new Set<string>());
   // A suggestion the user pressed Edit on: the next message they send is reported as its outcome.
@@ -66,6 +79,7 @@ export function useForemanSuggestion({
     sessionIdRef.current = sessionId;
     settledIdsRef.current = new Set();
     editingRef.current = null;
+    setNotesView({ phase: 'closed' });
   }, [sessionId, enabled]);
 
   const report = useCallback((id: string, body: FeedbackBody) => {
@@ -163,6 +177,62 @@ export function useForemanSuggestion({
     void Promise.resolve(switchModel(model)).catch(() => undefined);
   }, [report, settle, suggestion, switchModel]);
 
+  /**
+   * Execute: has Foreman do a write_notes or handoff suggestion itself. While it works the card shows progress; on success a
+   * write_notes card says which notes version was written (and offers to show it) and a handoff opens the fresh session; on
+   * failure the suggestion stays pending with the reason, so the button can be pressed again.
+   */
+  const execute = useCallback(async () => {
+    if (!suggestion || plan?.kind !== 'execute') return;
+    const { action } = plan;
+    const base = { suggestion, action };
+    setExecutionState({ ...base, phase: 'running' });
+    setNotesView({ phase: 'closed' });
+    try {
+      const response = await api.foreman.executeSuggestion(suggestion.id);
+      const payload = await response.json().catch(() => null);
+      if (!response.ok || !payload?.success) {
+        throw new Error(payload?.error?.message ?? `HTTP ${response.status}`);
+      }
+      const result = payload.data?.result ?? {};
+      // Foreman answered it (marked it sent): the pending card goes, and a late pending fetch must not bring it back.
+      settle(suggestion.id);
+      const newSessionId = typeof result.newSessionId === 'string' ? result.newSessionId : undefined;
+      setExecutionState({ ...base, phase: 'done', notesVersion: typeof result.version === 'number' ? result.version : undefined, newSessionId });
+      if (action === 'handoff' && newSessionId) openSession?.(newSessionId);
+    } catch (error) {
+      setExecutionState({ ...base, phase: 'failed', error: error instanceof Error ? error.message : String(error) });
+    }
+  }, [openSession, plan, settle, suggestion]);
+
+  /** Loads the notes into the card's panel through the signed-in user's route (the bridge token stays server-side). */
+  const viewNotes = useCallback(async () => {
+    const target = sessionIdRef.current;
+    if (!target) return;
+    setNotesView({ phase: 'loading' });
+    try {
+      const response = await api.foreman.notes(target);
+      const payload = await response.json().catch(() => null);
+      if (sessionIdRef.current !== target) return;
+      if (!response.ok || !payload?.success) {
+        setNotesView({ phase: 'failed' });
+        return;
+      }
+      const notes: ForemanNotes | null = payload.data?.notes ?? null;
+      setNotesView(notes && typeof notes.content === 'string' ? { phase: 'ready', notes } : { phase: 'empty' });
+    } catch {
+      setNotesView({ phase: 'failed' });
+    }
+  }, []);
+
+  const hideNotes = useCallback(() => setNotesView({ phase: 'closed' }), []);
+
+  /** Closes the card that reports what Foreman did (it has already been answered, so there is nothing to report back). */
+  const closeExecution = useCallback(() => {
+    setExecutionState(null);
+    setNotesView({ phase: 'closed' });
+  }, []);
+
   // The composer tells us every message the user submits. If it follows an Edit, report it: `edited` with the final
   // text, or `sent` when the user pressed Edit and then sent the text unchanged.
   useEffect(() => {
@@ -179,5 +249,12 @@ export function useForemanSuggestion({
     };
   }, [report, submitListenerRef]);
 
-  return { suggestion, plan, send, edit, dismiss, switchTo };
+  // What the card shows: the pending suggestion, or (after Write notes / Hand off) the snapshot of the one that was just carried out.
+  const card = useMemo<{ suggestion: ForemanSuggestion; plan: SuggestionPlan } | null>(() => {
+    if (suggestion && plan) return { suggestion, plan };
+    if (!execution) return null;
+    return { suggestion: execution.suggestion, plan: { kind: 'execute', action: execution.action, text: execution.suggestion.decision.decision.reason } };
+  }, [execution, plan, suggestion]);
+
+  return { suggestion, plan, card, send, edit, dismiss, switchTo, execution, notesView, execute, viewNotes, hideNotes, closeExecution };
 }

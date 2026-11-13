@@ -100,6 +100,8 @@ export type ForemanBridgeDependencies = {
   setSessionModel(sessionId: string, model: string): void;
   /** Remembers/reads which Foreman task a session belongs to. */
   taskIds: { get(sessionId: string): string | null; set(sessionId: string, taskId: string): void };
+  /** Marks sessions started through the bridge, so the runtime gives them the worker autocompact threshold. */
+  managed?: { mark(sessionId: string): void };
   /** Tells connected UIs about a session so it appears in the sidebar immediately. */
   announceSession(sessionId: string): Promise<void>;
   hasFailed(sessionId: string): boolean;
@@ -421,6 +423,8 @@ export function createForemanSessionsService(deps: ForemanBridgeDependencies) {
         deps.sessionsDb.updateSessionCustomName(created.sessionId, clipText(input.title, MAX_TITLE_LENGTH));
       }
       permissionModes.set(created.sessionId, input.permissionMode);
+      // Marked before the run starts, so the run that this call starts already gets the threshold.
+      deps.managed?.mark(created.sessionId);
       // Recorded before the run starts so even its first event (session_started) carries the task.
       if (input.taskId) {
         deps.taskIds.set(created.sessionId, input.taskId);

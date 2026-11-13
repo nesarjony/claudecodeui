@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, within } from '@testing-library/react';
+import type { ComponentProps } from 'react';
 import { I18nextProvider } from 'react-i18next';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -26,12 +27,22 @@ const make = (decision: Partial<ForemanDecision>, over: Partial<ForemanSuggestio
   },
 });
 
-function setup(suggestion: ForemanSuggestion, options: { defaultOpen?: boolean; currentModel?: string | null } = {}) {
-  const handlers = { onSend: vi.fn(), onEdit: vi.fn(), onSwitchModel: vi.fn(), onDismiss: vi.fn() };
+function setup(suggestion: ForemanSuggestion, options: { defaultOpen?: boolean; currentModel?: string | null; extra?: Partial<ComponentProps<typeof ForemanSuggestionCard>> } = {}) {
+  const handlers = {
+    onSend: vi.fn(),
+    onEdit: vi.fn(),
+    onSwitchModel: vi.fn(),
+    onDismiss: vi.fn(),
+    onExecute: vi.fn(),
+    onViewNotes: vi.fn(),
+    onHideNotes: vi.fn(),
+    onCloseExecution: vi.fn(),
+    onOpenSession: vi.fn(),
+  };
   const plan = planSuggestion(suggestion, { currentModel: options.currentModel ?? 'sonnet' });
   const view = render(
     <I18nextProvider i18n={i18n}>
-      <ForemanSuggestionCard suggestion={suggestion} plan={plan} defaultOpen={options.defaultOpen ?? true} {...handlers} />
+      <ForemanSuggestionCard suggestion={suggestion} plan={plan} defaultOpen={options.defaultOpen ?? true} {...handlers} {...options.extra} />
     </I18nextProvider>,
   );
   return { ...view, ...handlers };
@@ -109,7 +120,7 @@ describe('information-only suggestions', () => {
     expect(screen.queryByRole('button', { name: 'Send' })).toBeNull();
   });
 
-  it.each(['delegate', 'split', 'handoff', 'run_judge'] as const)('%s is labelled "not available in shadow mode yet" and cannot be sent', action => {
+  it.each(['delegate', 'split', 'run_judge'] as const)('%s is labelled "not available in shadow mode yet" and cannot be sent', action => {
     setup(make({ action, message: undefined, reason: 'A judge should check this.' }));
     expect(screen.getByTestId('foreman-unavailable').textContent).toBe('Not available in shadow mode yet');
     expect(screen.queryByRole('button', { name: 'Send' })).toBeNull();
@@ -172,5 +183,85 @@ describe('folding (phone width)', () => {
     expect(card.className).toContain('border-border');
     expect(card.className).not.toContain('font-mono');
     expect(card.className).not.toContain('overflow-x');
+  });
+});
+
+describe('executable suggestions (write_notes, handoff)', () => {
+  const notes = make({ action: 'write_notes', message: undefined, reason: 'Rule notes_due: context 41% >= notes_at 35% and there are no notes yet.' });
+  const handoff = make({ action: 'handoff', message: undefined, reason: 'Rule handoff_at_boundary: context 84% >= handoff_at 80%.' });
+
+  it('write_notes offers "Write the notes now" and Dismiss, shows the reason, and not Send, Edit or "not available"', () => {
+    const { onExecute } = setup(notes);
+    expect(screen.getByTestId('foreman-message').textContent).toContain('Rule notes_due');
+    expect(screen.queryByTestId('foreman-unavailable')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Send' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Write the notes now' }));
+    expect(onExecute).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole('button', { name: 'Dismiss' })).toBeTruthy();
+  });
+
+  it('handoff offers "Hand off to a fresh session"', () => {
+    const { onExecute } = setup(handoff);
+    fireEvent.click(screen.getByRole('button', { name: 'Hand off to a fresh session' }));
+    expect(onExecute).toHaveBeenCalledTimes(1);
+  });
+
+  it('while Foreman works the button says so and is disabled, and Dismiss is disabled too', () => {
+    setup(notes, { extra: { execution: { suggestion: notes, action: 'write_notes', phase: 'running' } } });
+    const working = screen.getByTestId('foreman-execute') as HTMLButtonElement;
+    expect(working.textContent).toBe('Working…');
+    expect(working.disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Dismiss' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('a failure shows the reason and leaves the button to press again', () => {
+    const { onExecute } = setup(handoff, { extra: { execution: { suggestion: handoff, action: 'handoff', phase: 'failed', error: 'UNKNOWN_PROJECT: not a known cloudcli project' } } });
+    expect(screen.getByTestId('foreman-execution-error').textContent).toBe('That did not work: UNKNOWN_PROJECT: not a known cloudcli project');
+    fireEvent.click(screen.getByRole('button', { name: 'Hand off to a fresh session' }));
+    expect(onExecute).toHaveBeenCalledTimes(1);
+  });
+
+  it('after write_notes it says which version was written and offers a "View notes" link, with no Write button left', () => {
+    const { onViewNotes, onCloseExecution } = setup(notes, { extra: { execution: { suggestion: notes, action: 'write_notes', phase: 'done', notesVersion: 3 } } });
+    expect(screen.getByTestId('foreman-execution-result').textContent).toBe('Notes written (version 3).');
+    expect(screen.queryByTestId('foreman-execute')).toBeNull();
+    fireEvent.click(screen.getByTestId('foreman-view-notes'));
+    expect(onViewNotes).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+    expect(onCloseExecution).toHaveBeenCalledTimes(1);
+  });
+
+  it('the notes panel shows the notes while loading, loaded, empty or failed, and the link folds it again', () => {
+    const execution = { suggestion: notes, action: 'write_notes', phase: 'done', notesVersion: 3 } as const;
+    const loading = setup(notes, { extra: { execution, notesView: { phase: 'loading' } } });
+    expect(screen.getByText('Loading the notes…')).toBeTruthy();
+    loading.unmount();
+    const ready = setup(notes, { extra: { execution, notesView: { phase: 'ready', notes: { content: '# Task notes\n\n## Goal & Definition of Done\nShip it.', version: 3, turn: 4, createdAt: '2026-11-13T10:00:00.000Z' } } } });
+    expect(screen.getByTestId('foreman-notes').textContent).toContain('Ship it.');
+    expect(screen.getByTestId('foreman-view-notes').textContent).toBe('Hide notes');
+    fireEvent.click(screen.getByTestId('foreman-view-notes'));
+    expect(ready.onHideNotes).toHaveBeenCalledTimes(1);
+    ready.unmount();
+    const empty = setup(notes, { extra: { execution, notesView: { phase: 'empty' } } });
+    expect(screen.getByText('No notes found for this session.')).toBeTruthy();
+    empty.unmount();
+    setup(notes, { extra: { execution, notesView: { phase: 'failed' } } });
+    expect(screen.getByText('The notes could not be loaded.')).toBeTruthy();
+  });
+
+  it('after a handoff it says so and offers to open the new session', () => {
+    const { onOpenSession } = setup(handoff, { extra: { execution: { suggestion: handoff, action: 'handoff', phase: 'done', newSessionId: 'new-session-9' } } });
+    expect(screen.getByTestId('foreman-execution-result').textContent).toContain('Handed off');
+    fireEvent.click(screen.getByRole('button', { name: 'Open the new session' }));
+    expect(onOpenSession).toHaveBeenCalledWith('new-session-9');
+    expect(screen.queryByTestId('foreman-view-notes')).toBeNull();
+  });
+
+  it('folded, a finished card summarises the outcome and its X closes it (not Dismiss)', () => {
+    const { onCloseExecution, onDismiss } = setup(notes, { defaultOpen: false, extra: { execution: { suggestion: notes, action: 'write_notes', phase: 'done', notesVersion: 3 } } });
+    expect(screen.getByTestId('foreman-suggestion').textContent).toContain('Notes written (version 3).');
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
+    expect(onCloseExecution).toHaveBeenCalledTimes(1);
+    expect(onDismiss).not.toHaveBeenCalled();
   });
 });

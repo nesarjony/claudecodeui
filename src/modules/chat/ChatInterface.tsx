@@ -418,6 +418,7 @@ function ChatInterface({
     sendText,
     fillComposer: fillComposerFromForeman,
     switchModel: handleSelectComposerModel,
+    openSession: (id) => onNavigateToSession?.(id),
     submitListenerRef: foremanSubmitRef,
   });
 
@@ -534,15 +535,22 @@ function ChatInterface({
 
           <ChatComposer
           foremanSuggestion={
-            showForemanSuggestions && foreman.suggestion && foreman.plan ? (
+            showForemanSuggestions && foreman.card ? (
               <ForemanSuggestionCard
-                key={foreman.suggestion.id}
-                suggestion={foreman.suggestion}
-                plan={foreman.plan}
+                key={foreman.card.suggestion.id}
+                suggestion={foreman.card.suggestion}
+                plan={foreman.card.plan}
                 onSend={foreman.send}
                 onEdit={foreman.edit}
                 onSwitchModel={foreman.switchTo}
                 onDismiss={foreman.dismiss}
+                execution={foreman.execution}
+                notesView={foreman.notesView}
+                onExecute={foreman.execute}
+                onViewNotes={foreman.viewNotes}
+                onHideNotes={foreman.hideNotes}
+                onCloseExecution={foreman.closeExecution}
+                onOpenSession={onNavigateToSession ? (id) => onNavigateToSession(id) : undefined}
               />
             ) : null
           }

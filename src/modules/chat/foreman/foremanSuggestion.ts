@@ -75,8 +75,37 @@ export function isForemanSuggestion(value: unknown): value is ForemanSuggestion 
   );
 }
 
-/** Actions Foreman can name but the shadow-mode card cannot carry out yet: the card only says what was suggested. */
-export const SHADOW_UNAVAILABLE_ACTIONS: readonly ForemanAction[] = ['delegate', 'split', 'handoff', 'run_judge', 'write_notes'];
+/** Actions Foreman can name but the card cannot carry out yet: the card only says what was suggested. */
+export const SHADOW_UNAVAILABLE_ACTIONS: readonly ForemanAction[] = ['delegate', 'split', 'run_judge'];
+
+/** Actions the card has Foreman carry out itself (`POST /api/foreman-suggestions/:id/execute`): the notes and the handoff. */
+export const FOREMAN_EXECUTABLE_ACTIONS = ['write_notes', 'handoff'] as const;
+export type ForemanExecutableAction = (typeof FOREMAN_EXECUTABLE_ACTIONS)[number];
+
+/** The task notes Foreman's context keeper wrote for a session, as the "View notes" panel shows them. */
+export type ForemanNotes = { content: string; version: number; turn: number; createdAt: string };
+
+/**
+ * One press of "Write the notes now" or "Hand off": running while Foreman works (the keeper can take up to 20 s), done with
+ * what it produced, or failed with the reason (the suggestion stays pending then, so the button can be pressed again).
+ * It keeps a snapshot of the suggestion, because Foreman marks the suggestion sent when the action works and the card
+ * must still be there to say what happened.
+ */
+export type ForemanExecution = {
+  suggestion: ForemanSuggestion;
+  action: ForemanExecutableAction;
+  phase: 'running' | 'done' | 'failed';
+  error?: string;
+  /** write_notes: the version of the notes that were written. */
+  notesVersion?: number;
+  /** handoff: the fresh session that took over. */
+  newSessionId?: string;
+};
+
+/** The notes panel's state: not asked for yet, loading, loaded, none exist, or the request failed. */
+export type ForemanNotesView = { phase: 'closed' } | { phase: 'loading' } | { phase: 'ready'; notes: ForemanNotes } | { phase: 'empty' } | { phase: 'failed' };
+
+export const isExecutableAction = (action: ForemanAction): action is ForemanExecutableAction => (FOREMAN_EXECUTABLE_ACTIONS as readonly string[]).includes(action);
 
 /** What Send posts for a `continue` that came without a message. */
 export const DEFAULT_CONTINUE_TEXT = 'Please continue.';
@@ -114,6 +143,8 @@ export type SuggestionPlan =
   | { kind: 'send'; text: string }
   /** A model switch through the existing model picker. */
   | { kind: 'switch_model'; alias: string; model: string }
+  /** Foreman does it itself on press: writes the task notes, or hands the session off to a fresh one. */
+  | { kind: 'execute'; action: ForemanExecutableAction; text: string }
   /** Nothing to press: a question for the user, a reason to stop, or an action shadow mode cannot run yet. */
   | { kind: 'info'; text: string; unavailable: boolean };
 
@@ -125,7 +156,8 @@ const nonEmpty = (value: string | undefined): string | undefined => (value && va
  *  - compact: send `/compact <instructions>`;
  *  - switch_model: a "Switch to X" button, unless the session is already on X;
  *  - needs_user / stop: information only (the question or the reason);
- *  - delegate / split / handoff / run_judge / write_notes: information only, marked not available in shadow mode.
+ *  - write_notes / handoff: a button that has Foreman do it (write the notes, start a fresh session seeded from them);
+ *  - delegate / split / run_judge: information only, marked not available yet.
  */
 export function planSuggestion(suggestion: ForemanSuggestion, context: { currentModel: string | null }): SuggestionPlan {
   const d = suggestion.decision.decision;
@@ -149,6 +181,9 @@ export function planSuggestion(suggestion: ForemanSuggestion, context: { current
         ? { kind: 'switch_model', alias: d.model, model }
         : { kind: 'info', text: reason, unavailable: false };
     }
+    case 'write_notes':
+    case 'handoff':
+      return { kind: 'execute', action: d.action, text: reason };
     case 'needs_user':
       return { kind: 'info', text: nonEmpty(d.question) ?? reason, unavailable: false };
     case 'stop':

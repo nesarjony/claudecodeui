@@ -325,3 +325,86 @@ test('with no bridge token file the user routes answer 503 instead of calling Fo
     assert.equal(foremanCalls.length, 0);
   });
 });
+
+// ---------------------------------------------------------------------------------------------
+// Milestone 4: execute (write_notes, handoff) and the notes view
+// ---------------------------------------------------------------------------------------------
+
+const SUGGESTION_ID = 'sug_0b8f6a52-4a1c-4d2c-8a52-0d1c6a0f3a11';
+
+test('POST /:id/execute has Foreman carry out the action, with the bridge token and without a body, and passes its result back', async () => {
+  const result = { ok: true, action: 'handoff', result: { newSessionId: 'new-1', notesVersion: 3, handoffId: 'ho_1' }, feedback: { suggestion: { status: 'sent' } } };
+  await withUiRouter(() => ({ status: 200, json: result }), async ({ call, foremanCalls }) => {
+    const out = await call('POST', `/${SUGGESTION_ID}/execute`, {});
+    assert.equal(out.status, 200);
+    assert.equal(out.body.data.result.newSessionId, 'new-1');
+    assert.equal(foremanCalls[0]!.url, `http://foreman.test:4111/foreman/suggestions/${SUGGESTION_ID}/execute`);
+    assert.equal(foremanCalls[0]!.method, 'POST');
+    assert.equal(foremanCalls[0]!.authorization, `Bearer ${TOKEN}`);
+    assert.ok(!JSON.stringify(out.body).includes(TOKEN));
+  });
+});
+
+test('POST /:id/execute maps Foreman\'s 404, 409, 422 and failures onto cloudcli errors, and refuses a bad id before calling Foreman', async () => {
+  const answers = new Map<string, { status: number; json: unknown }>([
+    ['missing', { status: 404, json: { error: 'suggestion not found' } }],
+    ['answered', { status: 409, json: { error: 'suggestion is not pending' } }],
+    ['unsupported', { status: 422, json: { error: 'Foreman cannot execute "steer" itself; it goes through Send' } }],
+    ['failed', { status: 502, json: { error: 'UNKNOWN_PROJECT: projectPath is not a known cloudcli project.' } }],
+  ]);
+  let current = 'missing';
+  await withUiRouter(() => answers.get(current)!, async ({ call, foremanCalls }) => {
+    current = 'missing';
+    const notFound = await call('POST', `/${SUGGESTION_ID}/execute`, {});
+    assert.equal(notFound.status, 404);
+    assert.equal(notFound.body.error.code, 'SUGGESTION_NOT_FOUND');
+    current = 'answered';
+    const answered = await call('POST', `/${SUGGESTION_ID}/execute`, {});
+    assert.equal(answered.status, 409);
+    assert.equal(answered.body.error.code, 'SUGGESTION_NOT_PENDING');
+    current = 'unsupported';
+    const unsupported = await call('POST', `/${SUGGESTION_ID}/execute`, {});
+    assert.equal(unsupported.status, 422);
+    assert.equal(unsupported.body.error.code, 'CANNOT_EXECUTE');
+    assert.match(unsupported.body.error.message, /goes through Send/);
+    current = 'failed';
+    const failed = await call('POST', `/${SUGGESTION_ID}/execute`, {});
+    assert.equal(failed.status, 502);
+    assert.equal(failed.body.error.code, 'FOREMAN_EXECUTE_FAILED');
+    assert.match(failed.body.error.message, /UNKNOWN_PROJECT/);
+    const before = foremanCalls.length;
+    assert.equal((await call('POST', '/..%2Fx/execute', {})).status, 400);
+    assert.equal(foremanCalls.length, before, 'a bad id never reaches Foreman');
+  });
+});
+
+test('POST /:id/execute is a 502 when Foreman is down', async () => {
+  await withUiRouter(() => 'down', async ({ call }) => {
+    const out = await call('POST', `/${SUGGESTION_ID}/execute`, {});
+    assert.equal(out.status, 502);
+    assert.equal(out.body.error.code, 'FOREMAN_UNAVAILABLE');
+  });
+});
+
+test('GET /notes proxies the latest notes for the session (login-protected route, bridge token kept server-side)', async () => {
+  const notes = { version: 4, turn: 7, createdAt: '2026-11-13T10:00:00.000Z', content: '# Task notes\n\n## Goal & Definition of Done\nShip it.\n', key: 'session-s1', model: 'api-haiku' };
+  await withUiRouter(() => ({ status: 200, json: { notes } }), async ({ call, foremanCalls }) => {
+    const out = await call('GET', '/notes?sessionId=session-1');
+    assert.equal(out.status, 200);
+    assert.deepEqual(out.body.data.notes, { content: notes.content, version: 4, turn: 7, createdAt: notes.createdAt });
+    assert.equal(foremanCalls[0]!.url, 'http://foreman.test:4111/foreman/notes?sessionId=session-1');
+    assert.equal(foremanCalls[0]!.authorization, `Bearer ${TOKEN}`);
+    assert.ok(!JSON.stringify(out.body).includes(TOKEN));
+  });
+});
+
+test('GET /notes answers null when there are none, and validates the session id', async () => {
+  await withUiRouter(() => ({ status: 200, json: { notes: null } }), async ({ call, foremanCalls }) => {
+    assert.deepEqual((await call('GET', '/notes?sessionId=session-1')).body, { success: true, data: { notes: null } });
+    assert.equal((await call('GET', '/notes')).status, 400);
+    const traversal = await call('GET', '/notes?sessionId=..%2Fadmin');
+    assert.equal(traversal.status, 400);
+    assert.equal(traversal.body.error.code, 'INVALID_SESSION_ID');
+    assert.equal(foremanCalls.length, 1);
+  });
+});

@@ -178,7 +178,22 @@
       "high": "High risk"
     },
     "secondOpinion": "{{model}} · 2nd opinion",
-    "unavailable": "Not available in shadow mode yet"
+    "unavailable": "Not available in shadow mode yet",
+    "execute": {
+      "write_notes": "Write the notes now",
+      "handoff": "Hand off to a fresh session",
+      "working": "Working…",
+      "failed": "That did not work: {{message}}"
+    },
+    "notesWritten": "Notes written (version {{version}}).",
+    "viewNotes": "View notes",
+    "hideNotes": "Hide notes",
+    "notesLoading": "Loading the notes…",
+    "notesEmpty": "No notes found for this session.",
+    "notesFailed": "The notes could not be loaded.",
+    "handedOff": "Handed off. The work carries on in a fresh session seeded from the notes.",
+    "openSession": "Open the new session",
+    "close": "Close"
   },
   "composer": {
     "reasoning": "Reasoning",

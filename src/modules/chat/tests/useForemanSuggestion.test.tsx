@@ -50,6 +50,7 @@ function setup(initial: Partial<Props> = {}) {
     sendText: vi.fn(),
     fillComposer: vi.fn(),
     switchModel: vi.fn().mockResolvedValue(undefined),
+    openSession: vi.fn(),
     submitListenerRef: { current: null as ((text: string) => void) | null },
   };
   const rendered = renderHook((props: Props) => useForemanSuggestion({ ...props, ...deps }), {
@@ -270,5 +271,134 @@ describe('what the user does with a suggestion', () => {
     act(() => result.current.send('Run pnpm verify.'));
     expect(sendText).toHaveBeenCalled();
     expect(result.current.suggestion).toBeNull();
+  });
+});
+
+describe('write_notes and handoff run through Foreman', () => {
+  const executed = (result: Record<string, unknown>) => ({ ok: true, json: async () => ({ success: true, data: { ok: true, result } }) }) as unknown as Response;
+  const failed = (message: string) => ({ ok: false, status: 502, json: async () => ({ success: false, error: { code: 'FOREMAN_EXECUTE_FAILED', message } }) }) as unknown as Response;
+
+  async function withExecutable(action: 'write_notes' | 'handoff') {
+    vi.spyOn(api.foreman, 'pendingSuggestion').mockResolvedValue(pendingResponse(make({}, { action, message: undefined, reason: 'Rule says so' })));
+    const view = setup();
+    await waitFor(() => expect(view.result.current.suggestion).not.toBeNull());
+    return view;
+  }
+
+  it('plans both as execute', async () => {
+    expect((await withExecutable('write_notes')).result.current.plan).toEqual({ kind: 'execute', action: 'write_notes', text: 'Rule says so' });
+    expect((await withExecutable('handoff')).result.current.plan).toEqual({ kind: 'execute', action: 'handoff', text: 'Rule says so' });
+  });
+
+  it('write_notes: runs the action, keeps the card to report the version, and does not send or report feedback itself', async () => {
+    const execute = vi.spyOn(api.foreman, 'executeSuggestion').mockResolvedValue(executed({ version: 3, chars: 2400 }));
+    const feedback = vi.spyOn(api.foreman, 'suggestionFeedback').mockResolvedValue(ok());
+    const { result, sendText, openSession } = await withExecutable('write_notes');
+    await act(async () => result.current.execute());
+    expect(execute).toHaveBeenCalledWith('sug_1');
+    expect(result.current.execution).toMatchObject({ phase: 'done', action: 'write_notes', notesVersion: 3 });
+    expect(feedback).not.toHaveBeenCalled(); // Foreman marks it sent itself
+    expect(sendText).not.toHaveBeenCalled();
+    expect(openSession).not.toHaveBeenCalled();
+    expect(result.current.card).not.toBeNull();
+  });
+
+  it('the card survives Foreman pushing the suggestion as sent, and a late pending fetch does not bring the old card back', async () => {
+    vi.spyOn(api.foreman, 'executeSuggestion').mockResolvedValue(executed({ version: 3 }));
+    const { result } = await withExecutable('write_notes');
+    await act(async () => result.current.execute());
+    await bus.emit({ kind: 'foreman_suggestion', sessionId: 'session-1', suggestion: make({ status: 'sent' }, { action: 'write_notes', reason: 'x' }) });
+    expect(result.current.suggestion).toBeNull();
+    expect(result.current.card?.suggestion.id).toBe('sug_1');
+    expect(result.current.execution?.phase).toBe('done');
+    await bus.emit({ kind: 'foreman_suggestion', sessionId: 'session-1', suggestion: make({ status: 'pending' }, { action: 'write_notes', reason: 'x' }) });
+    expect(result.current.suggestion).toBeNull();
+  });
+
+  it('while it runs the card is in the running phase, and the push of the answered suggestion does not drop it', async () => {
+    let release: (r: Response) => void = () => undefined;
+    vi.spyOn(api.foreman, 'executeSuggestion').mockReturnValue(new Promise<Response>(resolve => (release = resolve)));
+    const { result } = await withExecutable('handoff');
+    let pending: Promise<void> | undefined;
+    act(() => {
+      pending = result.current.execute();
+    });
+    expect(result.current.execution?.phase).toBe('running');
+    await bus.emit({ kind: 'foreman_suggestion', sessionId: 'session-1', suggestion: make({ status: 'sent' }, { action: 'handoff', reason: 'x' }) });
+    expect(result.current.card).not.toBeNull();
+    await act(async () => {
+      release(executed({ newSessionId: 'new-9' }));
+      await pending;
+    });
+    expect(result.current.execution).toMatchObject({ phase: 'done', newSessionId: 'new-9' });
+  });
+
+  it('handoff: opens the fresh session it created', async () => {
+    vi.spyOn(api.foreman, 'executeSuggestion').mockResolvedValue(executed({ newSessionId: 'new-session-9', handoffId: 'ho_1' }));
+    const { result, openSession } = await withExecutable('handoff');
+    await act(async () => result.current.execute());
+    expect(openSession).toHaveBeenCalledWith('new-session-9');
+    expect(result.current.execution).toMatchObject({ phase: 'done', action: 'handoff', newSessionId: 'new-session-9' });
+  });
+
+  it('a failure keeps the suggestion pending with the reason, and pressing again retries', async () => {
+    const execute = vi.spyOn(api.foreman, 'executeSuggestion').mockResolvedValueOnce(failed('UNKNOWN_PROJECT')).mockResolvedValueOnce(executed({ newSessionId: 'new-1' }));
+    const { result, openSession } = await withExecutable('handoff');
+    await act(async () => result.current.execute());
+    expect(result.current.execution).toMatchObject({ phase: 'failed', error: 'UNKNOWN_PROJECT' });
+    expect(result.current.suggestion?.id).toBe('sug_1');
+    expect(openSession).not.toHaveBeenCalled();
+    await act(async () => result.current.execute());
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(result.current.execution?.phase).toBe('done');
+  });
+
+  it('a request that throws is a failure with its message', async () => {
+    vi.spyOn(api.foreman, 'executeSuggestion').mockRejectedValue(new Error('network down'));
+    const { result } = await withExecutable('write_notes');
+    await act(async () => result.current.execute());
+    expect(result.current.execution).toMatchObject({ phase: 'failed', error: 'network down' });
+  });
+
+  it('view notes loads them through the user route; hide folds them; closing the card clears everything', async () => {
+    vi.spyOn(api.foreman, 'executeSuggestion').mockResolvedValue(executed({ version: 3 }));
+    const notes = vi.spyOn(api.foreman, 'notes').mockResolvedValue({ ok: true, json: async () => ({ success: true, data: { notes: { content: '# Task notes', version: 3, turn: 4, createdAt: 't' } } }) } as unknown as Response);
+    const { result } = await withExecutable('write_notes');
+    await act(async () => result.current.execute());
+    expect(result.current.notesView.phase).toBe('closed');
+    await act(async () => result.current.viewNotes());
+    expect(notes).toHaveBeenCalledWith('session-1');
+    expect(result.current.notesView).toMatchObject({ phase: 'ready', notes: { content: '# Task notes', version: 3 } });
+    act(() => result.current.hideNotes());
+    expect(result.current.notesView.phase).toBe('closed');
+    await act(async () => result.current.viewNotes());
+    act(() => result.current.closeExecution());
+    expect(result.current.execution).toBeNull();
+    expect(result.current.card).toBeNull();
+    expect(result.current.notesView.phase).toBe('closed');
+  });
+
+  it('view notes reports none, and a failed request', async () => {
+    vi.spyOn(api.foreman, 'executeSuggestion').mockResolvedValue(executed({ version: 3 }));
+    const notes = vi.spyOn(api.foreman, 'notes').mockResolvedValue({ ok: true, json: async () => ({ success: true, data: { notes: null } }) } as unknown as Response);
+    const { result } = await withExecutable('write_notes');
+    await act(async () => result.current.execute());
+    await act(async () => result.current.viewNotes());
+    expect(result.current.notesView.phase).toBe('empty');
+    notes.mockRejectedValue(new Error('down'));
+    await act(async () => result.current.viewNotes());
+    expect(result.current.notesView.phase).toBe('failed');
+  });
+
+  it('the finished card belongs to its session: another chat never shows it', async () => {
+    vi.spyOn(api.foreman, 'executeSuggestion').mockResolvedValue(executed({ version: 3 }));
+    const { result, rerender } = await withExecutable('write_notes');
+    await act(async () => result.current.execute());
+    expect(result.current.card).not.toBeNull();
+    vi.spyOn(api.foreman, 'pendingSuggestion').mockResolvedValue(pendingResponse(null));
+    rerender({ sessionId: 'session-2', enabled: true, currentModel: 'sonnet' });
+    expect(result.current.card).toBeNull();
+    rerender({ sessionId: 'session-1', enabled: true, currentModel: 'sonnet' });
+    expect(result.current.card).not.toBeNull();
   });
 });

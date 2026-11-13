@@ -7,6 +7,7 @@ import {
   confidencePercent,
   foremanModelLabel,
   foremanModelToCloudcli,
+  isExecutableAction,
   isForemanSuggestion,
   planSuggestion,
   type ForemanDecision,
@@ -62,8 +63,16 @@ test('needs_user shows the question, falling back to the reason; stop shows the 
   assert.deepEqual(plan({ action: 'stop', reason: 'work is verified' }), { kind: 'info', text: 'work is verified', unavailable: false });
 });
 
-test('delegate, split, handoff, run_judge and write_notes are information only, marked not available in shadow mode', () => {
-  for (const action of ['delegate', 'split', 'handoff', 'run_judge', 'write_notes'] as const) {
+test('write_notes and handoff are executable: a button that has Foreman do it, with the reason as the text', () => {
+  assert.deepEqual(plan({ action: 'write_notes', reason: 'Rule notes_due: context 41% >= notes_at 35%' }), { kind: 'execute', action: 'write_notes', text: 'Rule notes_due: context 41% >= notes_at 35%' });
+  assert.deepEqual(plan({ action: 'handoff', reason: 'Context at 84%' }), { kind: 'execute', action: 'handoff', text: 'Context at 84%' });
+  assert.equal(isExecutableAction('handoff'), true);
+  assert.equal(isExecutableAction('write_notes'), true);
+  assert.equal(isExecutableAction('compact'), false);
+});
+
+test('delegate, split and run_judge are information only, marked not available yet', () => {
+  for (const action of ['delegate', 'split', 'run_judge'] as const) {
     const result = plan({ action, reason: 'worth a judge' });
     assert.equal(result.kind, 'info', action);
     assert.equal(result.kind === 'info' && result.unavailable, true, action);

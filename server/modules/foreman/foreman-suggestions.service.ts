@@ -27,6 +27,17 @@ export type ForemanSuggestion = {
   [key: string]: unknown;
 };
 
+/** The notes Foreman's context keeper wrote for a session: what the card's "View notes" shows. */
+// Consumed by the suggestions client below and by the UI routes that proxy it.
+export type ForemanNotes = {
+  /** The notes file, markdown. */
+  content: string;
+  version: number;
+  /** The session's turn count when they were written. */
+  turn: number;
+  createdAt: string;
+};
+
 /** The WebSocket frame that tells open chats about a new or changed suggestion. */
 export type ForemanSuggestionEvent = {
   kind: 'foreman_suggestion';
@@ -40,6 +51,8 @@ const SUGGESTION_ID_PATTERN = /^[A-Za-z0-9._-]{1,80}$/;
 const MAX_FINAL_TEXT_LENGTH = 200_000;
 const DEFAULT_FOREMAN_URL = 'http://127.0.0.1:4111';
 const FOREMAN_TIMEOUT_MS = 5000;
+// A handoff or a notes write waits on the context keeper (up to its 20 s budget) and, for a handoff, on starting a session.
+const EXECUTE_TIMEOUT_MS = 60_000;
 
 const asRecord = (value: unknown): Record<string, unknown> | null =>
   value !== null && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
@@ -128,7 +141,9 @@ type ForemanSuggestionsClientDependencies = {
   timeoutMs?: number;
 };
 
-function resolveForemanBaseUrl(explicit: string | undefined): string {
+/** Foreman's origin: the explicit value, else `FOREMAN_URL`, else the origin of `FOREMAN_EVENTS_URL`, else Foreman's local address. */
+// Consumed by the suggestions client below and by the runtime hooks service, which call the same Foreman.
+export function resolveForemanBaseUrl(explicit: string | undefined): string {
   if (explicit) {
     return explicit.replace(/\/+$/, '');
   }
@@ -156,7 +171,7 @@ export function createForemanSuggestionsClient(dependencies: ForemanSuggestionsC
   const fetchImpl = dependencies.fetchImpl ?? fetch;
   const timeoutMs = dependencies.timeoutMs ?? FOREMAN_TIMEOUT_MS;
 
-  async function call(method: 'GET' | 'POST', pathAndQuery: string, body?: unknown): Promise<{ status: number; json: Record<string, unknown> | null }> {
+  async function call(method: 'GET' | 'POST', pathAndQuery: string, body?: unknown, callTimeoutMs = timeoutMs): Promise<{ status: number; json: Record<string, unknown> | null }> {
     const token = await readBridgeToken(dependencies.tokenFile);
     if (!token) {
       throw new AppError('The Foreman bridge is disabled: no bridge token is configured.', {
@@ -170,7 +185,7 @@ export function createForemanSuggestionsClient(dependencies: ForemanSuggestionsC
         method,
         headers: { authorization: `Bearer ${token}`, ...(body !== undefined ? { 'content-type': 'application/json' } : {}) },
         body: body !== undefined ? JSON.stringify(body) : undefined,
-        signal: AbortSignal.timeout(timeoutMs),
+        signal: AbortSignal.timeout(callTimeoutMs),
       });
     } catch (error) {
       throw new AppError(`Foreman is not reachable: ${error instanceof Error ? error.message : String(error)}`, {
@@ -199,6 +214,51 @@ export function createForemanSuggestionsClient(dependencies: ForemanSuggestionsC
       }
       const suggestion = json?.suggestion;
       return suggestion === null || suggestion === undefined ? null : parseForemanSuggestion(suggestion);
+    },
+
+    /** The latest notes Foreman's context keeper wrote for a session, or null when there are none. */
+    async getNotes(sessionId: string): Promise<ForemanNotes | null> {
+      if (!SESSION_ID_PATTERN.test(sessionId)) {
+        throw invalid('Invalid session id.', 'INVALID_SESSION_ID');
+      }
+      const { status, json } = await call('GET', `/foreman/notes?sessionId=${encodeURIComponent(sessionId)}`);
+      if (status !== 200) {
+        throw new AppError('Foreman could not return the notes.', { code: 'FOREMAN_ERROR', statusCode: 502 });
+      }
+      const notes = asRecord(json?.notes);
+      if (!notes || typeof notes.content !== 'string') {
+        return null;
+      }
+      return {
+        content: notes.content,
+        version: typeof notes.version === 'number' ? notes.version : 0,
+        turn: typeof notes.turn === 'number' ? notes.turn : 0,
+        createdAt: typeof notes.createdAt === 'string' ? notes.createdAt : '',
+      };
+    },
+
+    /**
+     * Has Foreman carry out the action of a pending suggestion itself: write the notes (`write_notes`) or hand the session off
+     * to a fresh one (`handoff`). Foreman marks the suggestion sent when it worked. A failure leaves it pending so it can be retried.
+     */
+    async execute(suggestionId: string): Promise<Record<string, unknown>> {
+      if (!SUGGESTION_ID_PATTERN.test(suggestionId)) {
+        throw invalid('Invalid suggestion id.');
+      }
+      const { status, json } = await call('POST', `/foreman/suggestions/${encodeURIComponent(suggestionId)}/execute`, {}, EXECUTE_TIMEOUT_MS);
+      if (status === 200 && json) {
+        return json;
+      }
+      if (status === 404) {
+        throw new AppError('Suggestion not found.', { code: 'SUGGESTION_NOT_FOUND', statusCode: 404 });
+      }
+      if (status === 409) {
+        throw new AppError('This suggestion has already been answered.', { code: 'SUGGESTION_NOT_PENDING', statusCode: 409 });
+      }
+      if (status === 422) {
+        throw new AppError(typeof json?.error === 'string' ? json.error : 'Foreman cannot carry out this action itself.', { code: 'CANNOT_EXECUTE', statusCode: 422 });
+      }
+      throw new AppError(typeof json?.error === 'string' ? json.error : 'Foreman could not carry out the action.', { code: 'FOREMAN_EXECUTE_FAILED', statusCode: 502 });
     },
 
     /** Records what the user did with a suggestion. Foreman answers once per suggestion (404 unknown, 409 already answered). */
