@@ -22,6 +22,7 @@ const fs = require('node:fs');
 const crypto = require('node:crypto');
 
 const SESSION = 'prov-' + crypto.randomUUID();
+const HOME = require('node:os').homedir();
 const log = process.env.FAKE_CLAUDE_LOG;
 const out = (message) => process.stdout.write(JSON.stringify(message) + '\n');
 const note = (entry) => log && fs.appendFileSync(log, JSON.stringify(entry) + '\n');
@@ -44,7 +45,7 @@ rl.on('line', (line) => {
     if (msg.request.subtype === 'initialize') {
       // Like the CLI: keep the callback ids the SDK registered for PreToolUse.
       hookIds = ((msg.request.hooks || {}).PreToolUse || []).flatMap((matcher) => matcher.hookCallbackIds);
-      note({ initialized: Object.keys(msg.request.hooks || {}).sort() });
+      note({ initialized: Object.keys(msg.request.hooks || {}).sort(), autocompact: process.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE || null });
     }
     out({ type: 'control_response', response: { subtype: 'success', request_id: msg.request_id, response: msg.request.subtype === 'initialize' ? { commands: [], agents: [], output_style: 'default', available_output_styles: ['default'], models: [], account: {} } : {} } });
     return;
@@ -86,6 +87,10 @@ rl.on('line', (line) => {
     globenv: ['Glob', { pattern: '**/.env*' }],
     grepenv: ['Grep', { pattern: 'KEY', glob: '.env*' }],
     catenv: ['Bash', { command: 'cat .env' }],
+    grepssh: ['Grep', { pattern: 'PRIVATE', path: HOME + '/.ssh' }],
+    globtoken: ['Glob', { pattern: '*token*', path: HOME + '/.config' }],
+    catconfig: ['Bash', { command: 'cat ~/.config/gh/oauth_token' }],
+    readconfig: ['Read', { file_path: HOME + '/.config/gh/api_key' }],
   }[prompt];
   if (readOnly) {
     const [tool, input] = readOnly;
@@ -122,6 +127,8 @@ const GUARD = {
 let directory = '';
 let logFile = '';
 let projectDir = '';
+// A second known project that Foreman's runtime config lists as one of its repos: its sessions get the compaction hooks.
+let managedDir = '';
 let baseUrl = '';
 let server: http.Server;
 let eventsServer: http.Server;
@@ -142,6 +149,8 @@ before(async () => {
   directory = await mkdtemp(path.join(os.tmpdir(), 'foreman-guard-int-'));
   projectDir = path.join(directory, 'project');
   await mkdir(projectDir);
+  managedDir = path.join(directory, 'managed-repo');
+  await mkdir(managedDir);
   const cli = path.join(directory, 'fake-claude');
   await writeFile(cli, FAKE_CLAUDE);
   await chmod(cli, 0o755);
@@ -154,7 +163,17 @@ before(async () => {
     let body = '';
     request.on('data', (chunk) => { body += chunk; });
     request.on('end', () => {
-      // Foreman's other routes (the runtime config the compaction hooks read) are not stubbed here: 404, so those hooks stay off.
+      // The runtime config the compaction hooks read: Foreman manages `managedDir` only, so `projectDir` sessions get no hooks from it.
+      if (request.method === 'GET' && request.url?.endsWith('/foreman/runtime-config')) {
+        response.setHeader('content-type', 'application/json');
+        response.end(JSON.stringify({
+          repos: [{ name: 'managed', path: managedDir }],
+          workerAutoCompactPct: 70,
+          hooks: { enabled: true, preCompactBudgetMs: 20_000, sessionStartMaxChars: 6000 },
+        }));
+        return;
+      }
+      // Foreman's other routes are not stubbed here.
       if (request.method !== 'POST' || !request.url?.endsWith('/foreman/events')) {
         response.statusCode = 404;
         response.end('{}');
@@ -178,6 +197,7 @@ before(async () => {
   database.closeConnection();
   await database.initializeDatabase();
   database.projectsDb.createProjectPath(projectDir);
+  database.projectsDb.createProjectPath(managedDir);
 
   const { createForemanModule } = await import('@/modules/foreman/index.js');
   const app = express();
@@ -363,13 +383,13 @@ test('a guarded prompt nobody answers in time is denied as a timeout, the worker
 // The PreToolUse hook: reads the CLI would allow by itself are held for a person too
 // ---------------------------------------------------------------------------------------------
 
-async function startSession(prompt: string, guarded: boolean): Promise<string> {
+async function startSession(prompt: string, guarded: boolean, inProject = projectDir): Promise<string> {
   const started = await api('POST', '/sessions', {
-    projectPath: projectDir,
+    projectPath: inProject,
     prompt,
     billing: 'subscription',
     permissionMode: 'default',
-    ...(guarded ? { guard: { ...GUARD, repoRoot: projectDir } } : {}),
+    ...(guarded ? { guard: { ...GUARD, repoRoot: inProject } } : {}),
   });
   assert.equal(started.status, 201, JSON.stringify(started.body));
   return started.body.data.sessionId as string;
@@ -428,6 +448,12 @@ test('Glob, Grep and a shell read that name a secret file are held too, and a pe
     ['globenv', 'Glob', '**/.env*'],
     ['grepenv', 'Grep', 'KEY'],
     ['catenv', 'Bash', 'cat .env'],
+    // Not covered by the guard's own secret pattern (only `.env` here): the built-in classes hold them.
+    // (A call that carries a path is summarised by that path.)
+    ['grepssh', 'Grep', path.join(os.homedir(), '.ssh')],
+    ['globtoken', 'Glob', path.join(os.homedir(), '.config')],
+    ['catconfig', 'Bash', 'cat ~/.config/gh/oauth_token'],
+    ['readconfig', 'Read', path.join(os.homedir(), '.config', 'gh', 'api_key')],
   ] as const) {
     const mark = (await fakeLog()).length;
     const sessionId = await startSession(prompt, true);
@@ -480,4 +506,42 @@ test('a resumed guarded session registers the hook again', async () => {
   assert.deepEqual((await fakeLog()).slice(mark).find((entry) => entry.initialized)?.initialized, ['Notification', 'PreToolUse']);
   await api('POST', `/sessions/${sessionId}/permission`, { requestId: pending[0].requestId, decision: 'deny' });
   await until('the session to be idle', async () => (await statusOf(sessionId)) === 'idle');
+});
+
+// ---------------------------------------------------------------------------------------------
+// Milestone 4 and Milestone 5 in one run: Foreman's compaction hooks and the guard side by side
+// ---------------------------------------------------------------------------------------------
+
+test('a guarded session in a Foreman repo registers the guard hook and the compaction hooks together, and still holds the call', async () => {
+  const mark = (await fakeLog()).length;
+  const sessionId = await startSession('readenv', true, managedDir);
+
+  // canUseTool and PreToolUse: the read of .env is held for a person.
+  const pending = await pendingOf(sessionId);
+  assert.equal(pending[0].toolName, 'Read');
+  assert.equal(pending[0].input, path.join(managedDir, '.env'));
+  const hook = (await fakeLog()).slice(mark).find((entry) => entry.hook);
+  assert.equal(hook.output.hookSpecificOutput.permissionDecision, 'ask');
+
+  // The same run registered Foreman's PreCompact and SessionStart hooks, next to its own Notification hook and the guard.
+  const registered = (await fakeLog()).slice(mark).find((entry) => entry.initialized);
+  assert.deepEqual(registered.initialized, ['Notification', 'PreCompact', 'PreToolUse', 'SessionStart']);
+  assert.equal(registered.autocompact, '70', 'a bridge-started session also gets the worker autocompact threshold');
+
+  await api('POST', `/sessions/${sessionId}/permission`, { requestId: pending[0].requestId, decision: 'deny', reason: 'No.' });
+  await until('the session to be idle', async () => (await statusOf(sessionId)) === 'idle');
+});
+
+test('a Foreman repo without a guard gets only the compaction hooks, and a project outside it gets neither', async () => {
+  const mark = (await fakeLog()).length;
+  const unguarded = await startSession('readenv', false, managedDir);
+  await until('the CLI to settle the call', async () => (await fakeLog()).slice(mark).find((entry) => entry.autoAllowed));
+  assert.deepEqual((await fakeLog()).slice(mark).find((entry) => entry.initialized)?.initialized, ['Notification', 'PreCompact', 'SessionStart']);
+  await until('the session to be idle', async () => (await statusOf(unguarded)) === 'idle');
+
+  const markOutside = (await fakeLog()).length;
+  const outside = await startSession('readenv', false, projectDir);
+  await until('the CLI to settle the call', async () => (await fakeLog()).slice(markOutside).find((entry) => entry.autoAllowed));
+  assert.deepEqual((await fakeLog()).slice(markOutside).find((entry) => entry.initialized)?.initialized, ['Notification']);
+  await until('the session to be idle', async () => (await statusOf(outside)) === 'idle');
 });
