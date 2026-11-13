@@ -19,7 +19,7 @@ export { getLiveAgentTasks, getLiveBackgroundTasks, stopClaudeAgentTask } from '
 
 // setClaudeRuntimeAdditionsProvider: used by the foreman module to add its PreCompact/SessionStart hooks and the autocompact
 // threshold to the runs of Foreman-managed sessions.
-export { setClaudeRuntimeAdditionsProvider } from './list/claude/claude-runtime.provider.js';
+export { setClaudeRuntimeAdditionsProvider, setClaudeRuntimeSandboxCheck } from './list/claude/claude-runtime.provider.js';
 
 // subscribeClaudeRuntimeEvents/setClaudeSessionModel/getClaudeSessionContextUsage/hasClaudeApiKey/
 // isClaudeSDKSessionActive/getActiveClaudeSDKSessions: used by the foreman module to observe and

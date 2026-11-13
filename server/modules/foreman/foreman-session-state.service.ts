@@ -1,5 +1,5 @@
 import type { ForemanSessionStateRow } from '@/modules/database/index.js';
-import { parseGuardConfig, type ForemanGuardConfig } from '@/modules/foreman/foreman-guard.service.js';
+import { fallbackSandboxState, parseStoredSandboxState, storedSandboxState, type ForemanSandboxState } from '@/modules/foreman/foreman-sandbox.service.js';
 import type { ClaudeRuntimeEvent, ForemanBilling } from '@/shared/types.js';
 
 export type ForemanSessionStatus = ForemanSessionStateRow['status'];
@@ -12,8 +12,8 @@ export type ForemanSessionState = {
   /** The permission mode Foreman last chose for the session; a resumed run keeps it. */
   permissionMode: string | null;
   billing: ForemanBilling | null;
-  /** The risky-action guard the session runs under; null for a session without one. */
-  guard: ForemanGuardConfig | null;
+  /** The sandbox the session runs in; null for a session without one (a person's own, or one started before sandboxes). */
+  sandbox: ForemanSandboxState | null;
   updatedAt: string;
 };
 
@@ -31,18 +31,7 @@ export type ForemanSessionStatePatch = {
   status?: ForemanSessionStatus;
   permissionMode?: string | null;
   billing?: ForemanBilling | null;
-  guard?: ForemanGuardConfig | null;
-};
-
-/**
- * Stand-in for a stored guard that can no longer be read. A guard that cannot be read must not wave calls through, so
- * this one asks about every shell command and every call that names a path (the two things the classifier looks at).
- */
-const ASK_ABOUT_EVERYTHING_GUARD: ForemanGuardConfig = {
-  enabled: true,
-  riskyPatterns: ['[\\s\\S]'],
-  secretPatterns: ['[\\s\\S]'],
-  writeOutsideRepo: true,
+  sandbox?: ForemanSandboxState | null;
 };
 
 type DeriveStatus = (event: ClaudeRuntimeEvent, current: ForemanSessionStatus, pending: Set<string>) => ForemanSessionStatus | null;
@@ -106,13 +95,18 @@ export function createForemanSessionStateService(dependencies: {
   const pendingPrompts = new Map<string, Set<string>>();
 
   function fromRow(row: ForemanSessionStateRow): ForemanSessionState {
-    let guard: ForemanGuardConfig | null = null;
+    // The column is still called `guard_json`: it held the old risky-action guard, and now holds the sandbox state. A row written by the guard
+    // era (or one that cannot be read) becomes a sandboxed session with a default scratch directory: isolation is never lost silently.
+    let sandbox: ForemanSandboxState | null = null;
     if (row.guard_json) {
       try {
-        guard = parseGuardConfig(JSON.parse(row.guard_json)) ?? null;
+        sandbox = parseStoredSandboxState(JSON.parse(row.guard_json));
       } catch {
-        log(`stored guard of session ${row.session_id} is unreadable; it will ask about every shell command and path`);
-        guard = ASK_ABOUT_EVERYTHING_GUARD;
+        sandbox = null;
+      }
+      if (!sandbox) {
+        log(`stored guard of session ${row.session_id} is from before sandboxes or unreadable; the session runs sandboxed from now on`);
+        sandbox = fallbackSandboxState();
       }
     }
     return {
@@ -121,7 +115,7 @@ export function createForemanSessionStateService(dependencies: {
       status: row.status,
       permissionMode: row.permission_mode,
       billing: row.billing === 'api-key' || row.billing === 'subscription' ? row.billing : null,
-      guard,
+      sandbox,
       updatedAt: row.updated_at,
     };
   }
@@ -133,7 +127,7 @@ export function createForemanSessionStateService(dependencies: {
       status: state.status,
       permission_mode: state.permissionMode,
       billing: state.billing,
-      guard_json: state.guard ? JSON.stringify(state.guard) : null,
+      guard_json: state.sandbox ? JSON.stringify(storedSandboxState(state.sandbox)) : null,
       updated_at: state.updatedAt,
     };
   }
@@ -222,7 +216,7 @@ export function createForemanSessionStateService(dependencies: {
         status: patch.status ?? current?.status ?? 'idle',
         permissionMode: patch.permissionMode === undefined ? current?.permissionMode ?? null : patch.permissionMode,
         billing: patch.billing === undefined ? current?.billing ?? null : patch.billing,
-        guard: patch.guard === undefined ? current?.guard ?? null : patch.guard,
+        sandbox: patch.sandbox === undefined ? current?.sandbox ?? null : patch.sandbox,
         updatedAt: now().toISOString(),
       };
       cache.set(sessionId, next);

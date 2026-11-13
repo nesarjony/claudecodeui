@@ -1,7 +1,7 @@
 import express, { type NextFunction, type Request, type RequestHandler, type Response } from 'express';
 
 import type { ForemanGitService } from '@/modules/foreman/foreman-git.service.js';
-import { parseGuardConfig } from '@/modules/foreman/foreman-guard.service.js';
+import { parseSandboxStart } from '@/modules/foreman/foreman-sandbox.service.js';
 import type { createForemanSessionsService } from '@/modules/foreman/foreman-sessions.service.js';
 import {
   parseForemanSuggestion,
@@ -182,6 +182,9 @@ export function createForemanRouter(options: {
     if (!projectPath.startsWith('/')) {
       throw invalid('projectPath must be an absolute path of a known cloudcli project.');
     }
+    if (body.guard !== undefined && body.guard !== null) {
+      throw invalid('guard was replaced by sandbox: a session is isolated by the sandbox now, nothing classifies its commands.');
+    }
     const result = await sessions.startSession({
       projectPath,
       prompt: readRequiredText(body, 'prompt', MAX_PROMPT_LENGTH),
@@ -191,7 +194,7 @@ export function createForemanRouter(options: {
       effort: readEffort(body.effort),
       title: readOptionalText(body, 'title', MAX_TITLE_LENGTH),
       taskId: readTaskId(body.taskId),
-      guard: parseGuardConfig(body.guard),
+      sandbox: parseSandboxStart(body.sandbox),
     });
     response.status(201).json(createApiSuccessResponse(result));
   }));

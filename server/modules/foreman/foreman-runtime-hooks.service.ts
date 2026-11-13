@@ -1,6 +1,13 @@
 import path from 'node:path';
 
 import { readBridgeToken } from '@/modules/foreman/foreman-auth.service.js';
+import {
+  DEFAULT_SANDBOX_APPROVAL_TIMEOUT_MS,
+  parseSandboxPolicy,
+  requireSandboxAdditions,
+  type ForemanSandboxPolicy,
+  type ForemanSandboxState,
+} from '@/modules/foreman/foreman-sandbox.service.js';
 import { resolveForemanBaseUrl } from '@/modules/foreman/foreman-suggestions.service.js';
 
 /** One subagent Foreman lets its workers delegate to (an entry of the runtime config's `delegation.agents`). */
@@ -26,6 +33,8 @@ type ForemanWorkersConfig = {
   refusalFallback: { enabled: boolean; models: Record<string, string> };
   /** Tools (or tool patterns) a worker may never use, whatever its permission mode. */
   disallowedTools: string[];
+  /** The sandbox policy of worker sessions (a template Foreman fills per session, see foreman-sandbox.service.ts); absent when Foreman sent none or a malformed one. */
+  sandbox?: ForemanSandboxPolicy;
 };
 
 /** What Foreman's `GET /foreman/runtime-config` tells cloudcli: the repos it manages and the hook settings. */
@@ -63,6 +72,14 @@ export type ClaudeRuntimeAdditions = {
   fallbackModel?: string;
   /** Tools the run may never use (bridge-started sessions only); merged into the SDK's `disallowedTools`, which a person cannot override. */
   disallowedTools?: string[];
+  /** The SDK `sandbox` option of a sandboxed session (bridge-started sessions that were started with a sandbox). */
+  sandbox?: Record<string, unknown>;
+  /** Permission rules of a sandboxed session, merged into the run's flag settings. */
+  permissions?: { allow: string[]; deny: string[] };
+  /** How long a prompt that still reaches a person waits (sandboxed sessions). */
+  approvalTimeoutMs?: number;
+  /** Set instead of everything else when a sandboxed session cannot be sandboxed right now: the run must not start. */
+  refuse?: string;
 };
 
 /**
@@ -78,6 +95,8 @@ type RuntimeHooksDependencies = {
   baseUrl?: string;
   /** Was this session started through the Foreman bridge? Only those get the autocompact threshold, the subagents, the refusal fallback and the denied tools. */
   isManagedSession: (sessionId: string) => boolean;
+  /** The sandbox state of a session started sandboxed (null for any other): such a run never starts without its sandbox. */
+  sandboxFor?: (sessionId: string) => ForemanSandboxState | null;
   /**
    * Is this project path a worktree the bridge created (or inside one)? Such a worktree lives outside the configured repos but
    * gets their PreCompact/SessionStart hooks. Without it only the configured repos count.
@@ -185,7 +204,8 @@ function parseWorkers(value: unknown): ForemanWorkersConfig | undefined {
   const disallowedTools = Array.isArray(workers.disallowedTools)
     ? [...new Set(workers.disallowedTools.filter(isText).map((tool) => tool.trim()))]
     : [];
-  return { refusalFallback: parseRefusalFallback(workers.refusalFallback) ?? { enabled: false, models: {} }, disallowedTools };
+  const sandbox = parseSandboxPolicy(workers.sandbox);
+  return { refusalFallback: parseRefusalFallback(workers.refusalFallback) ?? { enabled: false, models: {} }, disallowedTools, ...(sandbox ? { sandbox } : {}) };
 }
 
 /**
@@ -431,6 +451,7 @@ export function createForemanRuntimeHooks(dependencies: RuntimeHooksDependencies
   return {
     /** What to add to the run of `session`; an empty object when Foreman has nothing to add. Never throws. */
     async forSession(session: ClaudeRuntimeSession): Promise<ClaudeRuntimeAdditions> {
+      const sandboxState = dependencies.sandboxFor?.(session.sessionId) ?? null;
       try {
         const additions: ClaudeRuntimeAdditions = {};
         const config = await loadConfig();
@@ -475,10 +496,23 @@ export function createForemanRuntimeHooks(dependencies: RuntimeHooksDependencies
             PreToolUse: [{ matcher: 'Bash', hooks: [subagentBashHook(delegation.agents)], timeout: SUBAGENT_BASH_HOOK_TIMEOUT_S }],
           };
         }
+        // A session started sandboxed never runs without its sandbox: a missing or switched-off policy refuses the run (see requireSandboxAdditions).
+        if (sandboxState) {
+          try {
+            const sandbox = requireSandboxAdditions(config?.workers?.sandbox, { projectPath: session.projectPath, state: sandboxState });
+            additions.sandbox = sandbox.sandbox;
+            additions.permissions = sandbox.permissions;
+            additions.env = { ...additions.env, ...sandbox.env };
+            additions.disallowedTools = [...new Set([...(additions.disallowedTools ?? []), ...sandbox.disallowedTools])];
+            additions.approvalTimeoutMs = sandboxState.approvalTimeoutMs ?? DEFAULT_SANDBOX_APPROVAL_TIMEOUT_MS;
+          } catch (error) {
+            return { refuse: error instanceof Error ? error.message : String(error) };
+          }
+        }
         return additions;
       } catch (error) {
         warn(`Foreman runtime hooks skipped: ${error instanceof Error ? error.message : String(error)}`);
-        return {};
+        return sandboxState ? { refuse: `The sandbox of this session could not be set up (${error instanceof Error ? error.message : String(error)}), so it does not run.` } : {};
       }
     },
   };

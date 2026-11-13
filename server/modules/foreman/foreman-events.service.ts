@@ -19,8 +19,8 @@ const REFUSAL_DEDUPE_MS = 30_000;
 const MAX_EXPLANATION_TEXT = 400;
 const MAX_ERROR_TEXT = 500;
 const MAX_PERMISSION_INPUT_TEXT = 200;
-// A guarded prompt carries more of the call: Foreman re-judges it, and a long command must not hide its risky part.
-const MAX_GUARDED_PERMISSION_INPUT_TEXT = 1000;
+// A prompt of a sandboxed session carries more of the call: a person decides on it, and a long command must not hide its tail.
+const MAX_SANDBOXED_PERMISSION_INPUT_TEXT = 1000;
 
 type RecordValue = Record<string, unknown>;
 
@@ -152,7 +152,7 @@ export function toForemanEvent(
     case 'turn_result':
       return { ...base, type: 'turn_end', data: { ...common, ...describeTurnResult(event, context.turnCostUsd) } };
     case 'permission_request': {
-      const guarded = event.guarded === true;
+      const sandboxed = event.sandboxed === true;
       return {
         ...base,
         type: 'permission_request',
@@ -160,9 +160,9 @@ export function toForemanEvent(
           ...common,
           requestId: event.requestId,
           toolName: event.toolName,
-          input: summarizeToolInput(event.input, guarded ? MAX_GUARDED_PERMISSION_INPUT_TEXT : MAX_PERMISSION_INPUT_TEXT),
-          // Only a call the session's guard judged risky: why, and that it is Foreman's to answer.
-          ...(guarded ? { category: event.category ?? null, guarded: true, ...(event.allowlist === true ? { allowlist: true } : {}) } : {}),
+          input: summarizeToolInput(event.input, sandboxed ? MAX_SANDBOXED_PERMISSION_INPUT_TEXT : MAX_PERMISSION_INPUT_TEXT),
+          // A prompt inside the sandbox is rare and is always a person's to answer: nothing classifies it.
+          ...(sandboxed ? { sandboxed: true } : {}),
         },
       };
     }

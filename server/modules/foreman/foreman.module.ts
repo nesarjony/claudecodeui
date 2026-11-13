@@ -29,6 +29,7 @@ import {
   providerRuntimeService,
   sessionsService,
   setClaudeRuntimeAdditionsProvider,
+  setClaudeRuntimeSandboxCheck,
   setClaudeSessionModel,
   subscribeClaudeRuntimeEvents,
 } from '@/modules/providers/index.js';
@@ -94,6 +95,7 @@ export function createForemanModule() {
   const runtimeHooks = createForemanRuntimeHooks({
     tokenFile,
     isManagedSession: (sessionId) => managed.has(sessionId),
+    sandboxFor: (sessionId) => sessionState.get(sessionId)?.sandbox ?? null,
     isForemanWorktree: (projectPath) => worktreeRegistry.contains(projectPath),
     warn: (message) => console.warn(`[Foreman bridge] ${message}`),
     debug: (message) => {
@@ -103,6 +105,7 @@ export function createForemanModule() {
     },
   });
   setClaudeRuntimeAdditionsProvider((session) => runtimeHooks.forSession(session));
+  setClaudeRuntimeSandboxCheck((sessionId) => (sessionState.get(sessionId)?.sandbox ?? null) !== null);
   const pusher = createForemanEventPusher({
     tokenFile,
     describeSession: (sessionId) => {

@@ -8,13 +8,7 @@ import {
   type SessionDigestBody,
 } from '@/modules/foreman/foreman-digest.service.js';
 import { applyModelBilling, splitModelBilling } from '@/modules/foreman/foreman-events.service.js';
-import {
-  assertGuardCompatiblePermissionMode,
-  compileGuard,
-  ensureAllowWriteDirs,
-  guardRunOptions,
-  type ForemanGuardConfig,
-} from '@/modules/foreman/foreman-guard.service.js';
+import type { ForemanSandboxState } from '@/modules/foreman/foreman-sandbox.service.js';
 import type { ForemanSessionStatus, ForemanSessionStateService } from '@/modules/foreman/foreman-session-state.service.js';
 import type { ForemanBilling } from '@/shared/types.js';
 import { AppError, clipText, normalizeProjectPath, summarizeToolInput } from '@/shared/utils.js';
@@ -35,7 +29,9 @@ export type ForemanSessionSummary = {
   status: ForemanSessionStatus;
   /** The permission mode Foreman chose for the session (kept across restarts); null when it never chose one. */
   permissionMode: string | null;
-  /** True when the session runs under a risky-action guard (Foreman-started with `guard.enabled`). */
+  /** True when the session runs in the sandbox (Foreman-started with `sandbox`). */
+  sandboxed: boolean;
+  /** Alias of `sandboxed` for a Foreman that still reads the old field. */
   guarded: boolean;
   /** True when a Claude process or an active run exists for the session right now. */
   live: boolean;
@@ -226,7 +222,8 @@ export function createForemanSessionsService(deps: ForemanBridgeDependencies) {
       billing,
       status: statusOf(session.session_id),
       permissionMode: state?.permissionMode ?? null,
-      guarded: state?.guard?.enabled === true,
+      sandboxed: state?.sandbox != null,
+      guarded: state?.sandbox != null,
       live: deps.runs.isProcessing(session.session_id) || deps.runtime.isLive(session.session_id),
       lastActivity: session.updated_at ?? session.created_at ?? null,
       backgroundTasks: tasks.filter((task) => !task.ambient).length,
@@ -297,13 +294,9 @@ export function createForemanSessionsService(deps: ForemanBridgeDependencies) {
       });
     }
 
-    // A resumed run (after a restart too) keeps the permission mode Foreman chose and the guard it started with.
+    // A resumed run (after a restart too) keeps the permission mode Foreman chose; its sandbox is read from the stored state when the run starts.
     const state = deps.state.get(sessionId);
-    const guard = state?.guard?.enabled ? state.guard : null;
     const permissionMode = options.permissionMode ?? state?.permissionMode ?? undefined;
-    if (guard) {
-      assertGuardCompatiblePermissionMode(permissionMode);
-    }
     if (!state || (options.permissionMode && options.permissionMode !== state.permissionMode)) {
       deps.state.track(sessionId, {
         billing: splitModelBilling(session.model).billing,
@@ -321,7 +314,6 @@ export function createForemanSessionsService(deps: ForemanBridgeDependencies) {
         effort: session.effort ?? undefined,
         permissionMode,
         sessionSummary: clipText(text, MAX_SUMMARY_LENGTH),
-        ...(guard ? guardRunOptions(compileGuard(guard, session.project_path)) : {}),
       },
     });
     return { interrupted };
@@ -457,19 +449,11 @@ export function createForemanSessionsService(deps: ForemanBridgeDependencies) {
       effort?: string;
       title?: string;
       taskId?: string;
-      guard?: ForemanGuardConfig;
+      sandbox?: ForemanSandboxState;
     }) {
       const project = deps.projectsDb.getProjectPath(input.projectPath);
       if (!project || project.isArchived) {
         throw new AppError('projectPath is not a known cloudcli project.', { code: 'UNKNOWN_PROJECT', statusCode: 422 });
-      }
-      const guard = input.guard?.enabled ? input.guard : undefined;
-      if (guard) {
-        assertGuardCompatiblePermissionMode(input.permissionMode);
-      }
-      const compiledGuard = guard ? compileGuard(guard, project.project_path) : null;
-      if (compiledGuard) {
-        ensureAllowWriteDirs(compiledGuard);
       }
       if (input.billing === 'api-key' && !deps.runtime.hasApiKey()) {
         throw new AppError('API-key billing was requested, but no API key file is available.', {
@@ -486,12 +470,12 @@ export function createForemanSessionsService(deps: ForemanBridgeDependencies) {
       // Marked before the run starts, so the run that this call starts already gets the threshold.
       deps.managed?.mark(created.sessionId);
       // Recorded before the run starts so even its first event (session_started) carries the task, and a run
-      // that is resumed after a restart still has the permission mode and guard it started with.
+      // that is resumed after a restart still has the permission mode and sandbox it started with.
       deps.state.track(created.sessionId, {
         taskId: input.taskId ?? null,
         billing: input.billing,
         permissionMode: input.permissionMode,
-        guard: guard ?? null,
+        sandbox: input.sandbox ?? null,
       });
       if (input.taskId) {
         deps.taskIds.set(created.sessionId, input.taskId);
@@ -506,7 +490,6 @@ export function createForemanSessionsService(deps: ForemanBridgeDependencies) {
           effort: input.effort,
           permissionMode: input.permissionMode,
           sessionSummary: clipText(input.title ?? input.prompt, MAX_SUMMARY_LENGTH),
-          ...(compiledGuard ? guardRunOptions(compiledGuard) : {}),
         },
       });
 
@@ -519,9 +502,9 @@ export function createForemanSessionsService(deps: ForemanBridgeDependencies) {
         permissionMode: input.permissionMode,
         taskId: input.taskId ?? null,
         status: 'running' as const,
-        guarded: compiledGuard !== null,
-        // Patterns that are not valid regular expressions are not enforced; say so rather than hide it.
-        ...(compiledGuard ? { guard: { skippedPatterns: compiledGuard.skippedPatterns, approvalTimeoutMs: compiledGuard.approvalTimeoutMs } } : {}),
+        sandboxed: input.sandbox != null,
+        guarded: input.sandbox != null,
+        ...(input.sandbox ? { sandbox: { scratchDir: input.sandbox.scratchDir, approvalTimeoutMs: input.sandbox.approvalTimeoutMs } } : {}),
       };
     },
 
