@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
+
 import { bashSecretLabel, expandHome, secretPathLabel, type SecretScope } from '@/modules/foreman/foreman-guard-secrets.service.js'
 
 /**
@@ -72,6 +73,10 @@ interface Cmd {
   dynamic: boolean[]
   redirects: Array<{ op: string; target: string }>
   pipeIn: boolean
+  /** What came before this command: `start`, `;`, `&&`, `||`, `|`, `|&`, `&` or a newline. */
+  sepBefore: string
+  /** What ended this command: `;`, `&&`, `||`, `|`, `|&`, `&` (background) or a newline. */
+  sepAfter: string
   heredoc?: string
 }
 
@@ -121,6 +126,7 @@ function parse(input: string, vars: Map<string, string>, subs: string[]): Cmd[] 
   let wordDynamic = false
   let pipeIn = false
   let nextPipe = false
+  let curSep = 'start'
   let pendingRedirect: string | null = null
   const heredocs: Array<{ delim: string; strip: boolean; cmd: number }> = []
   const bodies = new Map<number, string>()
@@ -138,15 +144,16 @@ function parse(input: string, vars: Map<string, string>, subs: string[]): Cmd[] 
     inWord = false
     wordDynamic = false
   }
-  const endCmd = (pipe: boolean) => {
+  const endCmd = (pipe: boolean, sep = ';') => {
     endWord()
     if (words.length > 0 || redirects.length > 0) {
       // A lone `VAR=value` is an assignment of the shell: remember it so a later `$VAR` is read as its value.
       if (words.length > 0 && words.every(w => ASSIGN.test(w))) {
         for (const w of words) vars.set(w.slice(0, w.indexOf('=')), w.slice(w.indexOf('=') + 1))
       }
-      cmds.push({ words, dynamic: dyn, redirects, pipeIn, ...(bodies.has(cmds.length) ? { heredoc: bodies.get(cmds.length) } : {}) })
+      cmds.push({ words, dynamic: dyn, redirects, pipeIn, sepBefore: curSep, sepAfter: sep, ...(bodies.has(cmds.length) ? { heredoc: bodies.get(cmds.length) } : {}) })
     }
+    curSep = words.length > 0 || redirects.length > 0 ? sep : curSep
     pipeIn = nextPipe
     words = []
     dyn = []
@@ -270,7 +277,7 @@ function parse(input: string, vars: Map<string, string>, subs: string[]): Cmd[] 
       continue
     }
     if (c === '\n') {
-      endCmd(false)
+      endCmd(false, '\n')
       // A heredoc body starts on the line after the command that opened it.
       while (heredocs.length > 0) {
         const h = heredocs.shift()!
@@ -292,7 +299,7 @@ function parse(input: string, vars: Map<string, string>, subs: string[]): Cmd[] 
       continue
     }
     if (c === ';' || c === '(' || c === ')') {
-      endCmd(false)
+      endCmd(false, ';')
       continue
     }
     if (c === '&') {
@@ -302,16 +309,20 @@ function parse(input: string, vars: Map<string, string>, subs: string[]): Cmd[] 
         i += input[i + 2] === '>' ? 2 : 1
         continue
       }
-      endCmd(false)
-      if (input[i + 1] === '&') i += 1
+      if (input[i + 1] === '&') {
+        endCmd(false, '&&')
+        i += 1
+      } else endCmd(false, '&')
       continue
     }
     if (c === '|') {
-      endCmd(true)
-      if (input[i + 1] === '|' ) {
-        nextPipe = false
+      if (input[i + 1] === '|') {
+        endCmd(false, '||')
         i += 1
-      } else if (input[i + 1] === '&') i += 1
+      } else if (input[i + 1] === '&') {
+        endCmd(true, '|&')
+        i += 1
+      } else endCmd(true, '|')
       continue
     }
     if (c === '<' || c === '>') {
@@ -352,6 +363,11 @@ function parse(input: string, vars: Map<string, string>, subs: string[]): Cmd[] 
   }
   endCmd(false)
   return cmds
+}
+
+/** The simple commands of a shell command text, with what separates them (`&&`, `||`, `;`, `|`, `&`). Used by the evidence check to see how a gate command was really run. */
+export function shellSegments(command: string): Array<{ words: string[]; redirects: Array<{ op: string; target: string }>; sepBefore: string; sepAfter: string; pipeIn: boolean }> {
+  return parse(command, new Map(), []).map(c => ({ words: c.words, redirects: c.redirects, sepBefore: c.sepBefore, sepAfter: c.sepAfter, pipeIn: c.pipeIn }))
 }
 
 // ------------------------------------------------------------------------------------------------ classification
@@ -597,7 +613,7 @@ function judgeCmd(c: Cmd, ctx: Ctx): ShellVerdict {
           const sub = args.slice(k + 1, end === -1 ? args.length : end)
           const inner = base(sub[0] ?? '')
           if (['rm', 'shred', 'unlink', 'mv', 'dd', 'truncate', 'chmod', 'chown', 'sh', 'bash'].includes(inner)) return label(`find -exec ${inner}`)
-          const v = judgeCmd({ words: sub, dynamic: sub.map(() => false), redirects: [], pipeIn: false }, ctx)
+          const v = judgeCmd({ words: sub, dynamic: sub.map(() => false), redirects: [], pipeIn: false, sepBefore: ';', sepAfter: ';' }, ctx)
           if (v.risky) return v
         }
       }
