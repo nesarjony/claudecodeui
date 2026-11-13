@@ -17,7 +17,10 @@ const asArray = (value: unknown): unknown[] => (Array.isArray(value) ? value : [
 const MAX_USER_MESSAGE = 2000;
 const MAX_ASSISTANT_TEXT = 4000;
 const MAX_TURN_SUMMARY_TEXT = 500;
-const MAX_TOOL_INPUT = 200;
+// A Bash call's `shortInput` is its command, so this is long enough to hold a typical gate command whole.
+const MAX_TOOL_INPUT = 300;
+// How much of a tool's result text is kept; the tail is where a command's verdict (exit code, summary line) sits.
+const MAX_TOOL_RESULT_TAIL = 600;
 const MAX_TOOL_CALLS_LISTED = 60;
 const MAX_FILES_LISTED = 50;
 const MAX_TODOS_LISTED = 40;
@@ -33,7 +36,13 @@ const FILE_EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
 /** One parsed transcript line. Transcript rows are loosely typed JSON; readers narrow field by field. */
 export type TranscriptEntry = RecordValue;
 
-export type DigestToolCall = { name: string; shortInput: string; isError: boolean };
+export type DigestToolCall = {
+  name: string;
+  shortInput: string;
+  isError: boolean;
+  /** Last ~600 characters of the call's result text; null when the transcript has no result for it (yet). */
+  resultTail: string | null;
+};
 export type DigestTodo = { content: string; status: string };
 export type DigestCompactBoundary = {
   at: string | null;
@@ -130,6 +139,19 @@ function userMessageKind(entry: TranscriptEntry, text: string): string {
     return origin;
   }
   return text.trimStart().startsWith('<command-name>') ? 'command' : 'user';
+}
+
+/** The text of a `tool_result` block: its content is a plain string or an array of blocks, of which only text counts. */
+function toolResultText(block: RecordValue): string {
+  const content = block.content;
+  if (typeof content === 'string') {
+    return content;
+  }
+  return asArray(content)
+    .map(asRecord)
+    .filter((part): part is RecordValue => part?.type === 'text' && typeof part.text === 'string')
+    .map((part) => part.text as string)
+    .join('\n');
 }
 
 /** Renders a slash-command echo (`<command-name>/compact</command-name>...`) as the command the sender typed. */
@@ -248,6 +270,7 @@ export function buildSessionDigest(
   const assistantOrder: string[] = [];
   const toolCalls: ToolCallRecord[] = [];
   const toolResultErrors = new Map<string, boolean>();
+  const toolResultTails = new Map<string, string>();
   const compactBoundaries: DigestCompactBoundary[] = [];
   let refusalDetail: { category: string | null; explanation: string | null } | null = null;
   let apiErrorCount = 0;
@@ -315,7 +338,9 @@ export function buildSessionDigest(
     if (entry.type === 'user') {
       for (const block of asArray(asRecord(entry.message)?.content).map(asRecord)) {
         if (block?.type === 'tool_result') {
-          toolResultErrors.set(String(block.tool_use_id), block.is_error === true);
+          const toolUseId = String(block.tool_use_id);
+          toolResultErrors.set(toolUseId, block.is_error === true);
+          toolResultTails.set(toolUseId, toolResultText(block).trimEnd().slice(-MAX_TOOL_RESULT_TAIL));
         }
       }
       continue;
@@ -367,7 +392,12 @@ export function buildSessionDigest(
     if (isError) {
       toolErrorCount += 1;
     }
-    return { name: call.name, shortInput: summarizeToolInput(call.input, MAX_TOOL_INPUT), isError };
+    return {
+      name: call.name,
+      shortInput: summarizeToolInput(call.input, MAX_TOOL_INPUT),
+      isError,
+      resultTail: toolResultTails.get(call.id) ?? null,
+    };
   });
 
   const filesEdited: string[] = [];

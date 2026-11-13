@@ -353,7 +353,7 @@ test('GET /sessions/:id/digest returns the condensed turn with the session summa
     assert.equal(digest.lastUserMessage, 'Fix the bug');
     assert.equal(digest.finalAssistantText, 'Fixed.');
     assert.equal(digest.stopReason, 'end_turn');
-    assert.deepEqual(digest.toolCalls, [{ name: 'Bash', shortInput: 'npm test', isError: true }]);
+    assert.deepEqual(digest.toolCalls, [{ name: 'Bash', shortInput: 'npm test', isError: true, resultTail: 'fail' }]);
     assert.equal(digest.turnsRequested, 1);
 
     const two = await call('GET', '/sessions/s1/digest?turns=2');
