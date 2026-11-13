@@ -441,7 +441,9 @@
       "supervisor": "Supervisor",
       "judge": "Judge",
       "contextKeeper": "Context keeper",
-      "researcher": "Researcher"
+      "researcher": "Researcher",
+      "goal_planner": "Goal planner",
+      "goal_judge": "Goal judge"
     },
     "model": "Model",
     "effort": "Effort",
