@@ -68,14 +68,15 @@ export function subscribeClaudeRuntimeEvents(listener) {
   };
 }
 
-// The Foreman bridge's hook into each run: it answers with extra SDK hooks and environment variables for a session.
+// The Foreman bridge's hook into each run: it answers with extra SDK hooks, environment variables and subagents for a session.
 // Registered once by the foreman module; the runtime knows nothing else about Foreman.
 let runtimeAdditionsProvider = null;
 
 /**
  * Registers the provider that adds in-process hooks and environment variables to a run (Foreman's PreCompact and SessionStart
- * hooks, and the autocompact threshold of sessions it started).
- * @param {((session: { sessionId: string, projectPath: string | null }) => Promise<{ env?: Record<string, string>, hooks?: Record<string, unknown[]> }>) | null} provider
+ * hooks, and the autocompact threshold of sessions it started), and the subagents a session it started may delegate to (with
+ * the PreToolUse hook that limits their Bash).
+ * @param {((session: { sessionId: string, projectPath: string | null }) => Promise<{ env?: Record<string, string>, hooks?: Record<string, unknown[]>, agents?: Record<string, { description: string, prompt: string, tools: string[], model: string, maxTurns?: number }> }>) | null} provider
  */
 export function setClaudeRuntimeAdditionsProvider(provider) {
   runtimeAdditionsProvider = provider;
@@ -87,7 +88,7 @@ const RUNTIME_ADDITIONS_TIMEOUT_MS = 3000;
  * Asks the registered provider what to add to a run. Never throws and never waits longer than a few seconds: a provider that
  * is missing, slow or failing means the run goes ahead without additions.
  * @param {{ sessionId: string | undefined, projectPath: string | null }} session
- * @returns {Promise<{ env?: Record<string, string>, hooks?: Record<string, unknown[]> }>}
+ * @returns {Promise<{ env?: Record<string, string>, hooks?: Record<string, unknown[]>, agents?: Record<string, { description: string, prompt: string, tools: string[], model: string, maxTurns?: number }> }>}
  */
 async function resolveRuntimeAdditions(session) {
   if (!runtimeAdditionsProvider || !session.sessionId) {
@@ -1165,6 +1166,10 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
     for (const [event, matchers] of Object.entries(runtimeAdditions.hooks ?? {})) {
       sdkOptions.hooks[event] = [...(sdkOptions.hooks[event] ?? []), ...matchers];
     }
+    // Subagents Foreman lets a bridge-started session delegate to; an agent the run already defines keeps its own definition.
+    if (runtimeAdditions.agents && typeof runtimeAdditions.agents === 'object') {
+      sdkOptions.agents = { ...runtimeAdditions.agents, ...(sdkOptions.agents ?? {}) };
+    }
 
     // Caveat: in 'auto' and 'bypassPermissions' modes the SDK resolves approval
     // at the permission-mode step and skips this callback, so interactive tools
@@ -1281,6 +1286,10 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
       // Keep notification behavior operational via runtime events even if hook registration fails.
       console.warn('Failed to initialize Claude query with hooks, retrying without hooks:', hookError?.message || hookError);
       delete sdkOptions.hooks;
+      // Foreman's subagents come with the hook that limits their Bash: without hooks they are left out too.
+      for (const [name, agent] of Object.entries(runtimeAdditions.agents ?? {})) {
+        if (sdkOptions.agents?.[name] === agent) delete sdkOptions.agents[name];
+      }
       // Discard the abandoned stream and build a fresh one for the retry.
       heldPrompt.release();
       heldPrompt = createHeldPromptStream(promptMessages);

