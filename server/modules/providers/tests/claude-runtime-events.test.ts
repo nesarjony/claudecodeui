@@ -316,3 +316,93 @@ test('a listener that throws never disturbs the run or other listeners', async (
 test('the API key file is detected without exposing the key', () => {
   assert.equal(runtime.hasClaudeApiKey(), true);
 });
+
+// ---------------------------------------------------------------------------------------------
+// Per-session tool policy (`options.toolPolicy`): the hook the Foreman guard uses
+// ---------------------------------------------------------------------------------------------
+
+async function permissionAnswers(): Promise<Array<{ request_id: string; response: { behavior: string; message?: string; updatedInput?: unknown } }>> {
+  return (await readFile(logFile, 'utf8'))
+    .split('\n')
+    .filter(Boolean)
+    .map((entry) => JSON.parse(entry))
+    .filter((entry) => entry.permissionAnswer)
+    .map((entry) => entry.permissionAnswer);
+}
+
+test('a tool policy that allows the call lets it through: no prompt, no event, no waiting', async () => {
+  const asked: Array<[string, unknown]> = [];
+  const toolPolicy = (toolName: string, input: unknown) => {
+    asked.push([toolName, input]);
+    return { decision: 'allow' };
+  };
+  const before = (await permissionAnswers()).length;
+  const outcome = await runPrompt('ask', { toolPolicy }, 'app-session-policy-allow');
+
+  assert.deepEqual(asked, [['Bash', { command: 'rm -rf build' }]]);
+  assert.ok(kinds(outcome).includes('turn_result'), 'the turn ran to its end without anyone answering');
+  assert.ok(!kinds(outcome).includes('permission_request'));
+  assert.ok(!kinds(outcome).includes('permission_resolved'));
+  assert.ok(!outcome.sent.some((message) => message.kind === 'permission_request'), 'the chat UI is not asked either');
+
+  const answers = await permissionAnswers();
+  assert.equal(answers.length, before + 1);
+  assert.equal(answers.at(-1)?.response.behavior, 'allow');
+  assert.deepEqual(answers.at(-1)?.response.updatedInput, { command: 'rm -rf build' });
+});
+
+test('a tool policy that asks sends the call to the prompt, flagged as guarded with its category, and either side can answer', async () => {
+  const toolPolicy = () => ({ decision: 'ask', category: 'command' });
+  const pending = runPrompt('ask', { toolPolicy }, 'app-session-policy-ask');
+  const request = await waitForPermissionRequest('app-session-policy-ask');
+  assert.equal(request.toolName, 'Bash');
+  assert.deepEqual(request.input, { command: 'rm -rf build' });
+  assert.equal(request.guarded, true);
+  assert.equal(request.category, 'command');
+
+  // It is listed as pending (this is what the bridge answers through), exactly like any prompt.
+  assert.deepEqual(runtime.getPendingApprovalsForSession('app-session-policy-ask').map((entry: { requestId: string }) => entry.requestId), [request.requestId]);
+
+  runtime.resolveToolApproval(request.requestId, { allow: false, message: 'Pushing is not part of this task.' });
+  const outcome = await pending;
+
+  const resolved = outcome.events.find((event) => event.kind === 'permission_resolved') as Extract<ClaudeRuntimeEvent, { kind: 'permission_resolved' }>;
+  assert.equal(resolved?.requestId, request.requestId);
+  assert.deepEqual(runtime.getPendingApprovalsForSession('app-session-policy-ask'), []);
+  assert.ok(outcome.sent.some((message) => message.kind === 'permission_request' && message.requestId === request.requestId), 'the chat UI is asked too');
+  assert.ok(outcome.sent.some((message) => message.kind === 'permission_resolved' && message.requestId === request.requestId), 'and told when it was settled');
+
+  const answer = (await permissionAnswers()).at(-1);
+  assert.equal(answer?.response.behavior, 'deny');
+  assert.equal(answer?.response.message, 'Pushing is not part of this task.');
+  assert.ok(kinds(outcome).includes('turn_result'));
+});
+
+test('a policy that throws asks instead of allowing', async () => {
+  const toolPolicy = () => { throw new Error('classifier exploded'); };
+  const pending = runPrompt('ask', { toolPolicy }, 'app-session-policy-throw');
+  const request = await waitForPermissionRequest('app-session-policy-throw');
+  assert.equal(request.guarded, true);
+  assert.equal(request.category, null);
+  runtime.resolveToolApproval(request.requestId, { allow: true });
+  await pending;
+});
+
+test('a run without a policy is unchanged: its prompt carries no guard fields and is resolved by the answer', async () => {
+  const pending = runPrompt('ask', {}, 'app-session-no-policy');
+  const request = await waitForPermissionRequest('app-session-no-policy');
+  assert.equal('guarded' in request, false);
+  assert.equal('category' in request, false);
+  runtime.resolveToolApproval(request.requestId, { allow: true });
+  const outcome = await pending;
+  assert.ok(outcome.events.some((event) => event.kind === 'permission_resolved' && event.requestId === request.requestId));
+});
+
+test('an aborted guarded prompt is not reported as resolved: the run just ends', async () => {
+  const pending = runPrompt('ask', { toolPolicy: () => ({ decision: 'ask', category: 'command' }) }, 'app-session-policy-abort');
+  await waitForPermissionRequest('app-session-policy-abort');
+  assert.equal(await runtime.abortClaudeSDKSession('app-session-policy-abort'), true);
+  const outcome = await pending;
+  const own = outcome.events.filter((event) => event.sessionId === 'app-session-policy-abort');
+  assert.deepEqual(own.map((event) => event.kind), ['run_started', 'permission_request', 'run_ended']);
+});

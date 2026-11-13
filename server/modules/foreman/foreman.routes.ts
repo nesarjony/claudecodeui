@@ -1,6 +1,7 @@
 import express, { type NextFunction, type Request, type RequestHandler, type Response } from 'express';
 
 import type { ForemanGitService } from '@/modules/foreman/foreman-git.service.js';
+import { parseGuardConfig } from '@/modules/foreman/foreman-guard.service.js';
 import type { createForemanSessionsService } from '@/modules/foreman/foreman-sessions.service.js';
 import {
   parseForemanSuggestion,
@@ -19,12 +20,16 @@ const EFFORT_PATTERN = /^[a-z]{3,12}$/;
 const TASK_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$/;
 // Permission modes Claude sessions accept (mirrors the provider capability matrix).
 const PERMISSION_MODES = ['default', 'auto', 'acceptEdits', 'bypassPermissions', 'plan'] as const;
+// Permission request ids are minted by the runtime (a UUID); anything of that shape is accepted.
+const REQUEST_ID_PATTERN = /^[A-Za-z0-9._:-]{1,200}$/;
+const PERMISSION_DECISIONS = ['allow', 'deny'] as const;
 const BILLING_MODES: readonly ForemanBilling[] = ['api-key', 'subscription'];
 
 const MAX_PATH_LENGTH = 4096;
 const MAX_PROMPT_LENGTH = 200_000;
 const MAX_INSTRUCTIONS_LENGTH = 8000;
 const MAX_TITLE_LENGTH = 100;
+const MAX_REASON_LENGTH = 1000;
 const MAX_DIGEST_TURNS = 10;
 
 function invalid(message: string, code = 'INVALID_REQUEST'): AppError {
@@ -183,6 +188,7 @@ export function createForemanRouter(options: {
       effort: readEffort(body.effort),
       title: readOptionalText(body, 'title', MAX_TITLE_LENGTH),
       taskId: readTaskId(body.taskId),
+      guard: parseGuardConfig(body.guard),
     });
     response.status(201).json(createApiSuccessResponse(result));
   }));
@@ -222,6 +228,28 @@ export function createForemanRouter(options: {
     });
     response.status(202).json(createApiSuccessResponse(result));
   }));
+
+  router.get('/sessions/:id/permissions', (request, response) => {
+    response.json(createApiSuccessResponse(sessions.listPermissions(readSessionId(request.params.id))));
+  });
+
+  router.post('/sessions/:id/permission', (request, response) => {
+    const sessionId = readSessionId(request.params.id);
+    const body = readBody(request);
+    const requestId = body.requestId;
+    if (typeof requestId !== 'string' || !REQUEST_ID_PATTERN.test(requestId)) {
+      throw invalid('requestId is required and must be a permission request id.');
+    }
+    const decision = body.decision;
+    if (typeof decision !== 'string' || !(PERMISSION_DECISIONS as readonly string[]).includes(decision)) {
+      throw invalid(`decision must be one of: ${PERMISSION_DECISIONS.join(', ')}.`);
+    }
+    response.json(createApiSuccessResponse(sessions.answerPermission(sessionId, {
+      requestId,
+      decision: decision as (typeof PERMISSION_DECISIONS)[number],
+      reason: readOptionalText(body, 'reason', MAX_REASON_LENGTH),
+    })));
+  });
 
   router.post('/sessions/:id/interrupt', asyncHandler(async (request, response) => {
     response.json(createApiSuccessResponse(await sessions.interrupt(readSessionId(request.params.id))));

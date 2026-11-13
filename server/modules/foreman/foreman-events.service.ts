@@ -19,6 +19,8 @@ const REFUSAL_DEDUPE_MS = 30_000;
 const MAX_EXPLANATION_TEXT = 400;
 const MAX_ERROR_TEXT = 500;
 const MAX_PERMISSION_INPUT_TEXT = 200;
+// A guarded prompt carries more of the call: Foreman re-judges it, and a long command must not hide its risky part.
+const MAX_GUARDED_PERMISSION_INPUT_TEXT = 1000;
 
 type RecordValue = Record<string, unknown>;
 
@@ -149,7 +151,8 @@ export function toForemanEvent(
       return { ...base, type: 'error', data: { ...common, source: 'run', message: clipText(event.message, MAX_ERROR_TEXT) } };
     case 'turn_result':
       return { ...base, type: 'turn_end', data: { ...common, ...describeTurnResult(event, context.turnCostUsd) } };
-    case 'permission_request':
+    case 'permission_request': {
+      const guarded = event.guarded === true;
       return {
         ...base,
         type: 'permission_request',
@@ -157,9 +160,12 @@ export function toForemanEvent(
           ...common,
           requestId: event.requestId,
           toolName: event.toolName,
-          input: summarizeToolInput(event.input, MAX_PERMISSION_INPUT_TEXT),
+          input: summarizeToolInput(event.input, guarded ? MAX_GUARDED_PERMISSION_INPUT_TEXT : MAX_PERMISSION_INPUT_TEXT),
+          // Only a call the session's guard judged risky: why, and that it is Foreman's to answer.
+          ...(guarded ? { category: event.category ?? null, guarded: true } : {}),
         },
       };
+    }
     case 'assistant_refusal': {
       const message = asRecord(event.message.message);
       return {

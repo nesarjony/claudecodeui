@@ -1,4 +1,4 @@
-import { appConfigDb, projectsDb, sessionsDb, userDb } from '@/modules/database/index.js';
+import { appConfigDb, foremanSessionStateDb, projectsDb, sessionsDb, userDb } from '@/modules/database/index.js';
 import { createBridgeAuthMiddleware, resolveBridgeTokenFile } from '@/modules/foreman/foreman-auth.service.js';
 import {
   createForemanEventPusher,
@@ -6,6 +6,7 @@ import {
   splitModelBilling,
 } from '@/modules/foreman/foreman-events.service.js';
 import { createForemanGitService } from '@/modules/foreman/foreman-git.service.js';
+import { createForemanSessionStateService } from '@/modules/foreman/foreman-session-state.service.js';
 import { createForemanSessionsService, type LiveContextUsage } from '@/modules/foreman/foreman-sessions.service.js';
 import {
   createForemanSuggestionsClient,
@@ -88,9 +89,18 @@ export function createForemanModule() {
     },
   });
 
-  // Runs synchronously inside the runtime loop: both calls only record/queue and never throw.
+  // Status, permission mode and guard of the sessions the bridge starts or drives, kept in cloudcli's database so they
+  // survive a restart. The module is built before the database is initialised: the state service settles the previous
+  // process's leftovers (running -> idle, with a log line) the first time anything reads or writes it.
+  const sessionState = createForemanSessionStateService({
+    store: foremanSessionStateDb,
+    log: (message) => console.log(`[Foreman bridge] ${message}`),
+  });
+
+  // Runs synchronously inside the runtime loop: every call only records/queues and never throws.
   subscribeClaudeRuntimeEvents((event) => {
     outcomes.observe(event);
+    sessionState.observe(event);
     pusher.handle(event);
   });
 
@@ -121,6 +131,8 @@ export function createForemanModule() {
       isLive: (sessionId) => Boolean(isClaudeSDKSessionActive(sessionId)),
       liveSessionIds: () => getActiveClaudeSDKSessions(),
       pendingApprovals: (sessionId) => providerRuntimeService.getPendingApprovalsForSession(sessionId),
+      // The same resolver the chat UI's `chat.permission-response` reaches: first answer wins.
+      resolvePermission: (requestId, decision) => providerRuntimeService.resolveToolApproval(requestId, decision),
       backgroundTasks: (sessionId) => getLiveBackgroundTasks(sessionId),
       setModel: (sessionId, model) => setClaudeSessionModel(sessionId, model),
       contextUsage: async (sessionId) => readLiveContextUsage(await getClaudeSessionContextUsage(sessionId)),
@@ -129,6 +141,7 @@ export function createForemanModule() {
     setSessionModel: (sessionId, model) => {
       providerModelsService.setSessionModel('claude', sessionId, model);
     },
+    state: sessionState,
     taskIds,
     announceSession: (sessionId) => broadcastSessionUpserted(sessionId),
     hasFailed: (sessionId) => outcomes.hasFailed(sessionId),

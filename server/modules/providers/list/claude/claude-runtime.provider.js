@@ -155,6 +155,18 @@ function createRequestId() {
   return crypto.randomBytes(16).toString('hex');
 }
 
+// Asks a host-supplied per-session tool policy (`options.toolPolicy`, set by the Foreman bridge) about one tool call.
+// It answers `{ decision: 'allow' }` or `{ decision: 'ask', category }`; null means no policy. A throwing policy asks.
+function consultToolPolicy(policy, toolName, input) {
+  if (typeof policy !== 'function') return null;
+  try {
+    return policy(toolName, input) ?? null;
+  } catch (error) {
+    console.warn('Claude tool policy failed; asking instead:', error?.message || error);
+    return { decision: 'ask', category: null };
+  }
+}
+
 function waitForToolApproval(requestId, options = {}) {
   const { timeoutMs = TOOL_APPROVAL_TIMEOUT_MS, signal, onCancel, metadata } = options;
 
@@ -1103,6 +1115,11 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
     // to work in those modes.
     sdkOptions.canUseTool = async (toolName, input, context) => {
       const requiresInteraction = TOOLS_REQUIRING_INTERACTION.has(toolName);
+      // A guarded run's policy allows safe calls outright; risky ones fall through to the prompt below.
+      const policy = requiresInteraction ? null : consultToolPolicy(options.toolPolicy, toolName, input);
+      if (policy?.decision === 'allow') {
+        return { behavior: 'allow', updatedInput: input };
+      }
 
       if (!requiresInteraction) {
         if (sdkOptions.permissionMode === 'bypassPermissions') {
@@ -1126,7 +1143,7 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
 
       const requestId = createRequestId();
       ws.send(createNormalizedMessage({ kind: 'permission_request', requestId, toolName, input, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
-      emitRunEvent({ kind: 'permission_request', requestId, toolName, input });
+      emitRunEvent({ kind: 'permission_request', requestId, toolName, input, ...(policy ? { guarded: true, category: policy.category ?? null } : {}) });
       emitNotification(createNotificationEvent({
         provider: 'claude',
         sessionId: sessionId || capturedSessionId || null,
@@ -1153,6 +1170,8 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
           ws.send(createNormalizedMessage({ kind: 'permission_cancelled', requestId, reason, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
         }
       });
+      // Cancelled prompts belong to a run that is being aborted, whose own end event follows.
+      if (!decision?.cancelled) emitRunEvent({ kind: 'permission_resolved', requestId });
       if (!decision) {
         return { behavior: 'deny', message: 'Permission request timed out' };
       }
