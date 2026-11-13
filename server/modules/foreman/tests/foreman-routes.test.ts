@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -9,6 +10,7 @@ import test from 'node:test';
 import express from 'express';
 
 import { createBridgeAuthMiddleware } from '@/modules/foreman/foreman-auth.service.js';
+import { createForemanGitService } from '@/modules/foreman/foreman-git.service.js';
 import {
   createForemanSessionsService,
   resolveContextWindow,
@@ -170,9 +172,14 @@ async function withBridge(
     world: World;
     tokenFile: string;
     call: (method: string, pathname: string, body?: unknown, token?: string | null) => Promise<{ status: number; body: any }>;
+    /** A real directory registered as a known project, behind the router's git service. */
+    projectDir: string;
   }) => Promise<void>,
 ): Promise<void> {
-  const directory = await mkdtemp(path.join(os.tmpdir(), 'foreman-routes-'));
+  const directory = await realpath(await mkdtemp(path.join(os.tmpdir(), 'foreman-routes-')));
+  const projectDir = path.join(directory, 'project');
+  await mkdir(projectDir);
+  const projectRows = [{ project_id: 'git-project', project_path: projectDir, custom_project_name: null, isStarred: 0, isArchived: 0 }];
   const tokenFile = path.join(directory, 'bridge-token');
   await writeFile(tokenFile, TOKEN, { mode: 0o600 });
   const { world, deps } = createWorld();
@@ -184,6 +191,12 @@ async function withBridge(
   app.use('/api/foreman', createForemanRouter({
     authMiddleware: createBridgeAuthMiddleware({ tokenFile }),
     sessions: createForemanSessionsService(deps),
+    git: createForemanGitService({
+      projectsDb: {
+        getProjectPath: (candidate: string) => (projectRows.find((project) => project.project_path === candidate) ?? null) as never,
+        getProjectPaths: () => projectRows as never,
+      },
+    }),
   }));
   const server = app.listen(0, '127.0.0.1');
   await once(server, 'listening');
@@ -202,7 +215,7 @@ async function withBridge(
   };
 
   try {
-    await run({ baseUrl, world, tokenFile, call });
+    await run({ baseUrl, world, tokenFile, call, projectDir });
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await rm(directory, { recursive: true, force: true });
@@ -228,6 +241,7 @@ test('every route demands the bridge token, and the user login is not involved',
       ['POST', '/sessions/s1/interrupt', {}],
       ['POST', '/sessions/s1/model', { model: 'sonnet' }],
       ['POST', '/sessions/s1/compact', {}],
+      ['GET', '/projects/git?path=%2Fmnt%2Fdev%2Fknown'],
     ];
     for (const [method, pathname, body] of requests) {
       const missing = await call(method, pathname, body, null);
@@ -825,4 +839,94 @@ test('POST compact is refused while a turn runs and validates its input', async 
     assert.equal((await call('POST', '/sessions/nope/compact', {})).status, 404);
     assert.equal(world.startedTurns.length, 0);
   });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Milestone 5: GET /projects/git
+// ---------------------------------------------------------------------------------------------
+
+const gitIn = (cwd: string, ...args: string[]) => execFileSync('git', args, {
+  cwd,
+  encoding: 'utf8',
+  env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null', GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@e.x', GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@e.x' },
+});
+
+test('GET /projects/git reports a project that is not a repository as isRepo false, not an error', async () => {
+  await withBridge(async ({ call, projectDir }) => {
+    const response = await call('GET', `/projects/git?path=${encodeURIComponent(projectDir)}`);
+    assert.equal(response.status, 200);
+    assert.equal(response.body.success, true);
+    assert.deepEqual(response.body.data, { path: projectDir, isRepo: false, branch: null, status: '', diffStat: '', diff: '', truncated: false });
+  });
+});
+
+test('GET /projects/git returns branch, status, diff stat and diff of a repository, including new files', async () => {
+  await withBridge(async ({ call, projectDir }) => {
+    gitIn(projectDir, 'init', '-q', '-b', 'main');
+    await writeFile(path.join(projectDir, 'a.txt'), 'old\n');
+    gitIn(projectDir, 'add', '.');
+    gitIn(projectDir, 'commit', '-q', '-m', 'init');
+    await writeFile(path.join(projectDir, 'a.txt'), 'new\n');
+    await writeFile(path.join(projectDir, 'fresh.txt'), 'brand new\n');
+
+    const response = await call('GET', `/projects/git?path=${encodeURIComponent(projectDir)}`);
+    assert.equal(response.status, 200);
+    const data = response.body.data;
+    assert.deepEqual(Object.keys(data).sort(), ['branch', 'diff', 'diffStat', 'isRepo', 'path', 'status', 'truncated']);
+    assert.equal(data.isRepo, true);
+    assert.equal(data.branch, 'main');
+    assert.match(data.status, /^## main/);
+    assert.match(data.status, /\?\? fresh\.txt/);
+    assert.match(data.diffStat, /a\.txt/);
+    assert.match(data.diff, /^-old$/m);
+    assert.match(data.diff, /^\+new$/m);
+    assert.match(data.diff, /^\+\+\+ b\/fresh\.txt$/m);
+    assert.equal(data.truncated, false);
+
+    // A path inside the project works too.
+    await mkdir(path.join(projectDir, 'sub'));
+    const inside = await call('GET', `/projects/git?path=${encodeURIComponent(path.join(projectDir, 'sub'))}`);
+    assert.equal(inside.status, 200);
+    assert.equal(inside.body.data.isRepo, true);
+  });
+});
+
+test('GET /projects/git validates the path: 400 when missing or relative, 422 for an unknown project, 404 when it does not exist', async () => {
+  await withBridge(async ({ call, projectDir }) => {
+    for (const query of ['', '?path=', '?path=relative%2Fdir', `?path=${encodeURIComponent('x'.repeat(5000))}`, '?path=a&path=b']) {
+      const response = await call('GET', `/projects/git${query}`);
+      assert.equal(response.status, 400, query);
+      assert.equal(response.body.success, false);
+    }
+    for (const unknown of ['/mnt/dev/known', '/', '/etc', `${projectDir}-other`, `${projectDir}/../project-sibling`]) {
+      const response = await call('GET', `/projects/git?path=${encodeURIComponent(unknown)}`);
+      assert.equal(response.status, 422, unknown);
+      assert.equal(response.body.error.code, 'UNKNOWN_PROJECT', unknown);
+    }
+    const missing = await call('GET', `/projects/git?path=${encodeURIComponent(path.join(projectDir, 'gone'))}`);
+    assert.equal(missing.status, 404);
+    assert.equal(missing.body.error.code, 'PATH_NOT_FOUND');
+  });
+});
+
+test('GET /projects/git answers 503 when no git service is wired', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'foreman-routes-nogit-'));
+  const tokenFile = path.join(directory, 'bridge-token');
+  await writeFile(tokenFile, TOKEN, { mode: 0o600 });
+  const { deps } = createWorld();
+  const app = express();
+  app.use('/api/foreman', createForemanRouter({
+    authMiddleware: createBridgeAuthMiddleware({ tokenFile }),
+    sessions: createForemanSessionsService(deps),
+  }));
+  const server = app.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  try {
+    const response = await fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}/api/foreman/projects/git?path=%2Ftmp`, { headers: { authorization: `Bearer ${TOKEN}` } });
+    assert.equal(response.status, 503);
+    assert.equal(((await response.json()) as { error: { code: string } }).error.code, 'GIT_UNAVAILABLE');
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await rm(directory, { recursive: true, force: true });
+  }
 });

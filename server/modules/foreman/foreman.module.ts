@@ -5,6 +5,7 @@ import {
   createRuntimeOutcomeTracker,
   splitModelBilling,
 } from '@/modules/foreman/foreman-events.service.js';
+import { createForemanGitService } from '@/modules/foreman/foreman-git.service.js';
 import { createForemanSessionsService, type LiveContextUsage } from '@/modules/foreman/foreman-sessions.service.js';
 import {
   createForemanSuggestionsClient,
@@ -136,6 +137,7 @@ export function createForemanModule() {
   return createForemanRouter({
     authMiddleware: createBridgeAuthMiddleware({ tokenFile }),
     sessions,
+    git: createForemanGitService({ projectsDb }),
     // Foreman's suggestions go to every open chat socket; each chat keeps the ones for its own session.
     suggestions: createSuggestionBroadcaster({ clients: () => connectedClients, openState: WS_OPEN_STATE }),
   });

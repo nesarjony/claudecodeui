@@ -1,5 +1,6 @@
 import express, { type NextFunction, type Request, type RequestHandler, type Response } from 'express';
 
+import type { ForemanGitService } from '@/modules/foreman/foreman-git.service.js';
 import type { createForemanSessionsService } from '@/modules/foreman/foreman-sessions.service.js';
 import {
   parseForemanSuggestion,
@@ -145,8 +146,10 @@ export function createForemanRouter(options: {
   sessions: ForemanSessionsService;
   /** Pushes suggestions to open chats; without it `POST /suggestions` answers 503. */
   suggestions?: ForemanSuggestionBroadcaster;
+  /** Read-only git facts about a project; without it `GET /projects/git` answers 503. */
+  git?: ForemanGitService;
 }) {
-  const { authMiddleware, sessions, suggestions } = options;
+  const { authMiddleware, sessions, suggestions, git } = options;
   const router = express.Router();
 
   router.use(authMiddleware);
@@ -182,6 +185,18 @@ export function createForemanRouter(options: {
       taskId: readTaskId(body.taskId),
     });
     response.status(201).json(createApiSuccessResponse(result));
+  }));
+
+  // Read-only git facts (status, diff stat, diff) of a known project or a path inside one.
+  router.get('/projects/git', asyncHandler(async (request, response) => {
+    if (!git) {
+      throw new AppError('Git inspection is not available.', { code: 'GIT_UNAVAILABLE', statusCode: 503 });
+    }
+    const requested = request.query.path;
+    if (typeof requested !== 'string' || !requested.trim() || requested.length > MAX_PATH_LENGTH || !requested.trim().startsWith('/')) {
+      throw invalid('path is required and must be an absolute path.');
+    }
+    response.json(createApiSuccessResponse(await git.inspect(requested.trim())));
   }));
 
   router.get('/sessions/:id/digest', asyncHandler(async (request, response) => {
