@@ -6,21 +6,23 @@ const PUSH_TIMEOUT_MS = 5000;
 const FIRST_RETRY_MS = 1000;
 const MAX_RETRY_MS = 60_000;
 
+type PushTarget = { url: string; tokenFile: string };
+
 /**
  * Pushes stored events to Foreman's intake until it acknowledges each one.
  *
  * An event is acknowledged by any 2xx answer (Foreman answers a repeat of an event it already has with one too). Anything else, or no
  * answer, is retried with a doubling delay from one second up to a minute, for as long as it takes, a restart of cloudcli included:
  * the events still owed are read back from the store. A session's events go strictly in order, so one that is stuck holds back only
- * its own session. With no `eventsUrl` nothing is pushed; the events are still stored and Foreman can fetch them.
+ * its own session. With no `eventsUrl`, or no `tokenFile`, nothing is pushed; the events are still stored and Foreman can fetch them.
  */
 // Consumed by foreman.module.ts, which starts it after boot and kicks it for every stored event.
 export function createForemanEventPusher(dependencies: {
   store: Pick<ForemanEventStore, 'oldestUnackedPerSession' | 'markAcked'>;
   /** Foreman's intake endpoint; unset means the push is off. */
   eventsUrl: string | undefined;
-  /** File holding the bearer token the intake expects; read again for every push so a rotated token needs no restart. */
-  tokenFile: string;
+  /** File holding the bearer token the intake expects, read again for every push so a rotated token needs no restart; unset means the push is off. */
+  tokenFile: string | undefined;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
   now?: () => number;
@@ -35,14 +37,14 @@ export function createForemanEventPusher(dependencies: {
   let again = false;
   let timer: NodeJS.Timeout | null = null;
 
-  async function send(event: ForemanBridgeEvent, url: string): Promise<boolean> {
+  async function send(event: ForemanBridgeEvent, target: PushTarget): Promise<boolean> {
     try {
-      const token = await readBridgeToken(dependencies.tokenFile);
+      const token = await readBridgeToken(target.tokenFile);
       if (!token) {
         log(`event ${event.id} not pushed: no intake token`);
         return false;
       }
-      const response = await fetchImpl(url, {
+      const response = await fetchImpl(target.url, {
         method: 'POST',
         headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
         body: JSON.stringify(event),
@@ -64,7 +66,7 @@ export function createForemanEventPusher(dependencies: {
     retries.set(eventId, { attempts, notBefore: now() + Math.min(FIRST_RETRY_MS * 2 ** (attempts - 1), MAX_RETRY_MS) });
   }
 
-  async function drain(url: string): Promise<void> {
+  async function drain(target: PushTarget): Promise<void> {
     try {
       do {
         again = false;
@@ -72,7 +74,7 @@ export function createForemanEventPusher(dependencies: {
           progressed = false;
           const ready = dependencies.store.oldestUnackedPerSession().filter((event) => (retries.get(event.id)?.notBefore ?? 0) <= now());
           for (const event of ready) {
-            if (await send(event, url)) {
+            if (await send(event, target)) {
               dependencies.store.markAcked(event.id);
               retries.delete(event.id);
               progressed = true;
@@ -99,7 +101,8 @@ export function createForemanEventPusher(dependencies: {
   }
 
   function kick(): Promise<void> {
-    if (!dependencies.eventsUrl) {
+    const { eventsUrl, tokenFile } = dependencies;
+    if (!eventsUrl || !tokenFile) {
       return Promise.resolve();
     }
     if (timer) {
@@ -110,9 +113,9 @@ export function createForemanEventPusher(dependencies: {
       again = true;
       return draining;
     }
-    const url = dependencies.eventsUrl;
+    const target = { url: eventsUrl, tokenFile };
     // Started in a later step, so that `draining` is set before a drain with nothing to send ends (and clears it) in the same breath.
-    draining = Promise.resolve().then(() => drain(url)).catch((error: unknown) => {
+    draining = Promise.resolve().then(() => drain(target)).catch((error: unknown) => {
       log(`event push failed: ${error instanceof Error ? error.message : String(error)}`);
     });
     return draining;

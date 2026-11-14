@@ -7,7 +7,12 @@ import {
   sessionsDb,
   userDb,
 } from '@/modules/database/index.js';
-import { createBridgeAuthMiddleware, resolveBridgeTokenFile, resolveEventsTokenFile } from '@/modules/foreman/foreman-auth.service.js';
+import {
+  createBridgeAuthMiddleware,
+  resolveBridgeTokenFile,
+  resolveEventsTokenFile,
+  warnAboutTokenSetup,
+} from '@/modules/foreman/foreman-auth.service.js';
 import { createForemanCommits } from '@/modules/foreman/foreman-commits.service.js';
 import { createForemanEventPusher } from '@/modules/foreman/foreman-event-push.service.js';
 import { createForemanEventRecorder } from '@/modules/foreman/foreman-event-recorder.service.js';
@@ -136,10 +141,12 @@ export function createForemanModule() {
   const events = createForemanEventStore({ storage: foremanEventsDb });
   const commits = createForemanCommits();
   const log = (message: string) => console.warn(`[Foreman bridge] ${message}`);
+  const eventsTokenFile = resolveEventsTokenFile();
+  warnAboutTokenSetup({ bridgeTokenFile: tokenFile, eventsTokenFile }, log);
   const pusher = createForemanEventPusher({
     store: events,
     eventsUrl: process.env.FOREMAN_EVENTS_URL?.trim() || undefined,
-    tokenFile: resolveEventsTokenFile(tokenFile),
+    tokenFile: eventsTokenFile,
     log: (message) => {
       if (debugEnabled) {
         console.debug(`[Foreman bridge] ${message}`);

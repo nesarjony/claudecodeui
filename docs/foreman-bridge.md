@@ -15,9 +15,12 @@ they do, and take over a session the owner hands over. Foreman codes its HTTP cl
 |---|---|---|
 | `FOREMAN_BRIDGE_TOKEN_FILE` | File holding the token Foreman presents (`Authorization: Bearer <token>`), re-read on every request, so rotation needs no restart. No file or an empty one: every route answers 503 `FOREMAN_BRIDGE_DISABLED`. | `~/.config/foreman/bridge-token` |
 | `FOREMAN_EVENTS_URL` | Foreman's intake endpoint, where events are POSTed. Unset: nothing is pushed (events are still stored and `eventsSince` works). | none |
-| `FOREMAN_EVENTS_TOKEN_FILE` | File holding the token cloudcli presents to the intake. A leaked intake token cannot drive sessions. | the bridge token file |
+| `FOREMAN_EVENTS_TOKEN_FILE` | File holding the token cloudcli presents to the intake, re-read for every push. It is never the bridge token: a leaked intake token cannot drive sessions. Unset: nothing is pushed (events are still stored and `eventsSince` works) and the boot log says so, naming this variable. | none |
 | `FOREMAN_WORKTREES_DIR` | Where task worktrees are made. | next to the repository |
 | `CLAUDE_CAP_URL`, `CLAUDE_CAP_PROFILE` | Where `cap` sessions go (claude-cap) and under which profile: they use `<url>/profile/<profile>` (see Billing and routing). | `http://127.0.0.1:34817`, `foreman-worker` |
+
+At boot cloudcli warns (once per file, through the log, never printing a token) about a token file that group or others can read or write: keep the bridge token file and the
+events token file at mode 600.
 
 Test instance (this branch): `scripts/foreman-test-instance.sh` runs it on `127.0.0.1:3011` with the tokens
 `~/.config/foreman-next/bridge-token` (Foreman -> cloudcli) and `~/.config/foreman-next/intake-token` (cloudcli -> Foreman), both mode 600.
@@ -124,7 +127,10 @@ from 1 **without gaps**. It is pushed in this shape, and returned in the same sh
 
 ### The push
 
-After an event is stored cloudcli POSTs it to `FOREMAN_EVENTS_URL` with `Authorization: Bearer <intake token>` and `content-type: application/json`; the body is the event above.
+After an event is stored cloudcli POSTs it to `FOREMAN_EVENTS_URL` with `Authorization: Bearer <intake token>` (the content of `FOREMAN_EVENTS_TOKEN_FILE`) and `content-type: application/json`; the body is the event above.
+
+- **Off without a URL or a token file.** With `FOREMAN_EVENTS_URL` or `FOREMAN_EVENTS_TOKEN_FILE` unset nothing is pushed and everything stays owed (stored, and served by `eventsSince`). A token file that is
+  named but missing or empty when an event is due leaves that event owed too (logged with `FOREMAN_BRIDGE_DEBUG=1`) and is retried like any failed push.
 
 - **Acknowledgement is any 2xx answer.** Foreman answers a repeat of an event it already has with a 2xx too.
 - Anything else, or no answer within 5 s, is retried with a doubling delay (1 s, 2 s, 4 s, ... up to 60 s), for as long as it takes, across cloudcli restarts: what is

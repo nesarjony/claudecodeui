@@ -255,6 +255,16 @@ test('after a restart the events nobody acknowledged are pushed again, and Forem
   });
 });
 
+test('with no intake token file configured the push is off: nothing is sent and the event stays owed', async () => {
+  const { store } = makeStore();
+  store.append('a', { kind: 'refusal', payload: { text: '1' } });
+  const sent: unknown[] = [];
+  const fetchImpl = (async () => { sent.push(1); return new Response(null, { status: 200 }); }) as typeof fetch;
+  await createForemanEventPusher({ store, eventsUrl: 'http://127.0.0.1:1/x', tokenFile: undefined, fetchImpl }).kick();
+  assert.equal(sent.length, 0);
+  assert.equal(store.oldestUnackedPerSession().length, 1);
+});
+
 test('with no token, or a rejecting Foreman, the event stays owed; with no intake URL nothing is pushed at all', async () => {
   const { store } = makeStore();
   store.append('a', { kind: 'refusal', payload: { text: '1' } });

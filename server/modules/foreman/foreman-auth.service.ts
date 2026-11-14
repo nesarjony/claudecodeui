@@ -1,4 +1,5 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
+import { statSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -24,14 +25,42 @@ export function resolveBridgeTokenFile(
 }
 
 /**
- * Location of the token cloudcli presents to Foreman's intake with every event it pushes.
+ * Location of the token cloudcli presents to Foreman's intake with every event it pushes, or `undefined` when none is configured.
  *
- * `FOREMAN_EVENTS_TOKEN_FILE` names it; without one the bridge token file is used. A separate file keeps the two directions apart: a
- * leaked intake token cannot start or stop sessions.
+ * Only `FOREMAN_EVENTS_TOKEN_FILE` names it, and it never falls back to the bridge token file: that secret drives sessions, so a
+ * separate file keeps a leaked intake token (or an intake URL pointed at the wrong service) from being able to start or stop them.
+ * With no file nothing is pushed; the events are still stored and served by `eventsSince`.
  */
-// Consumed by foreman.module.ts, which hands the path to the event pusher.
-export function resolveEventsTokenFile(bridgeTokenFile: string, environment: NodeJS.ProcessEnv = process.env): string {
-  return environment.FOREMAN_EVENTS_TOKEN_FILE?.trim() || bridgeTokenFile;
+// Consumed by foreman.module.ts, which hands the path to the event pusher and to the boot check.
+export function resolveEventsTokenFile(environment: NodeJS.ProcessEnv = process.env): string | undefined {
+  return environment.FOREMAN_EVENTS_TOKEN_FILE?.trim() || undefined;
+}
+
+/**
+ * Reports, through `warn`, what is wrong with the token setup: no intake token file (events are not pushed) and every configured token
+ * file that group or others can read or write (a token file should be mode 600). A file is named once even when both tokens live in it.
+ * Only the path and the mode are reported, never the content; a file that does not exist is not reported here (the bridge answers 503
+ * without its token, and a push without its token leaves the event owed and logs it).
+ */
+// Consumed by foreman.module.ts, once at boot.
+export function warnAboutTokenSetup(files: { bridgeTokenFile: string; eventsTokenFile: string | undefined }, warn: (message: string) => void): void {
+  if (!files.eventsTokenFile) {
+    warn('FOREMAN_EVENTS_TOKEN_FILE is not set: events are stored and served by eventsSince, but not pushed to Foreman (the bridge token is never used for the push).');
+  }
+  for (const file of new Set([files.bridgeTokenFile, files.eventsTokenFile])) {
+    if (!file) {
+      continue;
+    }
+    let mode: number;
+    try {
+      mode = statSync(file).mode;
+    } catch {
+      continue;
+    }
+    if ((mode & 0o077) !== 0) {
+      warn(`token file ${file} has mode ${(mode & 0o777).toString(8)}: it should be readable by its owner only (chmod 600).`);
+    }
+  }
 }
 
 /**
