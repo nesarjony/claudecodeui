@@ -84,7 +84,10 @@ export function createForemanEventRecorder(dependencies: {
       });
     },
 
-    /** Resolves when everything handled so far is stored. Used by tests. */
+    /**
+     * Resolves when everything handled so far is stored. The hand-over's release waits on it (through the module's `settleEvents`), so no
+     * event of the supervised time is left behind a release; the pipeline tests wait on it too.
+     */
     whenIdle: (): Promise<void> => queue,
   };
 }

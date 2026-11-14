@@ -3,20 +3,10 @@ import test from 'node:test';
 
 import {
   applyModelBilling,
-  createRuntimeOutcomeTracker,
   declaredModelBilling,
   splitModelBilling,
-} from '@/modules/foreman/foreman-events.service.js';
-import { createTaskIdStore } from '@/modules/foreman/foreman-task-ids.service.js';
-import type { ClaudeRuntimeEvent, ForemanBilling } from '@/shared/types.js';
-
-type TurnResultEvent = Extract<ClaudeRuntimeEvent, { kind: 'turn_result' }>;
-
-const base = { sessionId: 'sess-1', projectPath: '/mnt/dev/repo' };
-
-function turnResult(overrides: Partial<TurnResultEvent> & { message?: Record<string, unknown> } = {}): TurnResultEvent {
-  return { ...base, kind: 'turn_result', message: { subtype: 'success', is_error: false, ...overrides.message }, model: null, toolCalls: 0, toolErrors: 0 };
-}
+} from '@/modules/foreman/foreman-billing.service.js';
+import type { ForemanBilling } from '@/shared/types.js';
 
 test('billing helpers read and apply the @api marker', () => {
   assert.deepEqual(splitModelBilling('sonnet@api'), { model: 'sonnet', billing: 'api-key' });
@@ -72,48 +62,3 @@ test('the markers the bridge writes are @api for api-key and @cap for cap', () =
   assert.equal(applyModelBilling('x', 'cap'), 'x@cap');
   assert.equal(applyModelBilling('x', 'subscription'), 'x');
 });
-
-
-test('the outcome tracker marks a failed session until it runs again', () => {
-  const outcomes = createRuntimeOutcomeTracker();
-  assert.equal(outcomes.hasFailed('sess-1'), false);
-  outcomes.observe({ ...base, kind: 'run_error', message: 'boom' });
-  assert.equal(outcomes.hasFailed('sess-1'), true);
-  outcomes.observe({ ...base, kind: 'run_started', resumed: true, model: null, permissionMode: null });
-  assert.equal(outcomes.hasFailed('sess-1'), false);
-  outcomes.observe(turnResult({ message: { is_error: true, subtype: 'error_max_turns' } }));
-  assert.equal(outcomes.hasFailed('sess-1'), true);
-  outcomes.observe(turnResult());
-  assert.equal(outcomes.hasFailed('sess-1'), false);
-});
-
-// ---------------------------------------------------------------------------------------------
-// Task links
-// ---------------------------------------------------------------------------------------------
-
-test('the task link is kept in memory and persisted so it survives a restart', () => {
-  const persisted = new Map<string, string>();
-  const backing = { get: (key: string) => persisted.get(key) ?? null, set: (key: string, value: string) => void persisted.set(key, value) };
-
-  const first = createTaskIdStore(backing);
-  assert.equal(first.get('sess-1'), null);
-  first.set('sess-1', 'task-7');
-  assert.equal(first.get('sess-1'), 'task-7');
-  assert.equal(persisted.size, 1);
-
-  // A fresh store (a restarted process) reads it back from the backing store.
-  assert.equal(createTaskIdStore(backing).get('sess-1'), 'task-7');
-});
-
-test('a failing backing store never breaks the task link', () => {
-  const store = createTaskIdStore({
-    get: () => { throw new Error('db closed'); },
-    set: () => { throw new Error('db closed'); },
-  });
-  store.set('sess-1', 'task-7');
-  assert.equal(store.get('sess-1'), 'task-7');
-  assert.equal(store.get('other'), null);
-});
-
-// ---------------------------------------------------------------------------------------------
-// The pusher

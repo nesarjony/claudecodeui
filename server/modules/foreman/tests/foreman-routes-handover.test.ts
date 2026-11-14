@@ -71,7 +71,7 @@ test('the state counts only the events that are stored: a session that ran turns
 test('the state of a session that failed is idle, and of one that Foreman never supervised has no supervision', async () => {
   await withBridge(async ({ call, world }) => {
     world.rows.set('broken', row({ session_id: 'broken' }));
-    world.failed.add('broken');
+    world.state.setStatus('broken', 'error');
     world.addOwnerSession('owner');
     assert.deepEqual((await call('GET', '/sessions/broken/state')).body.data, { sessionId: 'broken', status: 'idle', lastSequence: 0, supervision: 'started' });
     assert.deepEqual((await call('GET', '/sessions/owner/state')).body.data, { sessionId: 'owner', status: 'idle', lastSequence: 0, supervision: null });

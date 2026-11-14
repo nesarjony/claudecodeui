@@ -1,5 +1,5 @@
 import type { ClaudeRuntimeEvent, ForemanBridgeEventBody } from '@/shared/types.js';
-import { clipText, summarizeToolInput } from '@/shared/utils.js';
+import { clipText, isErrorTurnResult, summarizeToolInput } from '@/shared/utils.js';
 
 /**
  * The last line of a worker's final message when it claims its batch is done. The brief's output contract tells the worker to end with
@@ -47,7 +47,7 @@ export function translateRuntimeEvent(event: ClaudeRuntimeEvent, context: { comm
   switch (event.kind) {
     case 'turn_result': {
       const message = event.message;
-      if (message.is_error === true || String(message.subtype ?? '').startsWith('error')) {
+      if (isErrorTurnResult(message)) {
         return { kind: 'error', payload: { message: describeFailedTurn(message) } };
       }
       const text = asString(message.result) ?? '';

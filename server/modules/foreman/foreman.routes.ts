@@ -1,6 +1,6 @@
 import express, { type NextFunction, type Request, type RequestHandler, type Response } from 'express';
 
-import { declaredModelBilling } from '@/modules/foreman/foreman-events.service.js';
+import { declaredModelBilling } from '@/modules/foreman/foreman-billing.service.js';
 import type { ForemanGitService } from '@/modules/foreman/foreman-git.service.js';
 import { fingerprintOf, type ForemanIdempotency } from '@/modules/foreman/foreman-idempotency.service.js';
 import { parseSandboxPolicy } from '@/modules/foreman/foreman-sandbox.service.js';

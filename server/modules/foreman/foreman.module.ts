@@ -12,7 +12,6 @@ import { createForemanCommits } from '@/modules/foreman/foreman-commits.service.
 import { createForemanEventPusher } from '@/modules/foreman/foreman-event-push.service.js';
 import { createForemanEventRecorder } from '@/modules/foreman/foreman-event-recorder.service.js';
 import { createForemanEventStore } from '@/modules/foreman/foreman-event-store.service.js';
-import { createRuntimeOutcomeTracker } from '@/modules/foreman/foreman-events.service.js';
 import { createForemanGitService } from '@/modules/foreman/foreman-git.service.js';
 import { createForemanIdempotency } from '@/modules/foreman/foreman-idempotency.service.js';
 import { createManagedSessionStore } from '@/modules/foreman/foreman-managed-sessions.service.js';
@@ -81,7 +80,6 @@ function readLiveContextUsage(raw: unknown): LiveContextUsage | null {
 // Consumed by the server entrypoint: it mounts `router` at /api/foreman and calls `resumeEventPush` once the database is ready.
 export function createForemanModule() {
   const tokenFile = resolveBridgeTokenFile();
-  const outcomes = createRuntimeOutcomeTracker();
   const debugEnabled = Boolean(process.env.FOREMAN_BRIDGE_DEBUG);
   // Task links live in cloudcli's app_config table, so they survive restarts without a schema change.
   const taskIds = createTaskIdStore({
@@ -154,7 +152,6 @@ export function createForemanModule() {
 
   // Runs synchronously inside the runtime loop: every call only records/queues and never throws.
   subscribeClaudeRuntimeEvents((event) => {
-    outcomes.observe(event);
     sessionState.observe(event);
     recorder.handle(event);
   });
@@ -203,7 +200,6 @@ export function createForemanModule() {
     taskIds,
     managed,
     announceSession: (sessionId) => broadcastSessionUpserted(sessionId),
-    hasFailed: (sessionId) => outcomes.hasFailed(sessionId),
   });
 
   const router = createForemanRouter({

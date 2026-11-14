@@ -85,7 +85,6 @@ export function createWorld() {
   const live = new Set<string>();
   const approvals = new Map<string, unknown[]>();
   const background = new Map<string, Array<{ ambient?: boolean }>>();
-  const failed = new Set<string>();
   const taskStore = new Map<string, string>();
   const managedMarks: string[] = [];
   // The state store is an in-memory map; "restarting" builds a second service over the same map.
@@ -139,7 +138,6 @@ export function createWorld() {
     live,
     approvals,
     background,
-    failed,
     startedTurns: [] as StartTurnInput[],
     aborted: [] as string[],
     completedRuns: [] as Array<{ sessionId: string; exitCode: number; aborted: boolean }>,
@@ -261,7 +259,6 @@ export function createWorld() {
     announceSession: async (sessionId) => {
       world.announced.push(sessionId);
     },
-    hasFailed: (id) => failed.has(id),
     admissionWindowMs: 5,
     liveContextTimeoutMs: 200,
   };

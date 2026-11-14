@@ -87,7 +87,7 @@ test('GET /sessions lists claude sessions with status, billing, activity and bac
     world.background.set('running', [{ ambient: false }, { ambient: false }, { ambient: true }]);
     world.approvals.set('waiting', [{ requestId: 'r1' }]);
     world.live.add('waiting');
-    world.failed.add('broken');
+    world.state.setStatus('broken', 'error');
     world.live.add('old-but-live');
 
     const response = await call('GET', '/sessions?limit=4');

@@ -209,6 +209,31 @@ test('runtime events move the status of a tracked session', async () => {
   });
 });
 
+// The state service is the bridge's only record of a failed run, so it must set the error for a failed run or a failed turn however the CLI
+// spells it, and clear it with a clean turn or a new run.
+test('the error status is set by a failed run or a failed turn and cleared by a clean turn or a new run', async () => {
+  await withIsolatedDatabase(() => {
+    const state = newService();
+    state.track('s1', {});
+    const failedTurn = (message: Record<string, unknown>): ClaudeRuntimeEvent => ({ ...base, kind: 'turn_result', message, model: null, toolCalls: 0, toolErrors: 0 });
+
+    state.observe({ ...base, kind: 'run_error', message: 'boom' });
+    assert.equal(state.get('s1')?.status, 'error');
+    state.observe(started());
+    assert.equal(state.get('s1')?.status, 'running', 'a new run clears it');
+
+    state.observe(failedTurn({ is_error: true, subtype: 'error_max_turns' }));
+    assert.equal(state.get('s1')?.status, 'error');
+    state.observe(failedTurn({ subtype: 'success', is_error: false }));
+    assert.equal(state.get('s1')?.status, 'idle', 'a clean turn clears it, with or without a new run before it');
+
+    state.observe(failedTurn({ subtype: 'error_during_execution' }));
+    assert.equal(state.get('s1')?.status, 'error', 'an error subtype alone is a failed turn');
+    state.observe(failedTurn({ subtype: 'success', is_error: true }));
+    assert.equal(state.get('s1')?.status, 'error', 'the flag alone is a failed turn, even under subtype success');
+  });
+});
+
 test('a prompt that resolves after its run ended does not bring the session back to running', async () => {
   await withIsolatedDatabase(() => {
     const state = newService();

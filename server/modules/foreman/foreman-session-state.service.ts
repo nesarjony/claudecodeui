@@ -1,6 +1,7 @@
 import type { ForemanSessionStateRow } from '@/modules/database/index.js';
 import { parseSandboxPolicy, type ForemanSandboxPolicy } from '@/modules/foreman/foreman-sandbox.service.js';
 import type { ClaudeRuntimeEvent, ForemanBilling } from '@/shared/types.js';
+import { isErrorTurnResult } from '@/shared/utils.js';
 
 export type ForemanSessionStatus = ForemanSessionStateRow['status'];
 
@@ -48,10 +49,6 @@ export type ForemanSessionStatePatch = {
 
 type DeriveStatus = (event: ClaudeRuntimeEvent, current: ForemanSessionStatus, pending: Set<string>) => ForemanSessionStatus | null;
 
-function isErrorResult(message: Record<string, unknown>): boolean {
-  return message.is_error === true || String(message.subtype ?? '').startsWith('error');
-}
-
 /**
  * The status a runtime event leaves a session in, or null when it does not change it.
  * `pending` holds the ids of the session's unanswered permission prompts and is updated here.
@@ -70,7 +67,7 @@ const deriveStatus: DeriveStatus = (event, current, pending) => {
       pending.delete(event.requestId);
       return current === 'waiting_permission' && pending.size === 0 ? 'running' : null;
     case 'turn_result':
-      return isErrorResult(event.message) ? 'error' : 'idle';
+      return isErrorTurnResult(event.message) ? 'error' : 'idle';
     case 'run_error':
       return 'error';
     case 'run_ended':
@@ -87,6 +84,9 @@ const deriveStatus: DeriveStatus = (event, current, pending) => {
 /**
  * Remembers, across cloudcli restarts, what the Foreman bridge needs to keep driving a session: its status, the
  * permission mode and sandbox it was started with, its billing mode, task and starting commit.
+ *
+ * This is also the bridge's only record of whether a session's last run failed (status `error`, set by a failed turn or a failed run and cleared by
+ * the next run or a clean turn). So only sessions Foreman started or was handed over can report `error`.
  *
  * Only sessions the bridge has `track`ed are recorded; runtime events of any other session are ignored. Every write
  * goes through an in-memory copy first, so a failing database never breaks a run (it is logged and the bridge carries

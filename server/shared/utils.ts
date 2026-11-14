@@ -1290,3 +1290,19 @@ export function summarizeToolInput(input: unknown, maxLength = 200): string {
     return '';
   }
 }
+
+// ---------------------------
+//----------------- RUNTIME TURN RESULT UTILITIES ------------
+/**
+ * Whether the SDK `result` message that ends a turn reports a failure.
+ *
+ * The CLI marks a failed turn with `is_error: true`, some failures carry only an `error*` subtype (`error_max_turns`,
+ * `error_during_execution`), and a failure can even arrive with `subtype: "success"` and `is_error: true`, so both signs count.
+ * Takes the loosely typed message of a runtime `turn_result` event; a missing field or a non-string subtype counts as "not failed".
+ * This is the single definition on purpose: the status the bridge reports for a session and the event Foreman receives for the turn must
+ * never disagree about whether the turn failed.
+ */
+// Consumed by the foreman module: foreman-session-state.service.ts (the session's `error` status) and foreman-event-translate.service.ts (`error` or `turn_end`).
+export function isErrorTurnResult(message: Record<string, unknown>): boolean {
+  return message.is_error === true || String(message.subtype ?? '').startsWith('error');
+}

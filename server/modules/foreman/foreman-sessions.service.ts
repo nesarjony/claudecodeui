@@ -7,7 +7,7 @@ import {
   readTranscriptRows,
   type SessionDigestBody,
 } from '@/modules/foreman/foreman-digest.service.js';
-import { applyModelBilling, splitModelBilling } from '@/modules/foreman/foreman-events.service.js';
+import { applyModelBilling, splitModelBilling } from '@/modules/foreman/foreman-billing.service.js';
 import type { ForemanSandboxPolicy } from '@/modules/foreman/foreman-sandbox.service.js';
 import type { ForemanSessionState, ForemanSessionStatus, ForemanSessionStateService, ForemanSupervision } from '@/modules/foreman/foreman-session-state.service.js';
 import type { ForemanBilling, ForemanBridgeEvent, ForemanBridgeSessionStatus } from '@/shared/types.js';
@@ -125,7 +125,6 @@ export type ForemanBridgeDependencies = {
   managed?: { mark(sessionId: string): void };
   /** Tells connected UIs about a session so it appears in the sidebar immediately. */
   announceSession(sessionId: string): Promise<void>;
-  hasFailed(sessionId: string): boolean;
   /** Root of Claude's transcripts; defaults to `~/.claude/projects`. */
   claudeProjectsRoot?: string;
   /** How long a started turn is watched for an immediate refusal or failure before the call returns. */
@@ -227,7 +226,7 @@ export function createForemanSessionsService(deps: ForemanBridgeDependencies) {
     if (deps.runs.isProcessing(sessionId)) {
       return 'running';
     }
-    return deps.hasFailed(sessionId) || deps.state.get(sessionId)?.status === 'error' ? 'error' : 'idle';
+    return deps.state.get(sessionId)?.status === 'error' ? 'error' : 'idle';
   }
 
   function summarize(session: SessionRow): ForemanSessionSummary {

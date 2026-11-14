@@ -1,4 +1,9 @@
-import type { ClaudeRuntimeEvent, ForemanBilling } from '@/shared/types.js';
+/**
+ * The billing markers of the Foreman bridge: how a model value carries its billing mode (`@api`, `@cap`, or none for the subscription), read and
+ * written in one place so a session's model and its billing never drift apart.
+ */
+
+import type { ForemanBilling } from '@/shared/types.js';
 
 /** Model marker that bills a Claude session to the Anthropic API key (see claude-models.provider.ts). */
 const API_KEY_MODEL_MARKER = '@api';
@@ -10,7 +15,7 @@ const CAP_MODEL_MARKER = '@cap';
  * API key, one carrying `@cap` runs through claude-cap's worker profile; anything else (including no model) runs on the
  * subscription. If a value carries more than one marker, the outermost (last) one decides and all of them are removed.
  */
-// Consumed by foreman-sessions.service.ts for listings and by foreman.module.ts for event context.
+// Consumed by foreman-sessions.service.ts for listings and for the billing checks of a send and a model switch.
 export function splitModelBilling(model: string | null | undefined): { model: string | null; billing: ForemanBilling } {
   let plain = typeof model === 'string' ? model.trim() : '';
   if (!plain) {
@@ -52,38 +57,4 @@ export function applyModelBilling(model: string, billing: ForemanBilling): strin
     return `${plain}${API_KEY_MODEL_MARKER}`;
   }
   return billing === 'cap' ? `${plain}${CAP_MODEL_MARKER}` : plain;
-}
-
-/**
- * Tracks which sessions last ended in a failure, so the bridge can report the `error` status.
- *
- * Held in memory only: it covers this cloudcli process's lifetime, and a session leaves the
- * state as soon as it starts another run or finishes a turn cleanly.
- */
-// Consumed by foreman.module.ts, which feeds it runtime events and reads it for session listings.
-export function createRuntimeOutcomeTracker() {
-  const failed = new Set<string>();
-
-  return {
-    observe(event: ClaudeRuntimeEvent): void {
-      if (!event.sessionId) {
-        return;
-      }
-      if (event.kind === 'run_started') {
-        failed.delete(event.sessionId);
-      } else if (event.kind === 'run_error') {
-        failed.add(event.sessionId);
-      } else if (event.kind === 'turn_result') {
-        const isError = event.message.is_error === true || String(event.message.subtype ?? '').startsWith('error');
-        if (isError) {
-          failed.add(event.sessionId);
-        } else {
-          failed.delete(event.sessionId);
-        }
-      }
-    },
-    hasFailed(sessionId: string): boolean {
-      return failed.has(sessionId);
-    },
-  };
 }

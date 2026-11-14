@@ -130,7 +130,6 @@ function sessionsOver(projects: ReturnType<typeof fakeProjects>) {
     settleEvents: async () => undefined,
     taskIds: createTaskIdStore({ get: () => null, set: () => undefined }),
     announceSession: async () => undefined,
-    hasFailed: () => false,
     admissionWindowMs: 5,
   };
   return { service: createForemanSessionsService(deps), started, stateRows };
