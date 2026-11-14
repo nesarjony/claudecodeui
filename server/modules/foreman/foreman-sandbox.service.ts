@@ -52,7 +52,7 @@ const FORCED_ALLOW_ALL_UNIX_SOCKETS = true;
 // Where the host keeps its sockets and the other users' and sessions' files. With every unix socket allowed, a socket a worker can see is one
 // it can connect to, so these trees are always denied for reading, whatever the policy denies. The checkout and the scratch directory stay
 // reachable: the sandbox runtime mounts the allowed paths over a denied tree. `/var/snap` holds the CUPS socket; foreman-sandbox-sockets.test.ts
-// lists the sockets outside these trees, so a new one fails a test instead of staying reachable.
+// lists the sockets outside these trees (a host check, run with CLOUDCLI_HOST_CHECKS=1), so a new one fails it instead of staying reachable.
 const HIDDEN_TREES = ['/run', '/tmp', '/var/tmp', '/home', '/mnt', '/media', '/srv', '/var/snap'];
 // The file tools run outside the sandbox, so a protected path is denied to them by rule as well as to Bash by `denyWrite`.
 const WRITING_FILE_TOOLS = ['Edit', 'Write', 'NotebookEdit'];

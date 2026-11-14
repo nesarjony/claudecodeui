@@ -42,7 +42,8 @@ test('the listing finds a socket outside the skipped trees and passes over one i
 });
 
 // With every unix socket allowed, a socket a worker can see is one it can connect to (HIDDEN_TREES in foreman-sandbox.service.ts). This host's
-// sockets are what that list was made from, and a service installed later can put one somewhere new: then this test names it.
-test('every unix socket on this host lies under a hidden tree', { skip: process.platform !== 'linux' }, () => {
+// sockets are what that list was made from, and a service installed later can put one somewhere new: then this test names it. It tests the
+// machine, not the code, so it runs only where asked (`CLOUDCLI_HOST_CHECKS=1`): on the host that runs workers, as a step of the cutover checks.
+test('every unix socket on this host lies under a hidden tree', { skip: process.env.CLOUDCLI_HOST_CHECKS !== '1' && 'a host check: set CLOUDCLI_HOST_CHECKS=1' }, () => {
   assert.deepEqual(socketsOutside('/', [...PSEUDO_FILESYSTEMS, ...hiddenTrees()]), [], 'a worker could connect to these: add their tree to HIDDEN_TREES');
 });
