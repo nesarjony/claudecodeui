@@ -1374,7 +1374,9 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
       kind: 'run_started',
       resumed: Boolean(providerSessionId),
       model: resolvedModel || options.model || null,
-      permissionMode: options.permissionMode || null
+      // The mode the run really starts in (after the UI's skip-permissions setting and a sandbox's confinement), not the one asked for:
+      // a session handed over to Foreman resumes in it.
+      permissionMode: sdkOptions.permissionMode || 'default'
     });
     console.log('Starting async generator loop for session:', capturedSessionId || 'NEW');
     for await (const message of queryInstance) {

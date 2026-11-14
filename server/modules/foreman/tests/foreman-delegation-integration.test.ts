@@ -428,8 +428,14 @@ async function grantAs(token: string, sessionId: string): Promise<number> {
   return response.status;
 }
 
-test('an adopted session runs as its owner set it up: no sandbox, none of the worker\'s subagents and rules, and Foreman still gets its events', async () => {
+test('an adopted session runs as its owner set it up: their mode, no sandbox, none of the worker\'s subagents and rules, and Foreman still gets its events', async () => {
   const sessionId = createOwnerSession('My own work');
+  // The owner works in their session first, in acceptEdits, through the same path as the UI's chat.
+  const { runDetachedChatTurn } = await import('@/modules/websocket/index.js');
+  const { providerRuntimeService } = await import('@/modules/providers/index.js');
+  const ownerTurn = await runDetachedChatTurn({ sessionId, userId: null, content: 'hello', options: { permissionMode: 'acceptEdits' } }, { runtime: providerRuntimeService });
+  assert.equal(ownerTurn.started, true, JSON.stringify(ownerTurn));
+  await idle(sessionId);
   // The bridge token is no login: it cannot grant, and without the owner's grant Foreman cannot adopt.
   assert.equal(await grantAs(TOKEN, sessionId), 401);
   assert.equal((await api('POST', `/sessions/${sessionId}/adopt`, {})).body.error.code, 'HANDOVER_NOT_GRANTED');
@@ -444,6 +450,7 @@ test('an adopted session runs as its owner set it up: no sandbox, none of the wo
   const adopted = await api('POST', `/sessions/${sessionId}/adopt`, {});
   assert.equal(adopted.status, 200, JSON.stringify(adopted.body));
   assert.equal(adopted.body.data.supervision, 'adopted');
+  assert.equal(adopted.body.data.permissionMode, 'acceptEdits', 'the mode the owner\'s run started in');
   const listed = (await api('GET', '/sessions')).body.data.sessions.find((entry: { id: string }) => entry.id === sessionId);
   assert.deepEqual([listed.sandboxed, listed.supervision], [false, 'adopted']);
 
@@ -452,6 +459,7 @@ test('an adopted session runs as its owner set it up: no sandbox, none of the wo
   const call = await settledCall(mark);
   const entries = (await fakeLog()).slice(mark);
   const spawn = entries.find((entry) => entry.spawn).spawn as { argv: string[]; tmpdir: string | null };
+  assert.equal(spawn.argv[spawn.argv.indexOf('--permission-mode') + 1], 'acceptEdits', 'Foreman\'s turn runs in the owner\'s mode');
   assert.equal(spawn.argv.includes('--settings') && 'sandbox' in settingsOf(spawn.argv), false, 'no sandbox was added');
   assert.equal(spawn.argv.includes('--disallowedTools'), false);
   assert.equal(entries.find((entry) => entry.initialized).agents, null, 'the worker\'s subagents are not handed to the owner\'s session');

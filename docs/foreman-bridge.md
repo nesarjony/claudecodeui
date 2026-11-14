@@ -38,8 +38,11 @@ Success: `{ "success": true, "data": ... }`. Failure: `{ "success": false, "erro
 | 400 `SANDBOX_REQUIRED`, `SANDBOX_INVALID` | Session start without a sandbox policy, or one that is malformed or opens more than a worker may have (see Sandbox). Nothing was started. |
 | 400 `PERMISSION_MODE_FORBIDDEN` | `permissionMode` is `bypassPermissions` or `auto` on a start, message or compact of a sandboxed session (every session Foreman starts). Nothing ran. |
 | 500 `SANDBOX_NOT_RECORDED` | The start could not store its sandbox, or what was stored did not read back as the policy sent. Nothing ran (see Idempotency for the session left behind). |
+| 403 `HANDOVER_NOT_GRANTED` | `adopt` without the owner's grant (none, expired or used). Nothing changed (see Hand-over). |
 | 404 `SESSION_NOT_FOUND` | Unknown session. |
 | 409 `NOT_SUPERVISED` | The session is neither started by Foreman nor adopted (or it was released): it is not Foreman's to drive. |
+| 409 `ALREADY_SUPERVISED` | `adopt` of a session Foreman already supervises. |
+| 409 `PERMISSION_MODE_UNKNOWN` | `adopt` of a session whose owner's permission mode is not recorded yet, or a message or compact of a session adopted before modes were recorded. Nothing changed (see Hand-over). |
 | 409 `RUN_IN_PROGRESS` | A turn is running; wait for its `turn_end`, or send with `"interrupt": true`. |
 | 409 `IDEMPOTENCY_OUTCOME_UNKNOWN` | See Idempotency. |
 | 422 `IDEMPOTENCY_KEY_REUSED` | The key was used for a different call. |
@@ -60,6 +63,8 @@ Every call that changes a session (`POST /sessions`, `.../message`, `.../interru
 - The same holds when the call took effect but cloudcli could not store its answer (a database failure): the call in hand still gets its answer, the key stays pending, and a repeat gets
   409 `IDEMPOTENCY_OUTCOME_UNKNOWN` instead of running the effect a second time. Only a call that itself fails releases its key.
 - A start that fails after the session was created (502 `TURN_START_FAILED`, 500 `SANDBOX_NOT_RECORDED`) leaves that session behind; a retry with the same key creates another.
+- An `adopt` refused for want of the owner's grant (403) or mode (409 `PERMISSION_MODE_UNKNOWN`) leaves its key free: retry it once the owner has acted. A repeat of an
+  answered `adopt` gets the stored answer and needs no grant (it adopts nothing again).
 
 Suggested keys: `start:<runId>:<attempt>`, `message:<runId>:<position>`. They are opaque to cloudcli.
 
@@ -210,14 +215,27 @@ applies it as the SDK `sandbox` option (bubblewrap around every Bash call), merg
 
 ## Hand-over (BR-2.10)
 
-The owner can hand one of their own cloudcli sessions to Foreman, which then supervises it like a worker.
+The owner can hand one of their own cloudcli sessions to Foreman, which then supervises it like a worker. Two steps, by two parties: **the owner grants, then Foreman adopts.**
+The bridge token alone can never hand a session over: the bridge has no route that grants.
 
-- `POST /sessions/:id/adopt` `{ idempotencyKey, taskId? }`: the session joins Foreman's supervision **as it is**. Its model, routing (billing) and permission mode are not
-  touched, no sandbox is added (it keeps the owner's settings), and it is not marked as a worker. From then on its events are stored with ids and sequence numbers and pushed
-  exactly as for a started session, `eventsSince` works, and message, interrupt and permission answers work. Events are counted from adoption: `commitCount` counts commits since
-  the project's `HEAD` at that moment. Answer: `{ sessionId, status, lastSequence, supervision: "adopted", projectPath, model, billing }`.
-  409 `ALREADY_SUPERVISED` when Foreman already supervises it; 404 for an unknown session.
-- Foreman never widens an adopted session: `permissionMode` on `message` / `compact` is refused (400 `PERMISSION_MODE_LOCKED`) and so is `model` (409 `MODEL_LOCKED`).
+1. **The owner grants**, logged in to cloudcli: `POST /api/foreman-suggestions/handover/:sessionId` (behind cloudcli's own login, like the rest of `/api/foreman-suggestions`;
+   the bridge token is no login there) answers 201 `{ sessionId, expiresAt }`. The grant is recorded under the logged-in user and is good for **one** `adopt` within
+   **5 minutes**; a new grant replaces an older one. `DELETE` on the same path withdraws an unused grant: `{ sessionId, revoked }`. Refused: 401 `AUTH_REQUIRED` without a
+   logged-in user, 404 unknown session, 400 not a Claude session, 409 `ALREADY_SUPERVISED`.
+2. **Foreman adopts**: `POST /sessions/:id/adopt` `{ idempotencyKey, taskId? }`. The session joins Foreman's supervision **as it is**: its model and routing (billing) are not
+   touched, it runs in its owner's permission mode (below), no sandbox is added and it is not marked as a worker. From then on its events are stored with ids and sequence
+   numbers and pushed exactly as for a started session, `eventsSince` works, and message, interrupt and permission answers work. Events are counted from adoption:
+   `commitCount` counts commits since the project's `HEAD` at that moment. Answer: `{ sessionId, status, lastSequence, supervision: "adopted", projectPath, model, billing, permissionMode }`.
+   Refused, in this order and with nothing changed: 404 unknown session, 400 not a Claude session, 409 `ALREADY_SUPERVISED`, 409 `PERMISSION_MODE_UNKNOWN`, 403
+   `HANDOVER_NOT_GRANTED` (no grant, expired, or used). Only the last step uses the grant up, atomically and right before the supervision is recorded, so of two adopts racing
+   for one grant one wins; an adopt that fails after that point (a 500) has used the grant, and the owner grants again.
+- **The owner's mode.** cloudcli records the permission mode every Claude session's last run started in, the owner's own sessions included: the mode the CLI really got
+  (the UI's "skip permissions" makes it `bypassPermissions`; no mode is `default`). `adopt` takes that mode, and every message and compact Foreman sends runs in exactly it.
+  Foreman neither widens nor narrows it: `permissionMode` on `message` / `compact` is refused (400 `PERMISSION_MODE_LOCKED`), and an owner's `bypassPermissions` or `auto` is
+  kept as the owner's choice for their own session. A session that has not run since cloudcli began recording modes: 409 `PERMISSION_MODE_UNKNOWN`, the grant stays; the owner
+  sends one turn in it, then Foreman adopts again. The mode is taken at adoption: one the owner picks later applies to the owner's own turns, not Foreman's. A session adopted
+  before modes were recorded answers a message or compact with 409 `PERMISSION_MODE_UNKNOWN`: release it, and the owner hands it over again.
+- `model` cannot be changed on an adopted session either (409 `MODEL_LOCKED`).
 - `POST /sessions/:id/release` `{ idempotencyKey }`: hand-back. Nothing more is stored or pushed for the session; events already stored are still pushed until acknowledged. The session
   stays alive and carries on as the owner's. Answer: the state (`supervision: "released"`, `lastSequence` = the last event of the hand-over). 409 `NOT_ADOPTED` for a session
   that was not handed over. After release the bridge refuses to drive it (`NOT_SUPERVISED`) until it is adopted again; sequence numbers continue where they left off.
@@ -231,3 +249,4 @@ The owner can hand one of their own cloudcli sessions to Foreman, which then sup
 - `sessionState` also returns `supervision`; `eventsSince` pages (`hasMore`).
 - The sequence counts events cloudcli emitted, like the simulator; unlike it, `session_end` is only `stopped` or `crashed` and `question` is never sent.
 - Real events carry `model`, `usage` and `headSha` on `turn_end` (additive), and there is a `quota` kind (new).
+- `adopt` works only after the owner's grant (403 `HANDOVER_NOT_GRANTED`, 409 `PERMISSION_MODE_UNKNOWN`), and its answer carries `permissionMode` (additive).

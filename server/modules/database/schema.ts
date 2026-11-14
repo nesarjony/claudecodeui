@@ -354,6 +354,18 @@ CREATE TABLE IF NOT EXISTS foreman_handover_grants (
 );
 `;
 
+/**
+ * The permission mode the last run of each Claude session started in, owner sessions included and before any hand-over, so a session handed
+ * over to Foreman resumes in the mode its owner ran it in. One row per session, rewritten at every run start.
+ */
+export const FOREMAN_RUN_MODES_TABLE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS foreman_run_modes (
+    session_id TEXT PRIMARY KEY NOT NULL,
+    permission_mode TEXT NOT NULL,
+    seen_at TEXT NOT NULL
+);
+`;
+
 export const INIT_SCHEMA_SQL = `
 -- Initialize authentication database
 PRAGMA foreign_keys = ON;
@@ -415,4 +427,6 @@ ${FOREMAN_EVENTS_TABLE_SCHEMA_SQL}
 ${FOREMAN_IDEMPOTENCY_TABLE_SCHEMA_SQL}
 
 ${FOREMAN_HANDOVER_GRANTS_TABLE_SCHEMA_SQL}
+
+${FOREMAN_RUN_MODES_TABLE_SCHEMA_SQL}
 `;

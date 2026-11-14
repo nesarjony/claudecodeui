@@ -4,10 +4,10 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { closeConnection, foremanHandoverGrantsDb, getConnection, initializeDatabase } from '@/modules/database/index.js';
+import { closeConnection, foremanHandoverGrantsDb, foremanRunModesDb, getConnection, initializeDatabase } from '@/modules/database/index.js';
 import { runMigrations } from '@/modules/database/migrations.js';
 
-/** The storage of the Foreman hand-over against a real database: the owners' grants. */
+/** The storage of the Foreman hand-over against a real database: the owners' grants and the mode each session last ran in. */
 
 async function withDatabase(runTest: () => void | Promise<void>): Promise<void> {
   const previousDatabasePath = process.env.DATABASE_PATH;
@@ -32,13 +32,32 @@ const columnsOf = (table: string) => (getConnection().prepare(`PRAGMA table_info
 const grant = (sessionId: string, expiresAt: string, grantedBy = 'nesar') => ({ session_id: sessionId, granted_by: grantedBy, created_at: '2026-11-14T09:00:00.000Z', expires_at: expiresAt });
 const grantRows = () => getConnection().prepare('SELECT * FROM foreman_handover_grants ORDER BY session_id').all();
 
-test('the grants table is made at init and by the migrations of a database that predates it', async () => {
+test('the grants and run modes tables are made at init and by the migrations of a database that predates them', async () => {
   await withDatabase(() => {
-    const expected = [['session_id', 1], ['granted_by', 0], ['created_at', 0], ['expires_at', 0]];
-    assert.deepEqual(columnsOf('foreman_handover_grants'), expected);
-    getConnection().exec('DROP TABLE foreman_handover_grants');
+    const expected = {
+      foreman_handover_grants: [['session_id', 1], ['granted_by', 0], ['created_at', 0], ['expires_at', 0]],
+      foreman_run_modes: [['session_id', 1], ['permission_mode', 0], ['seen_at', 0]],
+    };
+    for (const [table, columns] of Object.entries(expected)) {
+      assert.deepEqual(columnsOf(table), columns, table);
+      getConnection().exec(`DROP TABLE ${table}`);
+    }
     runMigrations(getConnection());
-    assert.deepEqual(columnsOf('foreman_handover_grants'), expected);
+    for (const [table, columns] of Object.entries(expected)) {
+      assert.deepEqual(columnsOf(table), columns, `${table} after the migrations`);
+    }
+  });
+});
+
+test('the run mode of a session is the one its last run started in', async () => {
+  await withDatabase(() => {
+    assert.equal(foremanRunModesDb.get('owner'), null);
+    foremanRunModesDb.record('owner', 'default', '2026-11-14T09:00:00.000Z');
+    foremanRunModesDb.record('worker', 'plan', '2026-11-14T09:01:00.000Z');
+    foremanRunModesDb.record('owner', 'acceptEdits', '2026-11-14T09:02:00.000Z');
+    assert.deepEqual(foremanRunModesDb.get('owner'), { session_id: 'owner', permission_mode: 'acceptEdits', seen_at: '2026-11-14T09:02:00.000Z' });
+    assert.equal(foremanRunModesDb.get('worker')?.permission_mode, 'plan');
+    assert.equal((getConnection().prepare('SELECT COUNT(*) AS count FROM foreman_run_modes').get() as { count: number }).count, 2);
   });
 });
 

@@ -23,6 +23,7 @@ import { createForemanRouter } from '@/modules/foreman/foreman.routes.js';
 import type { ProjectRepositoryRow } from '@/shared/types.js';
 import { AppError } from '@/shared/utils.js';
 
+import { createMemoryGrants } from './foreman-handover-support.js';
 import { createMemoryEventStorage } from './foreman-pipeline-support.js';
 import { createBridgeServices, createMemoryIdempotencyStorage, type BridgeDependencies } from './foreman-routes-support.js';
 import { samplePolicy } from './foreman-sandbox-support.js';
@@ -128,6 +129,9 @@ function sessionsOver(projects: ReturnType<typeof fakeProjects>) {
     headOf: async (projectPath) => `head-of:${projectPath}`,
     settleEvents: async () => undefined,
     taskIds: createTaskIdStore({ get: () => null, set: () => undefined }),
+    // No hand-over here: nothing is granted and no session has a mode to adopt.
+    grants: createMemoryGrants(),
+    runModes: { modeOf: () => null },
     announceSession: async () => undefined,
     admissionWindowMs: 5,
   };

@@ -34,6 +34,7 @@ test('the logged-in owner grants a hand-over: 201 with its expiry, recorded unde
 test('adopt without a grant is 403 HANDOVER_NOT_GRANTED and changes nothing; the same key works once the owner grants', async () => {
   await withBridge(async ({ call, world, handOver }) => {
     addOwner(world);
+    world.ownerRan('owner', 'default');
     const refused = await call('POST', '/sessions/owner/adopt', { taskId: 'task-9', idempotencyKey: 'adopt:owner:1' });
     assert.equal(refused.status, 403);
     assert.equal(refused.body.error.code, 'HANDOVER_NOT_GRANTED');
@@ -149,6 +150,7 @@ test('nobody logged in cannot grant or revoke: 401 AUTH_REQUIRED, and nothing ch
 test('the bridge token cannot hand a session over: the bridge has no grant route, and the grant route does not take the token', async () => {
   await withBridge(async ({ baseUrl, call, world }) => {
     addOwner(world);
+    world.ownerRan('owner', 'default');
     for (const pathname of ['/sessions/owner/handover', '/sessions/owner/grant', '/handover/owner', '/sessions/owner/adopt/grant']) {
       for (const method of ['POST', 'PUT']) {
         const response = await fetch(`${baseUrl}/api/foreman${pathname}`, {

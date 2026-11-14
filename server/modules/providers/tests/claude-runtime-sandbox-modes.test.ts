@@ -33,6 +33,24 @@ const sandboxAdditions = () => ({
 });
 
 type RunError = Extract<ClaudeRuntimeEvent, { kind: 'run_error' }>;
+type RunStarted = Extract<ClaudeRuntimeEvent, { kind: 'run_started' }>;
+
+test('run_started reports the mode the CLI really starts in: none sent is default, the UI\'s skipPermissions is a bypass, a sandbox confines it', async () => {
+  const runs: Array<[string, Record<string, unknown>, string, boolean]> = [
+    ['none', { permissionMode: undefined }, 'default', false],
+    ['accept', { permissionMode: 'acceptEdits' }, 'acceptEdits', false],
+    ['skip', { permissionMode: 'default', toolsSettings: settingsWith({ skipPermissions: true }) }, 'bypassPermissions', false],
+    ['skip-plan', { permissionMode: 'plan', toolsSettings: settingsWith({ skipPermissions: true }) }, 'plan', false],
+    ['sandboxed', { permissionMode: 'bypassPermissions' }, 'default', true],
+  ];
+  for (const [label, overrides, expected, sandboxed] of runs) {
+    const run = () => runPrompt('hello', overrides, `app-session-effective-${label}`);
+    const outcome = sandboxed ? await withSandboxProvider(() => sandboxAdditions(), run) : await run();
+    assert.equal((outcome.events.find((event) => event.kind === 'run_started') as RunStarted).permissionMode, expected, label);
+    const { argv } = await lastSpawn();
+    assert.equal(argv.includes('--permission-mode') ? argValue(argv, '--permission-mode') : 'default', expected, `${label}: the mode the CLI was given`);
+  }
+});
 
 test('a sandboxed run asked for bypassPermissions, auto or the UI\'s skipPermissions still prompts, and a call is never allowed unanswered', async () => {
   const asks = [

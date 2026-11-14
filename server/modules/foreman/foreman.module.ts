@@ -3,6 +3,7 @@ import {
   foremanEventsDb,
   foremanHandoverGrantsDb,
   foremanIdempotencyDb,
+  foremanRunModesDb,
   foremanSessionStateDb,
   projectsDb,
   sessionsDb,
@@ -22,6 +23,7 @@ import { createForemanGitService } from '@/modules/foreman/foreman-git.service.j
 import { createForemanHandoverService, type ForemanHandoverService } from '@/modules/foreman/foreman-handover.service.js';
 import { createForemanIdempotency } from '@/modules/foreman/foreman-idempotency.service.js';
 import { createManagedSessionStore } from '@/modules/foreman/foreman-managed-sessions.service.js';
+import { createForemanRunModes } from '@/modules/foreman/foreman-run-modes.service.js';
 import { createForemanRuntimeHooks } from '@/modules/foreman/foreman-runtime-hooks.service.js';
 import { buildSandboxAdditions } from '@/modules/foreman/foreman-sandbox.service.js';
 import {
@@ -166,9 +168,13 @@ export function createForemanModule() {
     log,
   });
 
+  // The mode every Claude session's last run started in, the owner's own sessions included: a hand-over keeps it.
+  const runModes = createForemanRunModes({ store: foremanRunModesDb, log });
+
   // Runs synchronously inside the runtime loop: every call only records/queues and never throws.
   subscribeClaudeRuntimeEvents((event) => {
     sessionState.observe(event);
+    runModes.observe(event);
     recorder.handle(event);
   });
 
@@ -231,6 +237,7 @@ export function createForemanModule() {
     headOf,
     settleEvents: () => recorder.whenIdle(),
     taskIds,
+    runModes,
     grants: foremanHandoverGrantsDb,
   });
 

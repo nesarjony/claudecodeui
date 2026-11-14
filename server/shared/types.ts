@@ -1419,6 +1419,7 @@ export type ClaudeRuntimeEvent = { sessionId: string; projectPath: string | null
       resumed: boolean;
       /** Model as selected for the session, including the `@api` / `@cap` billing marker when present. */
       model: string | null;
+      /** The mode the run starts in, as the SDK gets it (`default` when it sets none), whatever the turn asked for. */
       permissionMode: string | null;
     }
   | { kind: 'run_ended'; reason: 'completed' | 'aborted' | 'error' }

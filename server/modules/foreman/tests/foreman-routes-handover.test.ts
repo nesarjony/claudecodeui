@@ -171,11 +171,11 @@ test('GET /sessions/:id/events validates `after` and `limit` and the session', a
 // POST /sessions/:id/adopt
 // ---------------------------------------------------------------------------------------------
 
-test('adopt takes over a session of the owner as it is: model, billing and settings are untouched, no sandbox, the start is recorded', async () => {
+test('adopt takes over a session of the owner as it is: model, billing, settings and mode are the owner\'s, no sandbox, the start is recorded', async () => {
   await withBridge(async ({ call, world, handOver }) => {
     addOwner(world);
     assert.equal(world.state.get('owner'), null);
-    await handOver('owner');
+    await handOver('owner', 'acceptEdits');
 
     const response = await call('POST', '/sessions/owner/adopt', { taskId: 'task-3' });
     assert.equal(response.status, 200);
@@ -187,6 +187,7 @@ test('adopt takes over a session of the owner as it is: model, billing and setti
       projectPath: '/mnt/dev/known',
       model: 'claude-opus-5-5',
       billing: 'subscription',
+      permissionMode: 'acceptEdits',
     });
 
     // The session is what it was: its row, its routing and its marks.
@@ -202,7 +203,7 @@ test('adopt takes over a session of the owner as it is: model, billing and setti
     const state = world.state.get('owner');
     assert.equal(state?.supervision, 'adopted');
     assert.equal(state?.sandboxJson, null);
-    assert.equal(state?.permissionMode, null, 'the owner\'s permission mode is not replaced');
+    assert.equal(state?.permissionMode, 'acceptEdits', 'the mode the owner\'s last run started in');
     assert.equal(state?.billing, 'subscription');
     assert.equal(state?.taskId, 'task-3');
     assert.equal(state?.baseHead, HEAD);
@@ -350,10 +351,10 @@ test('an owner session that is not Foreman\'s answers NOT_SUPERVISED before anyt
 // What works on an adopted session, and what is locked
 // ---------------------------------------------------------------------------------------------
 
-test('on an adopted session a message runs with the session\'s own model and settings and no permission mode of Foreman\'s', async () => {
+test('on an adopted session a message runs with the session\'s own model and settings and its owner\'s permission mode', async () => {
   await withBridge(async ({ call, world, handOver }) => {
     addOwner(world);
-    await handOver('owner');
+    await handOver('owner', 'plan');
     await call('POST', '/sessions/owner/adopt', {});
 
     const response = await call('POST', '/sessions/owner/message', { text: 'Carry on with the migration' });
@@ -364,8 +365,8 @@ test('on an adopted session a message runs with the session\'s own model and set
     assert.equal(turn.content, 'Carry on with the migration');
     assert.equal(turn.options.model, 'claude-opus-5-5');
     assert.equal(turn.options.effort, 'high');
-    assert.equal(turn.options.permissionMode, undefined, 'the owner\'s own permission mode applies');
-    assert.equal(world.state.get('owner')?.permissionMode, null);
+    assert.equal(turn.options.permissionMode, 'plan', 'the owner\'s own permission mode applies');
+    assert.equal(world.state.get('owner')?.permissionMode, 'plan');
     assert.equal(world.rows.get('owner')?.model, 'claude-opus-5-5');
 
     // Steering a run that is going works as for any supervised session.
@@ -373,13 +374,14 @@ test('on an adopted session a message runs with the session\'s own model and set
     world.processing.add('owner');
     assert.equal((await call('POST', '/sessions/owner/message', { text: 'wait, stop', interrupt: true })).body.data.interrupted, true);
     assert.equal(world.startedTurns[1].interruptActiveRun, true);
+    assert.equal(world.startedTurns[1].options.permissionMode, 'plan');
   });
 });
 
 test('on an adopted session a permission mode is refused with PERMISSION_MODE_LOCKED, for a message and for a compact', async () => {
   await withBridge(async ({ call, world, handOver }) => {
     addOwner(world);
-    await handOver('owner');
+    await handOver('owner', 'acceptEdits');
     await call('POST', '/sessions/owner/adopt', {});
 
     for (const permissionMode of ['bypassPermissions', 'acceptEdits', 'default']) {
@@ -391,14 +393,14 @@ test('on an adopted session a permission mode is refused with PERMISSION_MODE_LO
       assert.equal(compact.body.error.code, 'PERMISSION_MODE_LOCKED');
     }
     assert.equal(world.startedTurns.length, 0, 'nothing ran');
-    assert.equal(world.state.get('owner')?.permissionMode, null);
+    assert.equal(world.state.get('owner')?.permissionMode, 'acceptEdits');
     assert.equal(world.idempotencyStorage.rows.size, 1, 'only the adopt call holds a key');
 
     // Without a mode, a compact goes through as a /compact turn in the owner's own mode.
     const plain = await call('POST', '/sessions/owner/compact', { instructions: 'Keep the schema.' });
     assert.equal(plain.status, 202);
     assert.equal(world.startedTurns[0].content, '/compact Keep the schema.');
-    assert.equal(world.startedTurns[0].options.permissionMode, undefined);
+    assert.equal(world.startedTurns[0].options.permissionMode, 'acceptEdits');
   });
 });
 
@@ -488,7 +490,7 @@ test('release waits until the stored events have settled before it lets go, then
     // What was the owner's stays the owner's.
     assert.equal(world.rows.get('owner')?.model, 'claude-opus-5-5');
     assert.deepEqual(world.modelChanges, []);
-    assert.equal(world.state.get('owner')?.permissionMode, null);
+    assert.equal(world.state.get('owner')?.permissionMode, 'default', 'the owner\'s mode as it was handed over');
     assert.equal((await call('GET', '/sessions')).body.data.sessions.find((entry: { id: string }) => entry.id === 'owner').supervision, 'released');
   });
 });

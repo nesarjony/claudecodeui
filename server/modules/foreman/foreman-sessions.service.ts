@@ -107,10 +107,17 @@ export function createForemanSessionsService(deps: ForemanSessionsDependencies) 
     const session = deps.reads.requireClaudeSession(sessionId);
     // First of all: nothing about a session Foreman does not supervise (not even whether it is running) is answered to the bridge.
     // A resumed run (after a restart too) keeps the permission mode Foreman chose; its sandbox is read from the stored state when the run starts.
-    // A session handed over keeps the owner's permission mode: Foreman cannot widen it.
+    // A session handed over runs in the mode its owner last ran it in, recorded at adoption: Foreman cannot change it.
     const state = requireSupervised(sessionId);
     if (state.supervision === 'adopted' && options.permissionMode) {
       throw new AppError('A session handed over keeps its owner\'s permission mode: permissionMode cannot be set.', { code: 'PERMISSION_MODE_LOCKED', statusCode: 400 });
+    }
+    if (state.supervision === 'adopted' && !state.permissionMode) {
+      // Adopted before the hand-over recorded the owner's mode: the default it would run in is not the owner's.
+      throw new AppError('This session was handed over before its owner\'s permission mode was recorded: release it, and the owner hands it over again.', {
+        code: 'PERMISSION_MODE_UNKNOWN',
+        statusCode: 409,
+      });
     }
     const sandboxed = isSandboxedSession(state);
     if (sandboxed) {

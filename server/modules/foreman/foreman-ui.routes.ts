@@ -20,11 +20,13 @@ function readSessionId(value: unknown): string {
 /** Who is asking: the logged-in user's name, or their id. With nobody logged in (a router mounted without the login) nothing is handed over. */
 function readLoggedInUser(request: Request): string {
   const user = (request as AuthenticatedRequest).user;
-  const name = typeof user?.username === 'string' && user.username ? user.username : typeof user?.id === 'number' || typeof user?.id === 'string' ? String(user.id) : '';
-  if (!name) {
-    throw new AppError('Only the logged-in owner can hand a session over.', { code: 'AUTH_REQUIRED', statusCode: 401 });
+  if (typeof user?.username === 'string' && user.username) {
+    return user.username;
   }
-  return name;
+  if (typeof user?.id === 'number' || (typeof user?.id === 'string' && user.id)) {
+    return String(user.id);
+  }
+  throw new AppError('Only the logged-in owner can hand a session over.', { code: 'AUTH_REQUIRED', statusCode: 401 });
 }
 
 /**

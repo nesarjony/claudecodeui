@@ -1,5 +1,6 @@
 import type { foremanHandoverGrantsDb } from '@/modules/database/index.js';
 import { splitModelBilling } from '@/modules/foreman/foreman-billing.service.js';
+import type { ForemanRunModes } from '@/modules/foreman/foreman-run-modes.service.js';
 import type { ForemanSessionReadsService } from '@/modules/foreman/foreman-session-reads.service.js';
 import type { ForemanSessionStateService } from '@/modules/foreman/foreman-session-state.service.js';
 import type { ForemanBridgeEvent } from '@/shared/types.js';
@@ -24,6 +25,8 @@ export type ForemanHandoverDependencies = {
   settleEvents(): Promise<void>;
   /** Remembers which Foreman task a session belongs to. */
   taskIds: { set(sessionId: string, taskId: string): void };
+  /** The mode each session's last run started in: an adopted session keeps its owner's. */
+  runModes: Pick<ForemanRunModes, 'modeOf'>;
   /** The owners' grants (`foreman_handover_grants`): recorded by the logged-in owner, used up by `adopt`. */
   grants: Pick<typeof foremanHandoverGrantsDb, 'put' | 'consume' | 'revoke' | 'purgeExpired'>;
   /** The clock grants are issued and checked against. */
@@ -34,7 +37,7 @@ export type ForemanHandoverDependencies = {
  * The hand-over (BR-2.10): the owner gives one of their own sessions to Foreman and takes it back. The owner first grants it while logged in
  * to cloudcli (`grant`, from the UI router only: the bridge has no route to it, so the bridge token alone never hands a session over); Foreman
  * then adopts it (`adopt`), which uses the grant up, and releases it (`release`). None of this changes the session's model, routing or
- * permissions; it only changes whether Foreman supervises the session.
+ * permission mode; it only changes whether Foreman supervises the session.
  */
 // Consumed by foreman.routes.ts (adopt, release, for Foreman) and foreman-ui.routes.ts (grant, revoke, for the logged-in owner).
 export function createForemanHandoverService(deps: ForemanHandoverDependencies) {
@@ -66,13 +69,22 @@ export function createForemanHandoverService(deps: ForemanHandoverDependencies) 
     },
 
     /**
-     * The session the owner granted joins Foreman's supervision as it is: its model, routing and permission mode are not touched and no
-     * sandbox is added. From here its events are stored and pushed like a worker's, counting commits from where the project is now, and
-     * messages, interrupts and permission answers work for it.
+     * The session the owner granted joins Foreman's supervision as it is: its model and routing are not touched, no sandbox is added, and
+     * every turn Foreman sends runs in the permission mode the owner's last run started in. From here its events are stored and pushed like
+     * a worker's, counting commits from where the project is now, and messages, interrupts and permission answers work for it.
      */
     async adopt(sessionId: string, input: { taskId?: string }) {
       const session = deps.reads.requireClaudeSession(sessionId);
       requireUnsupervised(sessionId);
+      // Foreman neither widens nor narrows the owner's mode, so without a recorded one it does not guess (the default would narrow it,
+      // anything else could widen it). Refused before the grant is touched, so the owner's grant still holds for the retry.
+      const permissionMode = deps.runModes.modeOf(sessionId);
+      if (!permissionMode) {
+        throw new AppError('The owner\'s permission mode for this session is not known yet: the owner sends one turn in it, then Foreman adopts it.', {
+          code: 'PERMISSION_MODE_UNKNOWN',
+          statusCode: 409,
+        });
+      }
       // Used up last, right before anything is recorded, in one atomic step: of two adopts racing for a grant one goes on. Nothing in
       // between yields, so the checks above still hold. A failure after this point loses the grant: the owner grants again.
       if (!deps.grants.consume(sessionId, now().toISOString())) {
@@ -83,6 +95,7 @@ export function createForemanHandoverService(deps: ForemanHandoverDependencies) 
       }
       deps.state.track(sessionId, {
         supervision: 'adopted',
+        permissionMode,
         taskId: input.taskId ?? null,
         billing: splitModelBilling(session.model).billing,
         baseHead: session.project_path ? await deps.headOf(session.project_path) : null,
@@ -92,7 +105,7 @@ export function createForemanHandoverService(deps: ForemanHandoverDependencies) 
         deps.taskIds.set(sessionId, input.taskId);
       }
       const { model, billing } = splitModelBilling(session.model);
-      return { ...deps.reads.getState(sessionId), projectPath: session.project_path, model, billing };
+      return { ...deps.reads.getState(sessionId), projectPath: session.project_path, model, billing, permissionMode };
     },
 
     /** Ends the hand-over: nothing more is stored or pushed for the session (what is already stored is still pushed), and the session carries on as the owner's own. */

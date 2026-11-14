@@ -14,7 +14,10 @@ export type ForemanSessionState = {
   sessionId: string;
   taskId: string | null;
   status: ForemanSessionStatus;
-  /** The permission mode Foreman last chose for the session; a resumed run keeps it. Never one a sandboxed session may not run in. */
+  /**
+   * The mode the bridge's turns run in: the one Foreman last chose for a session it started (never one a sandboxed session may not run in),
+   * the owner's for a session handed over (taken at adoption). A resumed run keeps it.
+   */
   permissionMode: string | null;
   billing: ForemanBilling | null;
   /** The sandbox policy Foreman sent, as stored; null for a session without one (a person's own). Read through `sandboxOf`. */

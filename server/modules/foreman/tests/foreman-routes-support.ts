@@ -12,6 +12,7 @@ import { createForemanEventStore } from '@/modules/foreman/foreman-event-store.s
 import { createForemanGitService } from '@/modules/foreman/foreman-git.service.js';
 import { createForemanHandoverService, type ForemanHandoverDependencies } from '@/modules/foreman/foreman-handover.service.js';
 import { createForemanIdempotency, type ForemanIdempotencyStorage } from '@/modules/foreman/foreman-idempotency.service.js';
+import { createForemanRunModes } from '@/modules/foreman/foreman-run-modes.service.js';
 import {
   createForemanSessionReadsService,
   type ForemanSessionReadsDependencies,
@@ -24,6 +25,7 @@ import { createTaskIdStore } from '@/modules/foreman/foreman-task-ids.service.js
 import { createForemanUiRouter } from '@/modules/foreman/foreman-ui.routes.js';
 import { createForemanRouter } from '@/modules/foreman/foreman.routes.js';
 
+import { createMemoryGrants, createMemoryRunModeStore } from './foreman-handover-support.js';
 import { createMemoryEventStorage } from './foreman-pipeline-support.js';
 import { samplePolicy } from './foreman-sandbox-support.js';
 
@@ -44,7 +46,6 @@ export function createBridgeServices(deps: BridgeDependencies) {
 }
 
 export type SessionRow = NonNullable<ReturnType<BridgeDependencies['sessionsDb']['getSessionById']>>;
-type GrantRow = Parameters<BridgeDependencies['grants']['put']>[0];
 export type StartTurnInput = Parameters<BridgeDependencies['startTurn']>[0];
 type ProjectRow = NonNullable<ReturnType<BridgeDependencies['projectsDb']['getProjectPath']>>;
 
@@ -136,21 +137,10 @@ export function createWorld() {
         .flatMap((stateRow) => (stateRow.supervision === 'started' || stateRow.supervision === 'adopted' ? [{ session_id: stateRow.session_id, supervision: stateRow.supervision, task_id: stateRow.task_id }] : [])),
   };
   const eventStorage = createMemoryEventStorage();
-  // The grants table in memory, with the repository's rules: a newer grant replaces the older one, and only an unexpired one can be used.
-  const grantRows = new Map<string, GrantRow>();
-  const grants: BridgeDependencies['grants'] = {
-    put: (grant) => void grantRows.set(grant.session_id, { ...grant }),
-    consume: (sessionId, nowIso) => {
-      const grant = grantRows.get(sessionId);
-      return Boolean(grant && grant.expires_at > nowIso && grantRows.delete(sessionId));
-    },
-    revoke: (sessionId) => grantRows.delete(sessionId),
-    purgeExpired: (nowIso) => {
-      const expired = [...grantRows.values()].filter((grant) => grant.expires_at <= nowIso);
-      expired.forEach((grant) => grantRows.delete(grant.session_id));
-      return expired.length;
-    },
-  };
+  const grants = createMemoryGrants();
+  const runModeStore = createMemoryRunModeStore();
+  // Records into the table as the module's does from the runtime's events.
+  const runModes = createForemanRunModes({ store: runModeStore });
 
   const rows = new SessionRows((sessionId) => {
     // A row added to the world is a session Foreman started, unless the state already knows it better (an adopted one).
@@ -164,7 +154,12 @@ export function createWorld() {
     events: createForemanEventStore({ storage: eventStorage }),
     eventStorage,
     idempotencyStorage: createMemoryIdempotencyStorage(),
-    grantRows,
+    grantRows: grants.rows,
+    runModeRows: runModeStore.rows,
+    runModes,
+    /** A run of the session started in `permissionMode`, as the runtime reports it: the owner ran their session. */
+    ownerRan: (sessionId: string, permissionMode: string) =>
+      runModes.observe({ kind: 'run_started', sessionId, projectPath: '/mnt/dev/known', resumed: true, model: null, permissionMode }),
     /** The time the hand-over issues and checks grants at; tests move it. */
     clock: new Date('2026-11-14T09:00:00.000Z'),
     /** Who the fake login puts on the UI routes' requests; null for a request nobody logged in to. */
@@ -298,6 +293,7 @@ export function createWorld() {
     }),
     managed: { mark: (sessionId) => void managedMarks.push(sessionId) },
     grants,
+    runModes,
     now: () => world.clock,
     announceSession: async (sessionId) => {
       world.announced.push(sessionId);
@@ -327,8 +323,11 @@ export async function withBridge(
     call: Call;
     /** The logged-in UI routes (`/api/foreman-suggestions`), as `world.loggedIn`. */
     ui: UiCall;
-    /** The owner hands the session over: the logged-in grant through the UI route, which adopt needs. */
-    handOver: (sessionId: string) => Promise<void>;
+    /**
+     * The owner hands the session over: a run of theirs in `permissionMode` (the mode adopt takes; null for none), then the logged-in grant
+     * through the UI route. Adopt needs both.
+     */
+    handOver: (sessionId: string, permissionMode?: string | null) => Promise<void>;
     /** A real directory registered as the known project `<projectDir>`; `deps` for building a second ("restarted") service. */
     projectDir: string;
     deps: BridgeDependencies;
@@ -395,7 +394,8 @@ export async function withBridge(
     });
     return { status: response.status, body: await response.json() };
   };
-  const handOver = async (sessionId: string) => {
+  const handOver = async (sessionId: string, permissionMode: string | null = 'default') => {
+    if (permissionMode) world.ownerRan(sessionId, permissionMode);
     const granted = await ui('POST', `/handover/${encodeURIComponent(sessionId)}`);
     if (granted.status !== 201) throw new Error(`the grant for ${sessionId} was refused: ${JSON.stringify(granted.body)}`);
   };
