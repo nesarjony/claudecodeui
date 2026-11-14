@@ -50,10 +50,25 @@ describe('the real client', () => {
   it.each(CASES)('%s calls the endpoint of the contract', async (name, call, method, url, body) => {
     expect(ENDPOINTS[name].method).toBe(method);
     await call(createRealApi());
-    const [calledUrl, init] = vi.mocked(authenticatedFetch).mock.calls[0] ?? [];
+    // Hand to Foreman is the one call that makes two (the grant, then Foreman's attach): the contract's call is the last.
+    const [calledUrl, init] = vi.mocked(authenticatedFetch).mock.calls.at(-1) ?? [];
     expect(calledUrl).toBe(url);
     expect(init?.method).toBe(method);
     expect(init?.body === undefined ? undefined : JSON.parse(String(init.body))).toEqual(body);
+  });
+
+  it('records the owner\'s grant in cloudcli before it asks Foreman to attach, and does not ask when the grant is refused', async () => {
+    const api = createRealApi();
+    await api.handOverSession('s 1', 'finish import');
+    expect(vi.mocked(authenticatedFetch).mock.calls.map(([url, init]) => [url, init?.method])).toEqual([
+      ['/api/foreman-suggestions/handover/s%201', 'POST'],
+      [`${BASE}/sessions/s%201/hand-over`, 'POST'],
+    ]);
+
+    vi.mocked(authenticatedFetch).mockReset();
+    vi.mocked(authenticatedFetch).mockImplementation(async () => new Response(JSON.stringify({ success: false, error: { code: 'FORBIDDEN', message: 'no' } }), { status: 403 }));
+    await expect(api.handOverSession('s1')).rejects.toBeDefined();
+    expect(vi.mocked(authenticatedFetch)).toHaveBeenCalledTimes(1);
   });
 
   it('returns the data of the response envelope', async () => {

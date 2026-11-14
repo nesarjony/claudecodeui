@@ -23,6 +23,14 @@ async function call<T>(endpoint: EndpointSpec, request: Call = {}): Promise<T> {
   return payload.data;
 }
 
+/** cloudcli's own route, behind the owner's login: it records the single-use grant that lets Foreman adopt one of the owner's sessions (BR-2.10). */
+const HANDOVER_GRANT_PATH = '/api/foreman-suggestions/handover';
+
+/** Hand to Foreman is two steps in this order: the owner's grant is recorded in cloudcli first, since Foreman's attach consumes it, and a refusal here stops before Foreman is asked. */
+async function recordHandoverGrant(sessionId: string): Promise<void> {
+  await readApiJson(await authenticatedFetch(`${HANDOVER_GRANT_PATH}/${encodeURIComponent(sessionId)}`, { method: 'POST' }));
+}
+
 /** Used by loadForemanApi to talk to Foreman's HTTP API through cloudcli's proxy once slice 4b ships it. */
 export function createRealApi(): ForemanApi {
   return {
@@ -62,7 +70,10 @@ export function createRealApi(): ForemanApi {
     undoChatActions: (actionsId) => call(ENDPOINTS.undoChatActions, { params: { id: actionsId } }),
     rememberChatMessage: (messageId) => call(ENDPOINTS.rememberChatMessage, { params: { id: messageId } }),
     sessionSupervision: (sessionId) => call(ENDPOINTS.sessionSupervision, { params: { id: sessionId } }),
-    handOverSession: (sessionId, goal) => call(ENDPOINTS.handOverSession, { params: { id: sessionId }, body: { goal: goal ?? null } }),
+    handOverSession: async (sessionId, goal) => {
+      await recordHandoverGrant(sessionId);
+      return call(ENDPOINTS.handOverSession, { params: { id: sessionId }, body: { goal: goal ?? null } });
+    },
     takeBackSession: (sessionId) => call(ENDPOINTS.takeBackSession, { params: { id: sessionId } }),
     delegation: () => call(ENDPOINTS.delegation),
     setDelegation: (kind, change) => call(ENDPOINTS.setDelegation, { params: { kind }, body: change }),

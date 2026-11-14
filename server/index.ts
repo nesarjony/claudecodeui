@@ -55,6 +55,7 @@ import { quickCommandsRoutes } from './modules/quick-commands/index.js';
 import { agentsRoutes } from './modules/agents/index.js';
 import { createForemanModule, createForemanUiModule } from './modules/foreman/index.js';
 import { createForemanTabModule } from './modules/foreman/foreman-tab.module.js';
+import { createForemanNextModule } from './modules/foreman-next/index.js';
 import browserUseMcpRoutes from './modules/browser-use/browser-use-mcp.routes.js';
 import { browserUseService } from './modules/browser-use/browser-use.service.js';
 import { initializeDatabase, sessionsDb } from './modules/database/index.js';
@@ -105,6 +106,7 @@ const agentRoutes = createAgentModule({
 const foremanBridge = createForemanModule();
 const foremanUiRoutes = createForemanUiModule(foremanBridge);
 const foremanTabRoutes = createForemanTabModule();
+const foremanNextRoutes = createForemanNextModule();
 
 // Single WebSocket server that handles chat, shell, and plugin proxy paths.
 createWebSocketServer(server, {
@@ -203,6 +205,9 @@ app.use('/api/foreman', foremanBridge.router);
 app.use('/api/foreman-suggestions', authenticateToken, foremanUiRoutes);
 // Foreman tab: the logged-in user's allowlisted view of Foreman (overview, decisions, spend, settings, tasks, inbox, lessons)
 app.use('/api/foreman-tab', authenticateToken, foremanTabRoutes);
+
+// The rebuilt Foreman's control API: the logged-in owner's proxy to Foreman's own API (slice 4b).
+app.use('/api/foreman-next', authenticateToken, foremanNextRoutes);
 
 // Browser API Routes (protected)
 app.use('/api/browser-use', authenticateToken, browserUseRoutes);
