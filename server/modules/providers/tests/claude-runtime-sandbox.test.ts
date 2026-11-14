@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import {
+  applyRuntimeSandboxAdditions,
+  approvalTimeoutMessage,
+  setClaudeRuntimeSandboxProvider,
+  withSandbox,
+} from '@/modules/providers/list/claude/claude-runtime-sandbox.js';
 import type { ClaudeRuntimeEvent } from '@/shared/types.js';
 
 import {
@@ -47,11 +53,11 @@ const sandboxAdditions = (overrides: Record<string, unknown> = {}) => ({
 
 /** Runs `run` with `provider` registered as the sandbox provider, and takes it away again. */
 async function withSandboxProvider<T>(provider: (sessionId: string) => unknown, run: () => Promise<T>): Promise<T> {
-  runtime.setClaudeRuntimeSandboxProvider(provider as never);
+  setClaudeRuntimeSandboxProvider(provider as never);
   try {
     return await run();
   } finally {
-    runtime.setClaudeRuntimeSandboxProvider(null);
+    setClaudeRuntimeSandboxProvider(null);
   }
 }
 
@@ -204,7 +210,7 @@ test('a sandbox whose policy sets no window waits the runtime\'s default, and th
 });
 
 test('the timeout message states the window that was in force, in the unit that keeps it exact', () => {
-  const windowOf = (ms: number) => /no answer within (.+?)\. This is/.exec(runtime.approvalTimeoutMessage('Bash', ms))?.[1];
+  const windowOf = (ms: number) => /no answer within (.+?)\. This is/.exec(approvalTimeoutMessage('Bash', ms))?.[1];
   assert.equal(windowOf(1_800_000), '30 minute(s)');
   assert.equal(windowOf(120_000), '2 minute(s)');
   assert.equal(windowOf(55_000), '55 second(s)');
@@ -402,7 +408,7 @@ test('withSandbox folds a sandbox into a run\'s additions: its sandbox and rules
   const sandbox = sandboxAdditions({ approvalTimeoutMs: 90_000 });
   const before = structuredClone({ additions: { ...additions, hooks: undefined }, sandbox });
 
-  const folded = runtime.withSandbox(additions, sandbox);
+  const folded = withSandbox(additions, sandbox);
   assert.equal(folded.sandbox, sandbox.sandbox);
   assert.deepEqual(folded.permissions, sandbox.permissions);
   assert.equal(folded.approvalTimeoutMs, 90_000);
@@ -417,12 +423,12 @@ test('withSandbox folds a sandbox into a run\'s additions: its sandbox and rules
 
 test('withSandbox copes with additions that have no environment or denied tools, and a sandbox that has none', () => {
   const sandbox = sandboxAdditions({ env: undefined, disallowedTools: undefined });
-  const folded = runtime.withSandbox({}, sandbox as never);
+  const folded = withSandbox({}, sandbox as never);
   assert.deepEqual(folded.env, {});
   assert.deepEqual(folded.disallowedTools, []);
   assert.equal(folded.sandbox, sandbox.sandbox);
 
-  const onlySandbox = runtime.withSandbox({ disallowedTools: ['Bash(rm:*)'] }, sandboxAdditions());
+  const onlySandbox = withSandbox({ disallowedTools: ['Bash(rm:*)'] }, sandboxAdditions());
   assert.deepEqual(onlySandbox.disallowedTools, ['Bash(rm:*)', 'AskUserQuestion', 'WebFetch']);
 });
 
@@ -435,7 +441,7 @@ test('applyRuntimeSandboxAdditions sets the SDK sandbox and unites the permissio
     disallowedTools: ['WebFetch'],
   };
   const additions = sandboxAdditions();
-  runtime.applyRuntimeSandboxAdditions(sdkOptions, additions);
+  applyRuntimeSandboxAdditions(sdkOptions, additions);
 
   assert.equal(sdkOptions.sandbox, additions.sandbox);
   assert.deepEqual(sdkOptions.settings.permissions, {
@@ -453,28 +459,28 @@ test('applyRuntimeSandboxAdditions sets the SDK sandbox and unites the permissio
 
 test('applyRuntimeSandboxAdditions makes the settings when there are none, treats rules of the wrong type as empty, and does nothing without a sandbox', () => {
   const fresh: Record<string, any> = {};
-  runtime.applyRuntimeSandboxAdditions(fresh, sandboxAdditions());
+  applyRuntimeSandboxAdditions(fresh, sandboxAdditions());
   assert.deepEqual(fresh.settings, { permissions: { allow: ['Bash', 'Edit(//mnt/dev/repo/**)'], deny: ['Read(~/.ssh/**)'] } });
 
   const odd: Record<string, any> = { settings: { permissions: { allow: 'Read', deny: null } } };
-  runtime.applyRuntimeSandboxAdditions(odd, sandboxAdditions());
+  applyRuntimeSandboxAdditions(odd, sandboxAdditions());
   assert.deepEqual(odd.settings.permissions, { allow: ['Bash', 'Edit(//mnt/dev/repo/**)'], deny: ['Read(~/.ssh/**)'] });
 
   const withoutRules: Record<string, any> = { settings: { permissions: { allow: ['Read'], deny: ['Bash(rm:*)'] } } };
-  runtime.applyRuntimeSandboxAdditions(withoutRules, { sandbox: { enabled: true } });
+  applyRuntimeSandboxAdditions(withoutRules, { sandbox: { enabled: true } });
   assert.deepEqual(withoutRules.settings.permissions, { allow: ['Read'], deny: ['Bash(rm:*)'] });
   assert.deepEqual(withoutRules.sandbox, { enabled: true });
 
   for (const additions of [{}, { permissions: { allow: ['Bash'], deny: [] } }, { env: { A: '1' } }]) {
     const untouched: Record<string, any> = {};
-    runtime.applyRuntimeSandboxAdditions(untouched, additions);
+    applyRuntimeSandboxAdditions(untouched, additions);
     assert.deepEqual(untouched, {}, 'no sandbox, nothing changed');
   }
 });
 
 test('a tool the sandbox denies stays denied when a person ticks "always allow": removeRememberedDenial only lifts the denials nobody enforced', () => {
   const options: { disallowedTools: string[] } = { disallowedTools: ['Bash(rm:*)'] };
-  const folded = runtime.withSandbox({ disallowedTools: ['mcp__infigraph__save_session'] }, sandboxAdditions());
+  const folded = withSandbox({ disallowedTools: ['mcp__infigraph__save_session'] }, sandboxAdditions());
   const enforced = runtime.applyRuntimeModelAndToolAdditions(options, folded);
   assert.deepEqual(enforced, ['mcp__infigraph__save_session', 'AskUserQuestion', 'WebFetch']);
   assert.deepEqual(options.disallowedTools, ['Bash(rm:*)', 'mcp__infigraph__save_session', 'AskUserQuestion', 'WebFetch']);

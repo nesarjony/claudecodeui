@@ -31,6 +31,12 @@ import {
   CLAUDE_ULTRACODE_EFFORT
 } from '@/modules/providers/list/claude/claude-models.provider.js';
 import { applyCapBilling } from '@/modules/providers/list/claude/claude-cap-billing.js';
+import {
+  applyRuntimeSandboxAdditions,
+  approvalTimeoutMessage,
+  resolveRuntimeSandbox,
+  withSandbox
+} from '@/modules/providers/list/claude/claude-runtime-sandbox.js';
 import { resolveClaudeCodeExecutablePath } from '@/shared/claude-cli-path.js';
 import {
   createNotificationEvent,
@@ -81,8 +87,8 @@ let runtimeAdditionsProvider = null;
 
 /**
  * What the provider may add to a run: extra SDK hooks, environment variables, subagents, the model to retry on after a refusal and
- * tools the run may never use.
- * @typedef {{ env?: Record<string, string>, hooks?: Record<string, unknown[]>, agents?: Record<string, { description: string, prompt: string, tools: string[], model: string, maxTurns?: number }>, fallbackModel?: string, disallowedTools?: string[], sandbox?: Record<string, unknown>, permissions?: { allow?: string[], deny?: string[] }, approvalTimeoutMs?: number }} RuntimeAdditions
+ * tools the run may never use (and, for a sandboxed run, its sandbox; see claude-runtime-sandbox.ts).
+ * @typedef {import('@/modules/providers/list/claude/claude-runtime-sandbox.js').RuntimeAdditions} RuntimeAdditions
  */
 
 /**
@@ -96,77 +102,6 @@ export function setClaudeRuntimeAdditionsProvider(provider) {
 }
 
 const RUNTIME_ADDITIONS_TIMEOUT_MS = 3000;
-
-let runtimeSandboxProvider = null;
-
-/**
- * Registers the provider of the sandbox of sessions that must run isolated (the Foreman bridge's). It answers synchronously for a session id:
- * `null` for a session without a sandbox, `{ refuse }` when it must not run (its stored policy is missing, unreadable or malformed), or the
- * sandbox to apply. Unlike the additions provider it is never skipped on a timeout: a session that has a sandbox runs in it or not at all.
- * @param {((sessionId: string) => ({ refuse: string } | (RuntimeAdditions & { sandbox: Record<string, unknown> }) | null)) | null} provider
- */
-export function setClaudeRuntimeSandboxProvider(provider) {
-  runtimeSandboxProvider = provider;
-}
-
-/**
- * The sandbox of a session, or what refuses its run. A provider that throws refuses.
- * @param {string | undefined} sessionId
- */
-function resolveRuntimeSandbox(sessionId) {
-  if (!runtimeSandboxProvider || !sessionId) return null;
-  try {
-    return runtimeSandboxProvider(sessionId);
-  } catch (error) {
-    return { refuse: `The sandbox of this session could not be set up (${error?.message || error}), so it does not run.` };
-  }
-}
-
-/** The denial a sandboxed run gives a call nobody approved in time: plainly a timeout, not a decision. `timeoutMs` is the window that was in force. */
-// Consumed by the permission callback below and by the Claude runtime tests.
-export function approvalTimeoutMessage(toolName, timeoutMs) {
-  const window = timeoutMs >= 60_000 ? `${Math.round(timeoutMs / 60_000)} minute(s)` : timeoutMs >= 1000 ? `${Math.round(timeoutMs / 1000)} second(s)` : `${timeoutMs} millisecond(s)`;
-  return `Timed out waiting for the supervisor to approve this ${toolName} call: no answer within ${window}. This is a timeout, not a decision. The call was not run. Do not retry it; say in your reply that it still needs approval.`;
-}
-
-/**
- * The run's additions with its sandbox folded in: the environment is merged and the sandbox's denied tools join the ones no person can
- * un-deny.
- * @param {RuntimeAdditions} additions
- * @param {RuntimeAdditions & { sandbox: Record<string, unknown> }} sandbox
- * @returns {RuntimeAdditions}
- */
-export function withSandbox(additions, sandbox) {
-  return {
-    ...additions,
-    sandbox: sandbox.sandbox,
-    permissions: sandbox.permissions,
-    approvalTimeoutMs: sandbox.approvalTimeoutMs,
-    env: { ...additions.env, ...sandbox.env },
-    disallowedTools: [...new Set([...(additions.disallowedTools ?? []), ...(sandbox.disallowedTools ?? [])])],
-  };
-}
-
-/**
- * Folds a sandboxed run's additions into its SDK options: the SDK `sandbox` option, and the permission rules (merged by union into the flag
- * settings, never replacing what is there). Environment and denied tools are folded by the callers above.
- * @param {Record<string, any>} sdkOptions
- * @param {RuntimeAdditions} additions
- */
-export function applyRuntimeSandboxAdditions(sdkOptions, additions) {
-  if (!additions.sandbox) return;
-  sdkOptions.sandbox = additions.sandbox;
-  const current = sdkOptions.settings?.permissions ?? {};
-  const union = (a, b) => [...new Set([...(Array.isArray(a) ? a : []), ...(Array.isArray(b) ? b : [])])];
-  sdkOptions.settings = {
-    ...(sdkOptions.settings || {}),
-    permissions: {
-      ...current,
-      allow: union(current.allow, additions.permissions?.allow),
-      deny: union(current.deny, additions.permissions?.deny),
-    },
-  };
-}
 
 /**
  * Asks the registered provider what to add to a run. Never throws and never waits longer than a few seconds: a provider that
