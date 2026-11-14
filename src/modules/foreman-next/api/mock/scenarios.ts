@@ -1,5 +1,6 @@
 import type { DegradedMode } from '@/modules/foreman-next/api/contract';
 import type { MockStore } from '@/modules/foreman-next/api/mock/mockStore';
+import { ceilingQuestion } from '@/modules/foreman-next/api/mock/decideFixtures';
 import { RUN_FAILURE } from '@/modules/foreman-next/api/mock/workFixtures';
 import { at, HOUR_MS } from '@/modules/foreman-next/api/mock/time';
 
@@ -49,12 +50,10 @@ const failRun = (store: MockStore): void => {
 /** Used by the mock client to bend the sample data into one of the special states of wireframes §15 (the error and loading scenarios are handled by the client). */
 export function applyScenario(store: MockStore, scenario: MockScenario, now: number): void {
   if (scenario === 'empty') {
-    Object.assign(store, { goals: [], questions: [], review: [], history: [], runs: [], threads: {} });
+    Object.assign(store, { goals: [], questions: [], review: [], history: [], runs: [], threads: {}, alerts: [] });
     store.today = { briefing: null, trend: [], running: [] };
-    store.status = { ...store.status, blockingDecisions: 0, alerts: 0 };
   } else if (scenario === 'quiet') {
     store.questions = [];
-    store.status.blockingDecisions = 0;
     for (const goal of store.goals) {
       goal.waitsOnYou = { decisions: 0, rowsHeld: 0 };
       for (const batch of goal.batches) {
@@ -63,6 +62,7 @@ export function applyScenario(store: MockStore, scenario: MockScenario, now: num
     }
     store.today.briefing?.sentences.splice(2, 1, 'Nothing needs you; everything is moving.');
   } else if (scenario === 'budget-paused') {
+    store.questions = [ceilingQuestion(now), ...store.questions];
     store.status = {
       ...store.status,
       state: 'paused',

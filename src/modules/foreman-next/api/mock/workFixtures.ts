@@ -61,6 +61,7 @@ export const goalsFixture = (now: number): GoalDetail[] => [
     spentUsd: 12.4,
     daysTaken: null,
     spent: { usd: 12.4, shareUsd: 40, firstPassYield: 91, usdPerRow: 0.38 },
+    study: null,
     strategy: {
       ...INBOX_STRATEGY_V2,
       replannedAt: at(now, -3 * HOUR_MS),
@@ -87,6 +88,7 @@ export const goalsFixture = (now: number): GoalDetail[] => [
     spentUsd: 0,
     daysTaken: null,
     spent: { usd: 0, shareUsd: 30, firstPassYield: 0, usdPerRow: 0 },
+    study: null,
     strategy: null,
     batches: [],
   },
@@ -108,6 +110,7 @@ export const goalsFixture = (now: number): GoalDetail[] => [
     spentUsd: 0,
     daysTaken: null,
     spent: { usd: 0, shareUsd: 45, firstPassYield: 0, usdPerRow: 0 },
+    study: null,
     strategy: null,
     batches: [],
   },
@@ -129,6 +132,7 @@ export const goalsFixture = (now: number): GoalDetail[] => [
     spentUsd: 3.1,
     daysTaken: 2,
     spent: { usd: 3.1, shareUsd: 5, firstPassYield: 83, usdPerRow: 0.26 },
+    study: null,
     strategy: { version: 1, replannedAt: at(now, -6 * DAY_MS), reason: 'first plan', status: 'approved', steps: ['Build the 12 rows in two batches'], risks: [], previous: null },
     batches: [],
   },
@@ -161,9 +165,10 @@ const runsBase = (): RunDetail[] => [
     sessionId: 'sess-t2-layout',
     failure: null,
     decisions: [
-      { turn: 1, choice: 'continue', maker: { type: 'code' }, model: null, costUsd: null, quote: null, cardId: null },
-      { turn: 5, choice: 'continue', maker: { type: 'code' }, model: null, costUsd: null, quote: null, cardId: null },
+      { id: 'run-t2-d1', turn: 1, choice: 'continue', maker: { type: 'code' }, model: null, costUsd: null, quote: null, cardId: null },
+      { id: 'run-t2-d5', turn: 5, choice: 'continue', maker: { type: 'code' }, model: null, costUsd: null, quote: null, cardId: null },
       {
+        id: 'run-t2-d9',
         turn: 9,
         choice: 'steer',
         maker: { type: 'role', role: 'supervisor', version: 2 },
@@ -172,7 +177,7 @@ const runsBase = (): RunDetail[] => [
         quote: "Reuse useConversationList; don't add a second fetch.",
         cardId: 'dec-steer-9',
       },
-      { turn: 14, choice: 'continue', maker: { type: 'code' }, model: null, costUsd: null, quote: null, cardId: null },
+      { id: 'run-t2-d14', turn: 14, choice: 'continue', maker: { type: 'code' }, model: null, costUsd: null, quote: null, cardId: null },
     ],
     worker: {
       now: 'editing InboxLayout.tsx',
@@ -205,7 +210,7 @@ const runsBase = (): RunDetail[] => [
     control: 'foreman',
     sessionId: 'sess-t1-status-filter',
     failure: null,
-    decisions: [{ turn: 22, choice: 'pass', maker: { type: 'role', role: 'judge', version: 4 }, model: 'Opus', costUsd: 0.12, quote: null, cardId: null }],
+    decisions: [{ id: 'run-t1-d22', turn: 22, choice: 'pass', maker: { type: 'role', role: 'judge', version: 4 }, model: 'Opus', costUsd: 0.12, quote: null, cardId: null }],
     worker: null,
     verdict: {
       check: { command: 'pnpm verify', exitCode: 0, cleanCopy: true, outputUrl: 'http://127.0.0.1:4111/artifacts/t1-verify' },
@@ -245,8 +250,8 @@ const runsBase = (): RunDetail[] => [
     sessionId: 'sess-desk-boss',
     failure: null,
     decisions: [
-      { turn: 24, choice: 'continue', maker: { type: 'code' }, model: null, costUsd: null, quote: null, cardId: null },
-      { turn: 31, choice: 'continue', maker: { type: 'code' }, model: null, costUsd: null, quote: null, cardId: null },
+      { id: 'run-ho-d24', turn: 24, choice: 'continue', maker: { type: 'code' }, model: null, costUsd: null, quote: null, cardId: null },
+      { id: 'run-ho-d31', turn: 31, choice: 'continue', maker: { type: 'code' }, model: null, costUsd: null, quote: null, cardId: null },
     ],
     worker: { now: 'editing ContactImport.tsx', changed: { files: 3, added: 96, removed: 12 }, tools: ['Read', 'Edit', 'Bash(pnpm test)'], says: 'import mapping done, tests next' },
     verdict: null,

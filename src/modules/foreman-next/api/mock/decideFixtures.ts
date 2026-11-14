@@ -7,9 +7,11 @@ export const questionsFixture = (now: number): OwnerQuestion[] => [
     id: 'q-bulk',
     title: 'Bulk actions in v1?',
     repo: 'desk',
+    goalId: 'g-inbox',
     goal: 'desk · Inbox',
     delegationKind: 'product-scope',
     delegationLevel: 'ask',
+    delegable: true,
     holdsRows: 20,
     askedAt: at(now, -2 * HOUR_MS),
     context:
@@ -35,9 +37,11 @@ export const questionsFixture = (now: number): OwnerQuestion[] => [
     id: 'q-realtime',
     title: 'Realtime transport',
     repo: 'desk',
+    goalId: 'g-inbox',
     goal: 'desk · Inbox',
     delegationKind: 'product-scope',
     delegationLevel: 'ask',
+    delegable: true,
     holdsRows: 15,
     askedAt: at(now, -2 * HOUR_MS - 10 * MINUTE_MS),
     context: 'Live updates in the conversation list can use WebSocket or server-sent events. Rows 110-124 differ by transport.',
@@ -59,11 +63,33 @@ export const questionsFixture = (now: number): OwnerQuestion[] => [
   },
 ];
 
+/** Used by the budget-paused scenario: the owner-only question that lifts the pause, which can never be delegated. */
+export const ceilingQuestion = (now: number): OwnerQuestion => ({
+  id: 'q-ceiling',
+  title: 'Raise the monthly API ceiling?',
+  repo: 'desk',
+  goalId: 'g-inbox',
+  goal: 'desk · Inbox',
+  delegationKind: 'charter',
+  delegationLevel: 'ask',
+  delegable: false,
+  holdsRows: 55,
+  askedAt: at(now, -20 * MINUTE_MS),
+  context: 'The $200 API ceiling is reached for this month. Foreman resumes on the 1st, or as soon as you raise it.',
+  options: [
+    { id: 'A', label: 'Raise it to $260 this month', rowsDelta: 55, cost: '+$60', risk: 'over the plan' },
+    { id: 'B', label: 'Wait for the 1st', rowsDelta: 0, cost: 'none', risk: 'Inbox slips by two weeks' },
+  ],
+  recommendation: null,
+  ifUnanswered: 'Everything stays paused until the 1st.',
+});
+
 /** Used by the mock store as the items Foreman decided alone, each with its veto window (Decide > Review). */
 export const reviewFixture = (now: number): ReviewItem[] => [
   {
     id: 'r-rule',
     kind: 'rule',
+    subject: { kind: 'rule', id: 'rule-hooks-state-reset' },
     title: 'Adopted rule hooks/state-reset in desk',
     evidence: 'E7 · +18 points over 12 rows',
     detail: 'Rule: reset local state when the entity id changes. Added as .claude/rules/hooks-state.md in desk. The judge failed 3 rows in hooks/ for stale state; the 6 rows since pass.',
@@ -72,6 +98,7 @@ export const reviewFixture = (now: number): ReviewItem[] => [
   {
     id: 'r-lesson',
     kind: 'lesson',
+    subject: { kind: 'lesson', id: 'lesson-ui-copy-i18n' },
     title: 'New lesson: all UI copy comes from i18n',
     evidence: 'from 2 judge failures',
     detail: 'Do: take every user-visible string from the i18n catalogue. Do not: hard-code English in components, even in empty states. Rows 11 and 36 failed for hard-coded copy.',
@@ -80,20 +107,31 @@ export const reviewFixture = (now: number): ReviewItem[] => [
   {
     id: 'r-replan',
     kind: 'replan',
+    subject: { kind: 'goal', id: 'g-inbox' },
     title: 'Re-planned desk · Inbox (strategy v2)',
     evidence: 'after your scope answer',
     detail: 'Strategy v2 puts the fix batch first, then the contract batch, then layout, components and integration. Rows 88-94 move behind your bulk-actions answer.',
     closesAt: at(now, 52 * MINUTE_MS),
   },
+  {
+    id: 'r-retry',
+    kind: 'delegated-decision',
+    subject: { kind: 'decision', id: 'h-retry-1' },
+    title: 'Retried t1-status-filter after a judge failure',
+    evidence: 'retry-batch · decide, tell me (6h veto)',
+    detail: 'Row 11 failed on hard-coded copy. Foreman sent the batch back with the judge\'s reason, and the second round passed.',
+    closesAt: at(now, 5 * HOUR_MS),
+  },
 ];
 
 /** Used by the mock store as the decisions already made (Decide > History). */
 export const historyFixture = (now: number): HistoryEntry[] => [
-  { id: 'dec-steer-9', title: 'Steer at turn 9 · t2-layout', goal: 'desk · Inbox', decidedAt: at(now, -40 * MINUTE_MS), decidedBy: 'foreman', choice: 'Steer', agreedWithRecommendation: null },
-  { id: 'h-scope-i18n', title: 'Which languages ship in v1?', goal: 'desk · Inbox', decidedAt: at(now, -1 * DAY_MS), decidedBy: 'owner', choice: 'English only', agreedWithRecommendation: true },
-  { id: 'h-replan-1', title: 'Re-plan Inbox after the scope answer', goal: 'desk · Inbox', decidedAt: at(now, -1 * DAY_MS - 2 * HOUR_MS), decidedBy: 'foreman', choice: 'Re-plan', agreedWithRecommendation: null },
-  { id: 'h-export', title: 'CSV export of conversations', goal: 'desk · Inbox', decidedAt: at(now, -5 * DAY_MS), decidedBy: 'owner', choice: 'Full option', agreedWithRecommendation: true },
-  { id: 'h-auth', title: 'Session handling', goal: 'desk · Inbox', decidedAt: at(now, -8 * DAY_MS), decidedBy: 'owner', choice: 'Donor', agreedWithRecommendation: false },
+  { id: 'dec-steer-9', title: 'Steer at turn 9 · t2-layout', goalId: 'g-inbox', goal: 'desk · Inbox', delegationKind: null, decidedAt: at(now, -40 * MINUTE_MS), decidedBy: 'foreman', choice: 'Steer', agreedWithRecommendation: null },
+  { id: 'h-retry-1', title: 'Retried t1-status-filter after a judge failure', goalId: 'g-inbox', goal: 'desk · Inbox', delegationKind: 'retry-batch', decidedAt: at(now, -1 * HOUR_MS), decidedBy: 'foreman', choice: 'Retry', agreedWithRecommendation: null },
+  { id: 'h-scope-i18n', title: 'Which languages ship in v1?', goalId: 'g-inbox', goal: 'desk · Inbox', delegationKind: 'product-scope', decidedAt: at(now, -1 * DAY_MS), decidedBy: 'owner', choice: 'English only', agreedWithRecommendation: true },
+  { id: 'h-replan-1', title: 'Re-plan Inbox after the scope answer', goalId: 'g-inbox', goal: 'desk · Inbox', delegationKind: 'replan-goal', decidedAt: at(now, -1 * DAY_MS - 2 * HOUR_MS), decidedBy: 'foreman', choice: 'Re-plan', agreedWithRecommendation: null },
+  { id: 'h-export', title: 'CSV export of conversations', goalId: 'g-inbox', goal: 'desk · Inbox', delegationKind: 'product-scope', decidedAt: at(now, -5 * DAY_MS), decidedBy: 'owner', choice: 'Full option', agreedWithRecommendation: true },
+  { id: 'h-auth', title: 'Session handling', goalId: 'g-inbox', goal: 'desk · Inbox', delegationKind: 'product-scope', decidedAt: at(now, -8 * DAY_MS), decidedBy: 'owner', choice: 'Donor', agreedWithRecommendation: false },
 ];
 
 /** Used by the mock store as the decision cards behind runs, history and chat links. */
@@ -101,6 +139,9 @@ export const decisionsFixture = (now: number): DecisionRecord[] => [
   {
     id: 'dec-steer-9',
     kind: 'worker-progress',
+    delegationKind: null,
+    goalId: 'g-inbox',
+    runId: 'run-t2',
     title: 'Steer at turn 9 · t2-layout',
     maker: { type: 'role', role: 'supervisor', version: 2 },
     model: 'Opus',
@@ -120,6 +161,9 @@ export const decisionsFixture = (now: number): DecisionRecord[] => [
       (entry): DecisionRecord => ({
         id: entry.id,
         kind: entry.decidedBy === 'owner' ? 'owner-question' : 'rework',
+        delegationKind: entry.delegationKind,
+        goalId: entry.goalId,
+        runId: null,
         title: entry.title,
         maker: entry.decidedBy === 'owner' ? { type: 'owner' } : { type: 'role', role: 'supervisor', version: 2 },
         model: entry.decidedBy === 'owner' ? null : 'Opus',

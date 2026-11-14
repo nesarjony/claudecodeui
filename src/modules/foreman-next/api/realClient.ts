@@ -23,13 +23,14 @@ async function call<T>(endpoint: EndpointSpec, request: Call = {}): Promise<T> {
   return payload.data;
 }
 
-/** Used by createForemanApi to talk to Foreman's HTTP API once slice 4b ships it; nothing selects it before then. */
+/** Used by loadForemanApi to talk to Foreman's HTTP API through cloudcli's proxy once slice 4b ships it. */
 export function createRealApi(): ForemanApi {
   return {
     status: () => call(ENDPOINTS.status),
     pauseAll: () => call(ENDPOINTS.pauseAll),
     resumeAll: () => call(ENDPOINTS.resumeAll),
     stopAll: () => call(ENDPOINTS.stopAll),
+    alerts: () => call(ENDPOINTS.alerts),
     serviceLog: () => call(ENDPOINTS.serviceLog),
     today: () => call(ENDPOINTS.today),
     questions: () => call(ENDPOINTS.questions),
@@ -40,6 +41,7 @@ export function createRealApi(): ForemanApi {
     history: () => call(ENDPOINTS.history),
     decision: (id) => call(ENDPOINTS.decision, { params: { id } }),
     rateDecision: (id, feedback) => call(ENDPOINTS.rateDecision, { params: { id }, body: feedback }),
+    repos: () => call(ENDPOINTS.repos),
     goals: () => call(ENDPOINTS.goals),
     goal: (id) => call(ENDPOINTS.goal, { params: { id } }),
     createGoal: (request) => call(ENDPOINTS.createGoal, { body: request }),
@@ -55,9 +57,10 @@ export function createRealApi(): ForemanApi {
     takeOverRun: (id) => call(ENDPOINTS.takeOverRun, { params: { id } }),
     handBackRun: (id) => call(ENDPOINTS.handBackRun, { params: { id } }),
     replayRun: (id, fromStep) => call(ENDPOINTS.replayRun, { params: { id, step: fromStep } }),
-    chatThread: (subject) => call(ENDPOINTS.chatThread, { query: { kind: subject.kind, id: subject.id } }),
+    chatThread: (goalId) => call(ENDPOINTS.chatThread, { query: { goalId } }),
     sendChat: (request) => call(ENDPOINTS.sendChat, { body: request }),
     undoChatActions: (actionsId) => call(ENDPOINTS.undoChatActions, { params: { id: actionsId } }),
+    rememberChatMessage: (messageId) => call(ENDPOINTS.rememberChatMessage, { params: { id: messageId } }),
     sessionSupervision: (sessionId) => call(ENDPOINTS.sessionSupervision, { params: { id: sessionId } }),
     handOverSession: (sessionId, goal) => call(ENDPOINTS.handOverSession, { params: { id: sessionId }, body: { goal: goal ?? null } }),
     takeBackSession: (sessionId) => call(ENDPOINTS.takeBackSession, { params: { id: sessionId } }),
@@ -65,5 +68,6 @@ export function createRealApi(): ForemanApi {
     setDelegation: (kind, change) => call(ENDPOINTS.setDelegation, { params: { kind }, body: change }),
     attention: () => call(ENDPOINTS.attention),
     setAttention: (policy) => call(ENDPOINTS.setAttention, { body: policy }),
+    settings: () => call(ENDPOINTS.settings),
   };
 }

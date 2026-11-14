@@ -1,4 +1,5 @@
-import type { AttentionPolicy, DelegationRule } from '@/modules/foreman-next/api/contract';
+import type { AttentionPolicy, DelegationRule, ForemanSettings, RepoSettings } from '@/modules/foreman-next/api/contract';
+import { at, MINUTE_MS } from '@/modules/foreman-next/api/mock/time';
 
 /** Used by the mock store as the trust ladder; one kind already qualifies for a suggestion. */
 export const delegationFixture = (): DelegationRule[] => [
@@ -25,3 +26,22 @@ export const attentionFixture = (): AttentionPolicy => ({
   quietTo: '08:00',
   briefingAt: '08:00',
 });
+
+/** Used by the mock store as the read-only lines of Settings. */
+export const settingsFixture = (): ForemanSettings => ({
+  budget: { monthlyUsd: 200, paceUsdPerDay: 6.5, goalShares: [{ goal: 'Inbox', usd: 40 }] },
+  minimax: { stopAtPct: 80, autoResume: true },
+  models: { foremanRoles: 'Opus (API credit)', workers: 'desk workers MiniMax-M3 only', sideRuns: 'side runs MiniMax' },
+  roles: [
+    { name: 'Strategist', version: 3 },
+    { name: 'Supervisor', version: 3 },
+    { name: 'Judge', version: 4 },
+    { name: 'Coach', version: 1 },
+  ],
+});
+
+/** Used by the mock store as the repos Foreman works on. */
+export const reposFixture = (now: number): RepoSettings[] => [
+  { name: 'desk', checks: 'pnpm verify', protectedPaths: 7, indexedAt: at(now, -75 * MINUTE_MS) },
+  { name: 'scratch', checks: 'npm test', protectedPaths: 2, indexedAt: null },
+];

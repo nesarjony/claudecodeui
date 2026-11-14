@@ -1,35 +1,27 @@
 import { ApiRequestError } from '@/shared/api';
-import type {
-  ChatMessage,
-  DecisionRecord,
-  DelegationRule,
-  ForemanApi,
-  GoalDetail,
-  RunDetail,
-  RunStageId,
-  SessionSupervision,
-} from '@/modules/foreman-next/api/contract';
-import { clone, find, isLiveHandOver, newGoalDetail, newHandedOverRun, notFound, summaryOf, threadKey } from '@/modules/foreman-next/api/mock/mockHelpers';
+import type { ChatMessage, DelegationRule, ForemanApi, GoalDetail, RunDetail, RunStageId, SessionSupervision } from '@/modules/foreman-next/api/contract';
+import { clone, find, firstStrategy, isLiveHandOver, newGoalDetail, newHandedOverRun, notFound, studySteps, summaryOf } from '@/modules/foreman-next/api/mock/mockHelpers';
 import { createMockStore } from '@/modules/foreman-next/api/mock/mockStore';
 import type { MockStore } from '@/modules/foreman-next/api/mock/mockStore';
 import { applyScenario } from '@/modules/foreman-next/api/mock/scenarios';
 import type { MockScenario } from '@/modules/foreman-next/api/mock/scenarios';
 import { at, MINUTE_MS } from '@/modules/foreman-next/api/mock/time';
 
-type MockOptions = { scenario?: MockScenario; latencyMs?: number; now?: number };
+type MockOptions = { scenario?: MockScenario; latencyMs?: number; studyMs?: number; now?: number };
 
 const STAGE_ORDER: RunStageId[] = ['brief', 'worker', 'checks', 'judge', 'close'];
 
 /**
- * Used by createForemanApi while slice 4b has no endpoints: the whole contract answered from sample data that actions
+ * Used by loadForemanApi while slice 4b has no endpoints: the whole contract answered from sample data that actions
  * change in memory. The scenario bends the data into one of the special states, so every screen can be seen in each.
  */
-export function createMockApi({ scenario = 'default', latencyMs = 150, now = Date.now() }: MockOptions = {}): ForemanApi {
+export function createMockApi({ scenario = 'default', latencyMs = 150, studyMs = 6000, now = Date.now() }: MockOptions = {}): ForemanApi {
   const store: MockStore = createMockStore(now);
   applyScenario(store, scenario, now);
   let goalCount = 0;
   let messageCount = 0;
   let handOverCount = 0;
+  const studyEnds = new Map<string, number>();
 
   const respond = async <T>(name: keyof ForemanApi, produce: () => T): Promise<T> => {
     if (scenario === 'loading') return new Promise<T>(() => undefined);
@@ -42,23 +34,37 @@ export function createMockApi({ scenario = 'default', latencyMs = 150, now = Dat
     return clone(produce());
   };
 
-  const goal = (id: string): GoalDetail => find(store.goals, id, 'goal');
-  const run = (id: string): RunDetail => find(store.runs, id, 'run');
-  const refreshStatus = (): void => {
-    store.status.blockingDecisions = store.questions.length;
+  const advanceStudy = (): void => {
+    const current = Date.now();
+    for (const [goalId, endsAt] of studyEnds) {
+      const target = store.goals.find((candidate) => candidate.id === goalId);
+      if (!target) continue;
+      if (current >= endsAt) {
+        Object.assign(target, { state: 'queued', study: null, hasStrategy: true, strategy: firstStrategy(current) });
+        studyEnds.delete(goalId);
+      } else {
+        target.study = studySteps(1 - (endsAt - current) / studyMs);
+      }
+    }
   };
 
+  const goal = (id: string): GoalDetail => {
+    advanceStudy();
+    return find(store.goals, id, 'goal');
+  };
+  const run = (id: string): RunDetail => find(store.runs, id, 'run');
   const setRun = (id: string, change: (target: RunDetail) => void): RunDetail => {
     const target = run(id);
     change(target);
     return target;
   };
-
   const setGoal = (id: string, change: (target: GoalDetail) => void): GoalDetail => {
     const target = goal(id);
     change(target);
     return target;
   };
+  const findMessage = (predicate: (message: ChatMessage) => boolean): ChatMessage | undefined => Object.values(store.threads).flat().find(predicate);
+  const threadOf = (goalId: string | null): ChatMessage[] => store.threads[goalId ?? ''] ?? [];
 
   const replyTo = (text: string, delivery: string): ChatMessage => ({
     id: `reply-${(messageCount += 1)}`,
@@ -70,17 +76,27 @@ export function createMockApi({ scenario = 'default', latencyMs = 150, now = Dat
         : `Passed on at the next safe point: "${text}". Nothing in the current step is interrupted.`,
     evidence: [],
     actions: null,
+    remembered: null,
   });
 
+  const supervisionOf = (sessionId: string): SessionSupervision => {
+    const handed = store.runs.find((candidate) => isLiveHandOver(candidate) && candidate.sessionId === sessionId);
+    if (handed) return { state: 'handed-over', runId: handed.id, goal: handed.goal, since: at(Date.now(), -handed.elapsedMinutes * MINUTE_MS) };
+    const worker = store.runs.find((candidate) => candidate.kind === 'worker' && candidate.sessionId === sessionId);
+    if (!worker) return { state: 'unsupervised' };
+    return { state: 'worker', runId: worker.id, goal: worker.goal ?? '', batch: worker.batch, model: worker.model, sandboxed: worker.sandboxed, control: worker.control };
+  };
+
   return {
-    status: () => respond('status', () => store.status),
+    status: () => respond('status', () => ({ ...store.status, alerts: store.alerts.length, blockingDecisions: store.questions.length })),
     pauseAll: () => respond('pauseAll', () => Object.assign(store.status, { state: 'paused', pauseReason: 'owner' })),
     resumeAll: () => respond('resumeAll', () => Object.assign(store.status, { state: 'running', pauseReason: null, resumesAt: null })),
     stopAll: () => respond('stopAll', () => Object.assign(store.status, { state: 'stopped', pauseReason: 'owner' })),
+    alerts: () => respond('alerts', () => store.alerts),
     serviceLog: () => respond('serviceLog', () => store.serviceLog),
     today: () => respond('today', () => ({ ...store.today, running: [...store.today.running, ...store.runs.filter(isLiveHandOver).map(summaryOf)] })),
-    questions: () => respond('questions', () => store.questions),
-    answerQuestion: (id, _answer) =>
+    questions: () => respond('questions', () => [...store.questions].sort((first, second) => second.holdsRows - first.holdsRows)),
+    answerQuestion: (id) =>
       respond('answerQuestion', () => {
         const question = find(store.questions, id, 'question');
         store.questions = store.questions.filter((candidate) => candidate.id !== id);
@@ -88,17 +104,16 @@ export function createMockApi({ scenario = 'default', latencyMs = 150, now = Dat
           for (const batch of target.batches) {
             if (batch.waitsOn?.questionId === id) Object.assign(batch, { state: 'queued', waitsOn: null });
           }
-          if (target.name === question.goal.split(' · ')[1]) {
+          if (target.id === question.goalId) {
             target.waitsOnYou = {
               decisions: Math.max(0, target.waitsOnYou.decisions - 1),
               rowsHeld: Math.max(0, target.waitsOnYou.rowsHeld - question.holdsRows),
             };
           }
         }
-        refreshStatus();
       }),
     review: () => respond('review', () => store.review),
-    vetoReviewItem: (id, _reason) =>
+    vetoReviewItem: (id) =>
       respond('vetoReviewItem', () => {
         find(store.review, id, 'review item');
         store.review = store.review.filter((item) => item.id !== id);
@@ -110,14 +125,19 @@ export function createMockApi({ scenario = 'default', latencyMs = 150, now = Dat
       }),
     history: () => respond('history', () => store.history),
     decision: (id) => respond('decision', () => find(store.decisions, id, 'decision')),
-    rateDecision: (id, feedback) =>
-      respond('rateDecision', (): DecisionRecord => Object.assign(find(store.decisions, id, 'decision'), { feedback })),
-    goals: () => respond('goals', () => ({ programme: store.programme, goals: store.goals, handedOver: store.runs.filter(isLiveHandOver).map(summaryOf) })),
+    rateDecision: (id, feedback) => respond('rateDecision', () => Object.assign(find(store.decisions, id, 'decision'), { feedback })),
+    repos: () => respond('repos', () => store.repos),
+    goals: () =>
+      respond('goals', () => {
+        advanceStudy();
+        return { programme: store.programme, goals: store.goals, handedOver: store.runs.filter(isLiveHandOver).map(summaryOf) };
+      }),
     goal: (id) => respond('goal', () => goal(id)),
     createGoal: (request) =>
       respond('createGoal', () => {
         goalCount += 1;
-        const created = newGoalDetail(request, `g-new-${goalCount}`, now);
+        const created = newGoalDetail(request, `g-new-${goalCount}`);
+        studyEnds.set(created.id, Date.now() + studyMs);
         store.goals.push(created);
         return created;
       }),
@@ -159,41 +179,37 @@ export function createMockApi({ scenario = 'default', latencyMs = 150, now = Dat
           target.stages = STAGE_ORDER.map((stage, position) => ({ id: stage, state: position < from ? 'done' : position === from ? 'running' : 'pending' }));
         }),
       ),
-    chatThread: (subject) =>
-      respond('chatThread', () => ({
-        subject: store.subjects.find((candidate) => candidate.kind === subject.kind && candidate.id === subject.id) ?? { ...subject, label: subject.id ?? 'Foreman' },
-        subjects: store.subjects,
-        messages: store.threads[threadKey(subject)] ?? [],
-      })),
-    sendChat: ({ subject, text, delivery }) =>
+    chatThread: (goalId) => respond('chatThread', () => ({ goalId, goals: store.chatGoals, messages: threadOf(goalId) })),
+    sendChat: ({ goalId, text, delivery }) =>
       respond('sendChat', () => {
-        const owner: ChatMessage = { id: `owner-${(messageCount += 1)}`, role: 'owner', at: at(Date.now(), 0), text, evidence: [], actions: null };
+        const owner: ChatMessage = { id: `owner-${(messageCount += 1)}`, role: 'owner', at: at(Date.now(), 0), text, evidence: [], actions: null, remembered: null };
         const reply = replyTo(text, delivery);
-        store.threads[threadKey(subject)] = [...(store.threads[threadKey(subject)] ?? []), owner, reply];
+        store.threads[goalId ?? ''] = [...threadOf(goalId), owner, reply];
         return [owner, reply];
       }),
     undoChatActions: (actionsId) =>
       respond('undoChatActions', () => {
-        const message = Object.values(store.threads)
-          .flat()
-          .find((candidate) => candidate.actions?.id === actionsId);
+        const message = findMessage((candidate) => candidate.actions?.id === actionsId);
         if (!message?.actions) throw notFound('action');
         message.actions.undone = true;
         return message;
       }),
-    sessionSupervision: (sessionId) =>
-      respond('sessionSupervision', (): SessionSupervision => {
-        const handed = store.runs.find((candidate) => isLiveHandOver(candidate) && candidate.sessionId === sessionId);
-        if (handed) return { state: 'handed-over', runId: handed.id, goal: handed.goal, since: at(Date.now(), -handed.elapsedMinutes * MINUTE_MS) };
-        return { state: store.runs.some((candidate) => candidate.kind === 'worker' && candidate.sessionId === sessionId) ? 'worker' : 'unsupervised' };
+    rememberChatMessage: (messageId) =>
+      respond('rememberChatMessage', () => {
+        const message = findMessage((candidate) => candidate.id === messageId);
+        if (!message) throw notFound('message');
+        const inGoalThread = Object.entries(store.threads).some(([goalId, thread]) => goalId !== '' && thread.includes(message));
+        message.remembered = inGoalThread ? 'goal' : 'global';
+        return message;
       }),
-    handOverSession: (sessionId, goal) =>
+    sessionSupervision: (sessionId) => respond('sessionSupervision', () => supervisionOf(sessionId)),
+    handOverSession: (sessionId, goalText) =>
       respond('handOverSession', (): RunDetail => {
         if (store.runs.some((candidate) => candidate.sessionId === sessionId && (candidate.kind === 'worker' || isLiveHandOver(candidate)))) {
           throw new ApiRequestError('This session is already supervised by Foreman', { code: 'conflict', status: 409 });
         }
         handOverCount += 1;
-        const handed = newHandedOverRun(sessionId, goal ?? null, `run-handover-${handOverCount}`);
+        const handed = newHandedOverRun(sessionId, goalText ?? null, `run-handover-${handOverCount}`);
         store.runs.push(handed);
         return handed;
       }),
@@ -215,5 +231,6 @@ export function createMockApi({ scenario = 'default', latencyMs = 150, now = Dat
       }),
     attention: () => respond('attention', () => store.attention),
     setAttention: (policy) => respond('setAttention', () => Object.assign(store.attention, policy)),
+    settings: () => respond('settings', () => store.settings),
   };
 }

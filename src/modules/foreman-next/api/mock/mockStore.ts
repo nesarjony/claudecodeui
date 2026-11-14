@@ -1,21 +1,24 @@
 import type {
   AttentionPolicy,
+  AlertItem,
+  ChatGoal,
   ChatMessage,
-  ChatSubject,
   DecisionRecord,
   DelegationRule,
+  ForemanSettings,
   ForemanStatus,
   GoalDetail,
   HistoryEntry,
   OwnerQuestion,
+  RepoSettings,
   ReviewItem,
   RunDetail,
   TodaySnapshot,
 } from '@/modules/foreman-next/api/contract';
-import { chatSubjectsFixture, inboxChatFixture } from '@/modules/foreman-next/api/mock/chatFixtures';
+import { chatGoalsFixture, inboxChatFixture } from '@/modules/foreman-next/api/mock/chatFixtures';
 import { decisionsFixture, historyFixture, questionsFixture, reviewFixture } from '@/modules/foreman-next/api/mock/decideFixtures';
-import { attentionFixture, delegationFixture } from '@/modules/foreman-next/api/mock/settingsFixtures';
-import { serviceLogFixture, statusFixture, todayFixture } from '@/modules/foreman-next/api/mock/shellFixtures';
+import { attentionFixture, delegationFixture, reposFixture, settingsFixture } from '@/modules/foreman-next/api/mock/settingsFixtures';
+import { alertsFixture, serviceLogFixture, statusFixture, todayFixture } from '@/modules/foreman-next/api/mock/shellFixtures';
 import { goalsFixture, runsFixture } from '@/modules/foreman-next/api/mock/workFixtures';
 
 export type MockStore = {
@@ -28,10 +31,13 @@ export type MockStore = {
   programme: string;
   goals: GoalDetail[];
   runs: RunDetail[];
-  subjects: ChatSubject[];
+  chatGoals: ChatGoal[];
   threads: Record<string, ChatMessage[]>;
   delegation: DelegationRule[];
   attention: AttentionPolicy;
+  settings: ForemanSettings;
+  repos: RepoSettings[];
+  alerts: AlertItem[];
   serviceLog: string[];
 };
 
@@ -46,9 +52,12 @@ export const createMockStore = (now: number): MockStore => ({
   programme: 'desk parity, 47 screens',
   goals: goalsFixture(now),
   runs: runsFixture(),
-  subjects: chatSubjectsFixture(),
-  threads: { 'goal:g-inbox': inboxChatFixture(now) },
+  chatGoals: chatGoalsFixture(),
+  threads: { 'g-inbox': inboxChatFixture(now) },
   delegation: delegationFixture(),
   attention: attentionFixture(),
+  settings: settingsFixture(),
+  repos: reposFixture(now),
+  alerts: alertsFixture(now),
   serviceLog: serviceLogFixture(now),
 });

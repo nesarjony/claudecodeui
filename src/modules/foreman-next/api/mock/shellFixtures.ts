@@ -1,4 +1,4 @@
-import type { ForemanStatus, TodaySnapshot } from '@/modules/foreman-next/api/contract';
+import type { AlertItem, ForemanStatus, TodaySnapshot } from '@/modules/foreman-next/api/contract';
 import { at, DAY_MS, HOUR_MS, MINUTE_MS } from '@/modules/foreman-next/api/mock/time';
 
 /** Used by the mock store as the status strip's starting state. */
@@ -45,3 +45,8 @@ export const serviceLogFixture = (now: number): string[] =>
     [-2 * HOUR_MS, 'inbox: 2 owner questions pending'],
     [-20 * MINUTE_MS, 'run t2-layout: turn 14 recorded, decision continue (code)'],
   ].map(([offset, line]) => `${at(now, Number(offset))} ${line}`);
+
+/** Used by the mock store as the alerts behind the status strip's count. */
+export const alertsFixture = (now: number): AlertItem[] => [
+  { id: 'al-stuck', severity: 'warning', text: 't2-layout went 9 turns without a commit', at: at(now, -12 * MINUTE_MS), subject: { kind: 'run', id: 'run-t2' } },
+];
