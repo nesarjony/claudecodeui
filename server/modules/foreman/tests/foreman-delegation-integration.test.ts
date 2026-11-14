@@ -118,6 +118,8 @@ rl.on('close', () => process.exit(0));
 
 
 const TOKEN = 'delegation-integration-token';
+// What cloudcli presents to Foreman's intake: a token of its own, since the push never uses the bridge token.
+const INTAKE_TOKEN = 'delegation-integration-intake-token';
 // What Foreman's runtime config carries for Milestone 6 (two of its default agents, the test runner's list shortened).
 const DELEGATION = {
   enabled: true,
@@ -146,6 +148,7 @@ let foremanServer: http.Server;
 let database: typeof import('@/modules/database/index.js');
 let createOwnerSession: (message: string) => string;
 const pushed: PushedEvent[] = [];
+const pushedWith: string[] = [];
 const restore: Array<() => void> = [];
 
 function setEnv(name: string, value: string): void {
@@ -169,6 +172,8 @@ before(async () => {
   await writeFile(logFile, '');
   const tokenFile = path.join(directory, 'bridge-token');
   await writeFile(tokenFile, TOKEN, { mode: 0o600 });
+  const eventsTokenFile = path.join(directory, 'intake-token');
+  await writeFile(eventsTokenFile, INTAKE_TOKEN, { mode: 0o600 });
 
   foremanServer = http.createServer((request, response) => {
     let body = '';
@@ -183,6 +188,7 @@ before(async () => {
       if (request.method === 'POST' && request.url?.endsWith('/foreman/events')) {
         // Any 2xx acknowledges the event; a repeat of one Foreman already has is acknowledged too.
         pushed.push(JSON.parse(body));
+        pushedWith.push(String(request.headers.authorization));
         response.end('{}');
         return;
       }
@@ -197,6 +203,7 @@ before(async () => {
   setEnv('FAKE_CLAUDE_LOG', logFile);
   setEnv('DATABASE_PATH', path.join(directory, 'auth.db'));
   setEnv('FOREMAN_BRIDGE_TOKEN_FILE', tokenFile);
+  setEnv('FOREMAN_EVENTS_TOKEN_FILE', eventsTokenFile);
   setEnv('FOREMAN_EVENTS_URL', `http://127.0.0.1:${(foremanServer.address() as AddressInfo).port}/foreman/events`);
   setEnv('CLOUDCLI_ANTHROPIC_API_KEY_FILE', path.join(directory, 'no-key'));
 
@@ -397,6 +404,7 @@ test('what a run did is stored as numbered events for Foreman and pushed to its 
   assert.equal(event.sequence, 1);
   assert.equal(event.payload.text, 'hello', 'the text of the turn\'s result');
   assert.equal(event.payload.commitCount, 0, 'the project is no repository, so nothing was committed');
+  assert.equal(event.payload.headSha, null, 'and it has no HEAD');
 
   const stored = (await api('GET', `/sessions/${sessionId}/events?after=0`)).body.data;
   assert.deepEqual(stored.events.map((entry: PushedEvent) => [entry.id, entry.kind]), [[`${sessionId}:1`, 'turn_end']]);
@@ -404,6 +412,7 @@ test('what a run did is stored as numbered events for Foreman and pushed to its 
   assert.deepEqual((await api('GET', `/sessions/${sessionId}/state`)).body.data, { sessionId, status: 'idle', lastSequence: 1, supervision: 'started' });
   assert.deepEqual((await api('GET', `/sessions/${sessionId}/events?after=1`)).body.data.events, []);
   assert.equal(eventsOf(sessionId).length, 1, 'pushed once: the 2xx acknowledged it');
+  assert.deepEqual([...new Set(pushedWith)], [`Bearer ${INTAKE_TOKEN}`], 'the intake got its own token, never the bridge token');
 });
 
 test('an adopted session runs as its owner set it up: no sandbox, none of the worker\'s subagents and rules, and Foreman still gets its events', async () => {

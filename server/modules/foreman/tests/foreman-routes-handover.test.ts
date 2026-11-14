@@ -11,7 +11,7 @@ import { HEAD, row, startBody, tick, withBridge, type World } from './foreman-ro
  */
 
 const NO_USAGE = { inputTokens: null, outputTokens: null, cacheReadTokens: null, cacheCreationTokens: null };
-const turnEnd = (text = 'Done.'): ForemanBridgeEventBody => ({ kind: 'turn_end', payload: { text, commitCount: 0, claimsDone: false, model: null, usage: NO_USAGE } });
+const turnEnd = (text = 'Done.'): ForemanBridgeEventBody => ({ kind: 'turn_end', payload: { text, commitCount: 0, headSha: null, claimsDone: false, model: null, usage: NO_USAGE } });
 const sessionEnd = (reason: 'stopped' | 'crashed' = 'stopped'): ForemanBridgeEventBody => ({ kind: 'session_end', payload: { reason } });
 
 /** The session's own model, effort and name: what a hand-over must leave exactly as it is. */
@@ -110,7 +110,7 @@ test('GET /sessions/:id/events returns what is above `after`, oldest first, and 
     assert.equal(all.body.data.sessionId, 's1');
     assert.deepEqual(sequences(all), [1, 2, 3, 4, 5]);
     assert.equal(all.body.data.hasMore, false);
-    assert.deepEqual(all.body.data.events[2], { id: 's1:3', sessionId: 's1', sequence: 3, kind: 'turn_end', payload: { text: 'turn 3', commitCount: 0, claimsDone: false, model: null, usage: NO_USAGE } });
+    assert.deepEqual(all.body.data.events[2], { id: 's1:3', sessionId: 's1', sequence: 3, kind: 'turn_end', payload: { text: 'turn 3', commitCount: 0, headSha: null, claimsDone: false, model: null, usage: NO_USAGE } });
 
     assert.deepEqual(sequences(await call('GET', '/sessions/s1/events?after=2')), [3, 4, 5]);
     assert.deepEqual(sequences(await call('GET', '/sessions/s1/events?after=0')), [1, 2, 3, 4, 5]);
@@ -148,12 +148,14 @@ test('GET /sessions/:id/events validates `after` and `limit` and the session', a
   await withBridge(async ({ call, world }) => {
     world.addOwnerSession('owner');
     world.rows.set('codex', row({ session_id: 'codex', provider: 'codex' }));
-    for (const query of ['after=-1', 'after=abc', 'after=1.5', 'after=', 'after=1&after=2', 'after=3000000000', 'limit=0', 'limit=501', 'limit=abc', 'limit=-5', 'limit=']) {
+    for (const query of ['after=-1', 'after=abc', 'after=1.5', 'after=', 'after=1&after=2', 'after=2000000001', 'after=3000000000', 'after=99999999999', 'limit=0', 'limit=501', 'limit=abc', 'limit=-5', 'limit=']) {
       const response = await call('GET', `/sessions/owner/events?${query}`);
       assert.equal(response.status, 400, query);
       assert.equal(response.body.success, false, query);
     }
     assert.equal((await call('GET', '/sessions/owner/events?limit=500')).status, 200);
+    // The advertised maximum of `after` is ten digits long.
+    assert.deepEqual((await call('GET', '/sessions/owner/events?after=2000000000')).body.data, { sessionId: 'owner', events: [], hasMore: false });
     // Events of a session the owner never handed over are simply none.
     assert.deepEqual((await call('GET', '/sessions/owner/events')).body.data, { sessionId: 'owner', events: [], hasMore: false });
 

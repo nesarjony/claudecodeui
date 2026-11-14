@@ -144,7 +144,8 @@ function readIntegerQuery(value: unknown, field: string, min: number, max: numbe
   if (value === undefined) {
     return undefined;
   }
-  if (typeof value !== 'string' || !/^\d{1,6}$/.test(value)) {
+  // Ten digits hold the largest `after` the events route advertises (2,000,000,000); the range check below does the refusing.
+  if (typeof value !== 'string' || !/^\d{1,10}$/.test(value)) {
     throw invalid(`${field} must be an integer.`);
   }
   const parsed = Number.parseInt(value, 10);

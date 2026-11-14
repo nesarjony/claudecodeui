@@ -105,7 +105,7 @@ from 1 **without gaps**. It is pushed in this shape, and returned in the same sh
 
 | `kind` | `payload` | When |
 |---|---|---|
-| `turn_end` | `text` (the final message, clipped to 8000 characters), `commitCount`, `claimsDone`, `model`, `usage` | A turn ended without error. |
+| `turn_end` | `text` (the final message, clipped to 8000 characters), `commitCount`, `headSha`, `claimsDone`, `model`, `usage` | A turn ended without error. |
 | `permission_request` | `requestId`, `tool`, `detail` (one line, at most 1000 characters) | A call the sandbox's rules did not settle waits for an answer (`POST .../permission`). |
 | `refusal` | `text` | The model refused. One event per refusal; a second signal for it within 30 s is dropped. |
 | `error` | `message` | A turn ended with an error result, or the run failed. |
@@ -115,9 +115,11 @@ from 1 **without gaps**. It is pushed in this shape, and returned in the same sh
 - `claimsDone` is true when the **last line** of the turn's final message is exactly `FOREMAN-RESULT: done` (the brief's output contract asks for it). It is a claim, not evidence.
 - `commitCount` is what the turn committed in the session's project: commits reachable from `HEAD` that were not at the session's start (or, for an adopted session, at
   adoption) and that earlier `turn_end` events have not reported. Counted from the repository, not from what the worker says.
+- `headSha` is the project's `HEAD` when the turn ended (the full commit sha), read from the repository in the same step as `commitCount`; `null` when the project has no commit or is not a
+  repository. For a session in a task worktree it is the worktree's `HEAD`. A `turn_end` stored before the field existed is served with `headSha: null`.
 - `model` is the model the upstream reported for the turn (or the only model the turn billed), `null` when none was seen. For a `cap` session it must be MiniMax's:
   a Claude model name here is a subscription leak. `usage` is `{ inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens }`, each a number or `null`, for the
-  main loop of the turn (subagent calls are not included). `model` and `usage` are additions to the slice-2 schema; a reader that does not know them ignores them.
+  main loop of the turn (subagent calls are not included). `model`, `usage` and `headSha` are additions to the slice-2 schema; a reader that does not know them ignores them.
 - `quota` is new: Foreman's `bridgeEventSchema` must accept it, or its intake rejects the event (and, as the push retries for as long as it takes, holds back that session's later events).
   cloudcli recognises it by the SDK's own classification of the request the CLI gave up on (`rate_limit`, which is what a 429 is), not by wording, and it carries no reset time: the CLI retries a refused request
   about ten times (roughly three minutes) and only then gives up, and the quota's reset time lives in claude-cap's structured usage windows, which Foreman already reads for its allowance gate.
@@ -126,6 +128,14 @@ from 1 **without gaps**. It is pushed in this shape, and returned in the same sh
   anything (`AskUserQuestion` is denied), and a run that ends normally is just idle.
 - A permission prompt answered elsewhere (a person in the UI, a timeout) gives no event; the prompt just stops being pending.
 - A turn that failed (and that was not a quota refusal) is an `error` and not a `turn_end`, even when the CLI reports it with `subtype: success`.
+
+### Between the runtime and the store
+
+A runtime observation becomes a stored event in memory: cloudcli queues it (one queue per session, so a slow `git` call for one session's turn holds up only that session's later events, and
+a session's events are stored in the order they happened) and stores it once its `commitCount` and `headSha` are known. **If cloudcli crashes in that window, the event is lost.** It never
+got a sequence, so the numbering stays gap-free and no gap shows. cloudcli keeps no durable queue; Foreman reconciles instead: a session that is `idle` (`GET .../state`) without a `turn_end`
+for the turn Foreman started (or an `error`, `quota` or `session_end` that explains it) has lost its event. Compare `lastSequence` with what Foreman holds and fetch the rest with
+`eventsSince`, then read `GET .../digest`, which reads the session's transcript and so shows what the turn did, and judge the work from the repository.
 
 ### The push
 
@@ -220,4 +230,4 @@ The owner can hand one of their own cloudcli sessions to Foreman, which then sup
 - `startSession` takes `sandbox` (the interface's `model` and `brief` map to `model` and `prompt`; `directory` to `projectPath`).
 - `sessionState` also returns `supervision`; `eventsSince` pages (`hasMore`).
 - The sequence counts events cloudcli emitted, like the simulator; unlike it, `session_end` is only `stopped` or `crashed` and `question` is never sent.
-- Real events carry `model` and `usage` on `turn_end` (additive), and there is a `quota` kind (new).
+- Real events carry `model`, `usage` and `headSha` on `turn_end` (additive), and there is a `quota` kind (new).

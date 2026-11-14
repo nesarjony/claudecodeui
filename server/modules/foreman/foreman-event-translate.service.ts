@@ -40,10 +40,11 @@ function describeFailedTurn(message: RecordValue): string {
 /**
  * The event Foreman receives for one runtime observation, or `null` when it has none (a session starting, a compaction, a run that
  * simply ends after its turn). A failed turn is an `error`, not a `turn_end`; a request refused with a 429 that the CLI gave up on is a `quota`; an aborted run is a `session_end` that was stopped and a
- * failed one a `session_end` that crashed. Pure: `commitCount` is what the turn committed, worked out by the caller.
+ * failed one a `session_end` that crashed. Pure: `commitCount` (what the turn committed) and `headSha` (where the project stands when it ends)
+ * are worked out by the caller from the repository.
  */
 // Consumed by foreman-event-recorder.service.ts for every runtime event of a session the bridge drives.
-export function translateRuntimeEvent(event: ClaudeRuntimeEvent, context: { commitCount: number }): ForemanBridgeEventBody | null {
+export function translateRuntimeEvent(event: ClaudeRuntimeEvent, context: { commitCount: number; headSha: string | null }): ForemanBridgeEventBody | null {
   switch (event.kind) {
     case 'turn_result': {
       const message = event.message;
@@ -58,6 +59,7 @@ export function translateRuntimeEvent(event: ClaudeRuntimeEvent, context: { comm
         payload: {
           text: clipText(text, MAX_TURN_TEXT),
           commitCount: context.commitCount,
+          headSha: context.headSha,
           claimsDone: claimsDone(text),
           // The model the runtime saw answering; when it saw none, the only model the turn billed.
           model: event.model ?? (billedModels.length === 1 ? billedModels[0] ?? null : null),

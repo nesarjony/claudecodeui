@@ -1367,7 +1367,7 @@ export type ForemanBilling = 'api-key' | 'subscription' | 'cap';
  *
  * `kind` and `payload` are what the bridge derives from one runtime observation. Only the kinds cloudcli emits are listed:
  * Foreman also accepts `question` and a `completed` session end, which a sandboxed worker never produces (it cannot be
- * asked anything, and a run that ends normally is just idle). `model` and `usage` of a `turn_end` are additions to what Foreman's
+ * asked anything, and a run that ends normally is just idle). `model`, `usage` and `headSha` of a `turn_end` are additions to what Foreman's
  * schema lists; a reader that does not know them ignores them.
  */
 export type ForemanBridgeEventBody =
@@ -1376,6 +1376,8 @@ export type ForemanBridgeEventBody =
       payload: {
         text: string;
         commitCount: number;
+        /** The project's `HEAD` when the turn ended, read from the repository (not from what the worker says); null when the project has no commit or is no repository. */
+        headSha: string | null;
         claimsDone: boolean;
         /** The model that answered the turn (what the upstream reported), so Foreman can tell a worker that left its route; null when none was seen. */
         model: string | null;

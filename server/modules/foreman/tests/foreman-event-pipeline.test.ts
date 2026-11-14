@@ -5,19 +5,20 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { createForemanEventPusher } from '@/modules/foreman/foreman-event-push.service.js';
-import { createForemanEventRecorder } from '@/modules/foreman/foreman-event-recorder.service.js';
-import { createForemanEventStore } from '@/modules/foreman/foreman-event-store.service.js';
-import type { ClaudeRuntimeEvent } from '@/shared/types.js';
 
-import { createMemoryEventStorage } from './foreman-pipeline-support.js';
+import { makeStore } from './foreman-pipeline-support.js';
 
-const base = { sessionId: 'sess-1', projectPath: '/mnt/dev/repo' };
-const turnEnd = (text = 'Row done.'): ClaudeRuntimeEvent => ({ ...base, kind: 'turn_result', message: { subtype: 'success', is_error: false, result: text }, model: 'MiniMax-M3', toolCalls: 1, toolErrors: 0 });
-
-function makeStore() {
-  const storage = createMemoryEventStorage();
-  return { storage, store: createForemanEventStore({ storage, now: () => new Date('2026-11-14T10:00:00.000Z') }) };
-}
+test('a turn_end stored before it carried headSha reads with headSha null, and one stored with it is returned as it is', () => {
+  const { storage, store } = makeStore();
+  const usage = { inputTokens: null, outputTokens: null, cacheReadTokens: null, cacheCreationTokens: null };
+  storage.append('old', 'turn_end', JSON.stringify({ text: 'x', commitCount: 0, claimsDone: false, model: null, usage }), 'then');
+  store.append('new', { kind: 'turn_end', payload: { text: 'x', commitCount: 1, headSha: 'abc123', claimsDone: false, model: null, usage } });
+  const headOf = (sessionId: string) => {
+    const event = store.last(sessionId);
+    return event?.kind === 'turn_end' ? event.payload.headSha : 'not a turn_end';
+  };
+  assert.deepEqual([headOf('old'), headOf('new')], [null, 'abc123']);
+});
 
 test('each session numbers its events from 1 without gaps, and an id is unique across sessions', () => {
   const { store } = makeStore();
@@ -29,112 +30,6 @@ test('each session numbers its events from 1 without gaps, and an id is unique a
   assert.deepEqual(store.since('a', 1, 10).map((event) => event.sequence), [2]);
   assert.equal(store.last('a')?.id, a2.id);
   assert.equal(store.last('nobody'), null);
-});
-
-type RecorderOptions = { supervised?: boolean; commits?: (base: string) => number | null };
-
-function makeRecorder(options: RecorderOptions = {}) {
-  const { storage, store } = makeStore();
-  let stored = 0;
-  let clock = 0;
-  const recorder = createForemanEventRecorder({
-    store,
-    commits: { commitsSince: async (_path, since) => (options.commits ? options.commits(since) : 0) },
-    startOf: () => (options.supervised === false ? null : { baseHead: 'abc123', baseSequence: 0 }),
-    onStored: () => void (stored += 1),
-    now: () => new Date(clock),
-  });
-  return { recorder, store, storage, stored: () => stored, advance: (ms: number) => void (clock += ms) };
-}
-
-test('the recorder stores events in the order they happened and announces each one', async () => {
-  const { recorder, store, stored } = makeRecorder();
-  recorder.handle({ ...base, kind: 'run_started', resumed: false, model: null, permissionMode: null });
-  recorder.handle({ ...base, kind: 'permission_request', requestId: 'r1', toolName: 'Bash', input: { command: 'ls' } });
-  recorder.handle(turnEnd());
-  recorder.handle({ ...base, kind: 'run_ended', reason: 'aborted' });
-  await recorder.whenIdle();
-  assert.deepEqual(store.since('sess-1', 0, 10).map((event) => event.kind), ['permission_request', 'turn_end', 'session_end']);
-  assert.equal(stored(), 3);
-});
-
-test('events of a session Foreman does not supervise are ignored', async () => {
-  const { recorder, store } = makeRecorder({ supervised: false });
-  recorder.handle(turnEnd());
-  await recorder.whenIdle();
-  assert.equal(store.last('sess-1'), null);
-});
-
-test('a turn reports the commits made since the last report, counted from where supervision began', async () => {
-  let total = 2;
-  const { recorder, store } = makeRecorder({ commits: () => total });
-  recorder.handle(turnEnd());
-  await recorder.whenIdle();
-  total = 5;
-  recorder.handle(turnEnd());
-  await recorder.whenIdle();
-  total = 5;
-  recorder.handle(turnEnd());
-  await recorder.whenIdle();
-  const counts = store.since('sess-1', 0, 10).map((event) => (event.kind === 'turn_end' ? event.payload.commitCount : -1));
-  assert.deepEqual(counts, [2, 3, 0]);
-});
-
-test('a refusal that two signals describe is reported once within the window, and again after it', async () => {
-  const { recorder, store, advance } = makeRecorder();
-  const stop: ClaudeRuntimeEvent = { ...base, kind: 'assistant_refusal', message: { message: { stop_details: { explanation: 'Declined.' } } } };
-  const notice: ClaudeRuntimeEvent = { ...base, kind: 'system_message', message: { subtype: 'model_refusal_no_fallback', explanation: 'Declined.' } };
-  recorder.handle(stop);
-  recorder.handle(notice);
-  await recorder.whenIdle();
-  assert.equal(store.since('sess-1', 0, 10).length, 1);
-  advance(31_000);
-  recorder.handle(notice);
-  await recorder.whenIdle();
-  assert.equal(store.since('sess-1', 0, 10).length, 2);
-});
-
-test('a turn that gave up on a 429 is one quota event: the failure that follows from it is not reported again, and a later failure is', async () => {
-  const gaveUp: ClaudeRuntimeEvent = { ...base, kind: 'assistant_error', error: 'rate_limit', text: 'API Error: Request rejected (429)' };
-  const failedTurn: ClaudeRuntimeEvent = { ...base, kind: 'turn_result', message: { subtype: 'success', is_error: true, result: 'API Error: Request rejected (429)' }, model: null, toolCalls: 0, toolErrors: 0 };
-  const { recorder, store } = makeRecorder();
-  recorder.handle(gaveUp);
-  recorder.handle(failedTurn);
-  recorder.handle({ ...base, kind: 'run_error', message: 'Claude Code process exited with code 1' });
-  recorder.handle({ ...base, kind: 'run_ended', reason: 'error' });
-  await recorder.whenIdle();
-  assert.deepEqual(store.since('sess-1', 0, 10).map((event) => event.kind), ['quota'], 'neither the failed turn, nor the CLI exiting after it, nor the run ending as a crash is a second report');
-
-  // The next run fails for another reason: that is an ordinary error.
-  recorder.handle({ ...base, kind: 'run_started', resumed: true, model: null, permissionMode: null });
-  recorder.handle(failedTurn);
-  await recorder.whenIdle();
-  assert.deepEqual(store.since('sess-1', 1, 10).map((event) => event.kind), ['error']);
-
-  // A held run that is refused again after a turn that got through reports the quota again.
-  recorder.handle(turnEnd());
-  recorder.handle(gaveUp);
-  recorder.handle(failedTurn);
-  await recorder.whenIdle();
-  assert.deepEqual(store.since('sess-1', 2, 10).map((event) => event.kind), ['turn_end', 'quota']);
-});
-
-test('a failure while recording is logged and the next event is still recorded', async () => {
-  const { storage, store } = makeStore();
-  let attempts = 0;
-  const logged: string[] = [];
-  const recorder = createForemanEventRecorder({
-    store: { append: (sessionId, body) => { attempts += 1; if (attempts === 1) throw new Error('database is locked'); return store.append(sessionId, body); }, reportedCommits: () => 0 },
-    commits: { commitsSince: async () => 0 },
-    startOf: () => ({ baseHead: null, baseSequence: 0 }),
-    onStored: () => undefined,
-    log: (message) => logged.push(message),
-  });
-  recorder.handle({ ...base, kind: 'run_error', message: 'first' });
-  recorder.handle({ ...base, kind: 'run_error', message: 'second' });
-  await recorder.whenIdle();
-  assert.equal(logged.length, 1);
-  assert.equal(storage.rows.length, 1);
 });
 
 // ---------------------------------------------------------------------------------------------
@@ -172,7 +67,7 @@ function makePusher(options: { tokenFile: string; answers: Array<number | 'down'
 test('an event is POSTed with the bearer token in the contract shape, and is acknowledged by a 2xx answer', async () => {
   await withToken(async (tokenFile) => {
     const { pusher, store, sent } = makePusher({ tokenFile, answers: [200], clock: { now: 0 } });
-    const payload = { text: 'done', commitCount: 1, claimsDone: true, model: 'MiniMax-M3', usage: { inputTokens: 5, outputTokens: 6, cacheReadTokens: null, cacheCreationTokens: null } };
+    const payload = { text: 'done', commitCount: 1, headSha: 'abc123', claimsDone: true, model: 'MiniMax-M3', usage: { inputTokens: 5, outputTokens: 6, cacheReadTokens: null, cacheCreationTokens: null } };
     const event = store.append('sess-1', { kind: 'turn_end', payload });
     await pusher.kick();
     assert.deepEqual(sent.map((entry) => entry.authorization), ['Bearer intake-secret']);

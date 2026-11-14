@@ -12,8 +12,14 @@ export type ForemanEventStorage = {
 };
 
 // A row is only ever written from a `ForemanBridgeEventBody`, so its kind and payload are those of one.
-const toEvent = (row: ForemanEventRow): ForemanBridgeEvent =>
-  ({ id: row.id, sessionId: row.session_id, sequence: row.sequence, kind: row.kind, payload: JSON.parse(row.payload_json) }) as ForemanBridgeEvent;
+function toEvent(row: ForemanEventRow): ForemanBridgeEvent {
+  const payload = JSON.parse(row.payload_json);
+  // A turn_end stored before it carried `headSha` reads as "no head known": the shape every reader of the contract now expects.
+  if (row.kind === 'turn_end' && payload.headSha === undefined) {
+    payload.headSha = null;
+  }
+  return { id: row.id, sessionId: row.session_id, sequence: row.sequence, kind: row.kind, payload } as ForemanBridgeEvent;
+}
 
 /**
  * The log of what Foreman-driven sessions did: every event gets an id and the session's next sequence number when it is stored,

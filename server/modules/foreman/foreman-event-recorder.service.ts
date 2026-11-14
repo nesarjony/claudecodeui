@@ -7,17 +7,24 @@ import type { ClaudeRuntimeEvent } from '@/shared/types.js';
 // session within this window is enough.
 const REFUSAL_DEDUPE_MS = 30_000;
 
+// What an event that does not end a turn says about the repository: nothing.
+const NO_REPOSITORY_FACTS = { commitCount: 0, headSha: null };
+
 /**
  * Turns the runtime events of the sessions Foreman supervises into stored events, in the order they happened.
  *
- * `handle` returns at once and never throws (it runs inside the runtime loop): events go through one queue, because working out a
- * turn's commits asks git and a later event must not overtake an earlier one. Each stored event is announced to `onStored`, which
- * starts the push. Events of a session Foreman does not supervise are ignored.
+ * `handle` returns at once and never throws (it runs inside the runtime loop). Working out a turn's head and commits asks git, and a
+ * later event of the same session must not overtake it, so each session has its own queue: a slow git call of one session holds back
+ * that session's later events and no other session's. Each stored event is announced to `onStored`, which starts the push. Events of
+ * a session Foreman does not supervise are ignored.
+ *
+ * Between the runtime event and the stored event everything is in memory: an event still queued when cloudcli dies is lost (see
+ * `docs/foreman-bridge.md`, which tells Foreman to reconcile a session that is idle without a `turn_end`).
  */
 // Consumed by foreman.module.ts, which subscribes it to the Claude runtime's event stream.
 export function createForemanEventRecorder(dependencies: {
   store: Pick<ForemanEventStore, 'append' | 'reportedCommits'>;
-  commits: Pick<ForemanCommits, 'commitsSince'>;
+  commits: Pick<ForemanCommits, 'standing'>;
   /** Where supervision of the session began; null for a session Foreman does not supervise (never did, or released it). */
   startOf: (sessionId: string) => { baseHead: string | null; baseSequence: number } | null;
   onStored: () => void;
@@ -29,15 +36,17 @@ export function createForemanEventRecorder(dependencies: {
   const lastRefusalAt = new Map<string, number>();
   // Sessions whose turn gave up on a 429 (a `quota` event was stored): the failure that follows from it is not reported again.
   const quotaTurns = new Set<string>();
-  let queue: Promise<void> = Promise.resolve();
+  // The tail of each session's queue. A session's entry is dropped once that tail has settled, so the map holds only sessions with work pending.
+  const queues = new Map<string, Promise<void>>();
 
-  /** The commits of the turn that just ended: everything committed since the session started, less what earlier turns reported. */
-  async function commitsThisTurn(event: ClaudeRuntimeEvent, start: { baseHead: string | null; baseSequence: number }): Promise<number> {
-    if (!start.baseHead || !event.projectPath) {
-      return 0;
+  /** What the repository says when the turn that just ended is over: where HEAD is, and the commits made since supervision began, less what earlier turns reported. */
+  async function repositoryAfterTurn(event: ClaudeRuntimeEvent, start: { baseHead: string | null; baseSequence: number }): Promise<{ commitCount: number; headSha: string | null }> {
+    if (!event.projectPath) {
+      return NO_REPOSITORY_FACTS;
     }
-    const total = await dependencies.commits.commitsSince(event.projectPath, start.baseHead);
-    return total === null ? 0 : Math.max(0, total - dependencies.store.reportedCommits(event.sessionId, start.baseSequence));
+    const { head, commitsSinceBase } = await dependencies.commits.standing(event.projectPath, start.baseHead);
+    const commitCount = commitsSinceBase === null ? 0 : Math.max(0, commitsSinceBase - dependencies.store.reportedCommits(event.sessionId, start.baseSequence));
+    return { commitCount, headSha: head };
   }
 
   async function record(event: ClaudeRuntimeEvent): Promise<void> {
@@ -48,8 +57,7 @@ export function createForemanEventRecorder(dependencies: {
     if (event.kind === 'run_started') {
       quotaTurns.delete(event.sessionId);
     }
-    const commitCount = event.kind === 'turn_result' ? await commitsThisTurn(event, session) : 0;
-    const body = translateRuntimeEvent(event, { commitCount });
+    const body = translateRuntimeEvent(event, event.kind === 'turn_result' ? await repositoryAfterTurn(event, session) : NO_REPOSITORY_FACTS);
     if (!body) {
       return;
     }
@@ -76,11 +84,19 @@ export function createForemanEventRecorder(dependencies: {
 
   return {
     handle(event: ClaudeRuntimeEvent): void {
-      if (!event.sessionId) {
+      const { sessionId } = event;
+      if (!sessionId) {
         return;
       }
-      queue = queue.then(() => record(event)).catch((error: unknown) => {
-        log(`event of session ${event.sessionId} not recorded: ${error instanceof Error ? error.message : String(error)}`);
+      const tail = (queues.get(sessionId) ?? Promise.resolve()).then(() => record(event)).catch((error: unknown) => {
+        log(`event of session ${sessionId} not recorded: ${error instanceof Error ? error.message : String(error)}`);
+      });
+      queues.set(sessionId, tail);
+      void tail.then(() => {
+        // Only the newest tail ends its session's queue: an event handled meanwhile has already replaced it.
+        if (queues.get(sessionId) === tail) {
+          queues.delete(sessionId);
+        }
       });
     },
 
@@ -88,6 +104,8 @@ export function createForemanEventRecorder(dependencies: {
      * Resolves when everything handled so far is stored. The hand-over's release waits on it (through the module's `settleEvents`), so no
      * event of the supervised time is left behind a release; the pipeline tests wait on it too.
      */
-    whenIdle: (): Promise<void> => queue,
+    whenIdle: async (): Promise<void> => {
+      await Promise.all(queues.values());
+    },
   };
 }

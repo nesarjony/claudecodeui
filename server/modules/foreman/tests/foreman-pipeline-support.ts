@@ -1,5 +1,5 @@
 import type { ForemanEventRow } from '@/modules/database/index.js';
-import type { ForemanEventStorage } from '@/modules/foreman/foreman-event-store.service.js';
+import { createForemanEventStore, type ForemanEventStorage } from '@/modules/foreman/foreman-event-store.service.js';
 
 /** The event table in memory, with the numbering rules of the real repository. */
 export function createMemoryEventStorage(): ForemanEventStorage & { rows: ForemanEventRow[] } {
@@ -22,4 +22,10 @@ export function createMemoryEventStorage(): ForemanEventStorage & { rows: Forema
       if (row) row.acked_at = at;
     },
   };
+}
+
+/** An event store over the in-memory storage with a fixed clock; the storage comes back too, for a test that writes rows itself. */
+export function makeStore() {
+  const storage = createMemoryEventStorage();
+  return { storage, store: createForemanEventStore({ storage, now: () => new Date('2026-11-14T10:00:00.000Z') }) };
 }
