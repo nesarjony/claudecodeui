@@ -139,11 +139,10 @@ describe('the chat drawer on a narrow screen', () => {
     return openDrawer();
   };
 
-  it('keeps Tab inside the drawer: from the last control to the first, and Shift+Tab the other way', async () => {
+  it('keeps Tab inside the drawer: from the last control (the chosen delivery, as unchosen radios are skipped) to the first, and Shift+Tab the other way', async () => {
     const drawer = await openNarrow();
-    const controls = Array.from(drawer.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled]), select:not([disabled])'));
-    const first = controls[0] as HTMLElement;
-    const last = controls[controls.length - 1] as HTMLElement;
+    const first = within(drawer).getByLabelText('about:');
+    const last = within(drawer).getByLabelText('next safe point');
     last.focus();
     fireEvent.keyDown(document, { key: 'Tab' });
     expect(document.activeElement).toBe(first);
