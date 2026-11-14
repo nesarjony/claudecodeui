@@ -115,6 +115,12 @@ rl.on('line', (line) => {
     out({ type: 'control_request', request_id: 'perm-1', request: { subtype: 'can_use_tool', tool_name: 'Bash', input: { command: 'rm -rf build' }, tool_use_id: 'tu_perm' } });
     return;
   }
+  if (prompt.startsWith('ask-tool:')) {
+    // A call of the named tool that the CLI hands to canUseTool (it would not for a tool in --allowedTools).
+    pendingAsk = true;
+    out({ type: 'control_request', request_id: 'perm-1', request: { subtype: 'can_use_tool', tool_name: prompt.slice('ask-tool:'.length), input: { file_path: '/mnt/dev/repo/notes.md', content: 'x', url: 'https://example.com' }, tool_use_id: 'tu_tool' } });
+    return;
+  }
   if (prompt === 'askq' || prompt === 'askplan') {
     // The tools only a person can answer, sent straight to canUseTool.
     pendingAsk = true;

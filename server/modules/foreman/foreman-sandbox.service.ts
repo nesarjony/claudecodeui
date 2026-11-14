@@ -44,6 +44,13 @@ export const DEFAULT_SANDBOX_APPROVAL_TIMEOUT_MS = 30 * 60 * 1000;
 
 // Nobody is there to answer a question or approve a plan in an unattended run, and the prompt for either would wait without a timeout.
 const UNATTENDED_DENIED_TOOLS = ['AskUserQuestion', 'ExitPlanMode'];
+// On this host the sandbox only starts with every unix socket allowed (AppArmor's `unpriv_bwrap` profile; the tested workaround of Foreman's
+// sandbox findings), so it is forced on whatever the policy says. Set it to false once the owner fixes the AppArmor profile.
+const FORCED_ALLOW_ALL_UNIX_SOCKETS = true;
+// Where the host keeps its sockets and the other users' and sessions' files. With every unix socket allowed, a socket a worker can see is one
+// it can connect to, so these trees are always denied for reading, whatever the policy denies. The checkout and the scratch directory stay
+// reachable: the sandbox runtime mounts the allowed paths over a denied tree.
+const HIDDEN_TREES = ['/run', '/tmp', '/var/tmp', '/home', '/mnt', '/media', '/srv'];
 
 const MAX_ENTRIES = 400;
 const MAX_ENTRY_LENGTH = 1000;
@@ -170,7 +177,8 @@ export function parseSandboxPolicy(raw: unknown, scope: ForemanSandboxScope): Fo
 }
 
 /**
- * What a run of a sandboxed session adds to its SDK options: the policy with the load-bearing switches forced on. Creates the scratch
+ * What a run of a sandboxed session adds to its SDK options: the policy with the load-bearing switches forced on, every unix socket allowed
+ * (FORCED_ALLOW_ALL_UNIX_SOCKETS) and the trees that hold sockets hidden (HIDDEN_TREES joined to `denyRead`). Creates the scratch
  * directories first, because the CLI makes `<TMPDIR>/claude-<uid>` itself but not its parents, and needs them before its first command.
  */
 // Consumed by foreman.module.ts, which hands it to the Claude runtime for every run of a sandboxed session.
@@ -187,8 +195,8 @@ export function buildSandboxAdditions(
       failIfUnavailable: true,
       autoAllowBashIfSandboxed: true,
       allowUnsandboxedCommands: false,
-      network: { ...policy.network, strictAllowlist: true },
-      filesystem: policy.filesystem,
+      network: { ...policy.network, allowAllUnixSockets: FORCED_ALLOW_ALL_UNIX_SOCKETS, strictAllowlist: true },
+      filesystem: { ...policy.filesystem, denyRead: [...new Set([...policy.filesystem.denyRead, ...HIDDEN_TREES])] },
       credentials: policy.credentials,
     },
     permissions: policy.permissions,

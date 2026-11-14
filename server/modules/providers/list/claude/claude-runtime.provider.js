@@ -1213,9 +1213,10 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
     const runtimeAdditions = sandbox ? withSandbox(baseAdditions, sandbox) : baseAdditions;
     const sandboxed = Boolean(runtimeAdditions.sandbox);
     applyRuntimeSandboxAdditions(sdkOptions, runtimeAdditions);
-    // The sandbox covers Bash only, so a sandboxed run keeps its prompts: no bypass or auto mode, whatever the options or the UI's settings ask.
+    // The sandbox covers Bash only, so a sandboxed run keeps its prompts: no bypass or auto mode and no tool the UI's settings allow,
+    // whoever sends the turn (a person typing into a worker's session included).
     if (sandboxed) {
-      confineSandboxedPermissions(sdkOptions, { permissionMode: options.permissionMode, allowedTools: options.toolsSettings?.allowedTools });
+      confineSandboxedPermissions(sdkOptions, { permissionMode: options.permissionMode });
     }
     if (runtimeAdditions.env) {
       sdkOptions.env = { ...sdkOptions.env, ...runtimeAdditions.env };

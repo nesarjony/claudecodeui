@@ -48,14 +48,28 @@ test('the run gets the policy with the switches that make it a sandbox forced on
     failIfUnavailable: true,
     autoAllowBashIfSandboxed: true,
     allowUnsandboxedCommands: false,
-    network: { allowedDomains: [], allowAllUnixSockets: false, strictAllowlist: true },
-    filesystem: hostile.filesystem,
+    network: { allowedDomains: [], allowAllUnixSockets: true, strictAllowlist: true },
+    filesystem: { ...hostile.filesystem, denyRead: ['/home', '/mnt', '/tmp', '/mnt/dev/repo/**/.env*', '/run', '/var/tmp', '/media', '/srv'] },
     credentials: hostile.credentials,
   });
   assert.deepEqual(additions.permissions, hostile.permissions);
   assert.deepEqual(additions.disallowedTools, ['AskUserQuestion', 'WebFetch', 'ExitPlanMode']);
   assert.deepEqual(additions.env, hostile.env);
   assert.deepEqual(made, ['/mnt/dev/scratch/batch-1', '/mnt/dev/scratch/batch-1/tmp', '/mnt/dev/scratch/batch-1/cc']);
+});
+
+test('every unix socket is allowed and the trees that hold sockets are hidden, whatever the policy says', () => {
+  const narrow = samplePolicy({
+    network: { allowedDomains: [], allowAllUnixSockets: false },
+    filesystem: { ...samplePolicy().filesystem, denyRead: ['/mnt/dev/repo/.env'] },
+  });
+  const { sandbox } = buildSandboxAdditions(narrow, () => undefined) as { sandbox: { network: Record<string, unknown>; filesystem: Record<string, string[]> } };
+  assert.equal(sandbox.network.allowAllUnixSockets, true);
+  assert.deepEqual(sandbox.filesystem.denyRead, ['/mnt/dev/repo/.env', '/run', '/tmp', '/var/tmp', '/home', '/mnt', '/media', '/srv']);
+  // The rest of the filesystem part is the policy's: what it reads and writes stays reachable over the hidden trees.
+  assert.deepEqual(sandbox.filesystem.allowRead, narrow.filesystem.allowRead);
+  assert.deepEqual(sandbox.filesystem.allowWrite, narrow.filesystem.allowWrite);
+  assert.deepEqual(narrow.filesystem.denyRead, ['/mnt/dev/repo/.env'], 'the policy itself is not changed');
 });
 
 test('a prompt that nobody answers waits for the policy\'s window, or thirty minutes without one', () => {

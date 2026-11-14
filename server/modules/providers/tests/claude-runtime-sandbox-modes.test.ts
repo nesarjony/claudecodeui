@@ -78,7 +78,7 @@ test('a sandboxed run asked for bypassPermissions, auto or the UI\'s skipPermiss
   }
 });
 
-test('a sandboxed run keeps acceptEdits and plan, and plan mode allows it no reads or web tools beyond the UI\'s own', async () => {
+test('a sandboxed run keeps acceptEdits and plan, and neither plan mode nor the UI allows it a tool outright', async () => {
   for (const permissionMode of ['acceptEdits', 'plan']) {
     await withSandboxProvider(() => sandboxAdditions(), () => runPrompt('hello', {
       permissionMode,
@@ -86,8 +86,33 @@ test('a sandboxed run keeps acceptEdits and plan, and plan mode allows it no rea
     }, `app-session-mode-${permissionMode}`));
     const { argv } = await lastSpawn();
     assert.equal(argValue(argv, '--permission-mode'), permissionMode);
-    assert.deepEqual(argValue(argv, '--allowedTools').split(','), ['Bash(npm test:*)'], permissionMode);
+    assert.equal(argv.includes('--allowedTools'), false, permissionMode);
   }
+});
+
+test('a person typing into a worker\'s session runs sandboxed: the UI\'s allowed tools still prompt, its denied tools are denied', async () => {
+  // A turn from the UI: no bridge mark, the person's tool settings, and the session's stored sandbox from the provider.
+  const asked: boolean[] = [];
+  const typed = { toolsSettings: settingsWith({ allowedTools: ['Write', 'WebFetch'], disallowedTools: ['NotebookEdit'] }) };
+  await withSandboxProvider((_sessionId, run) => { asked.push(run.required); return sandboxAdditions(); }, async () => {
+    for (const tool of ['Write', 'WebFetch']) {
+      const sessionId = `app-session-takeover-${tool}`;
+      const pending = runPrompt(`ask-tool:${tool}`, typed, sessionId);
+      const request = await waitForPermissionRequest(sessionId);
+      assert.deepEqual([request.toolName, request.sandboxed], [tool, true], `${tool} waits for an answer instead of being allowed`);
+      const { argv } = await lastSpawn();
+      assert.equal(argv.includes('--allowedTools'), false, 'the CLI is not told to allow it either');
+      assert.ok(argValue(argv, '--disallowedTools').split(/[ ,]+/).includes('NotebookEdit'));
+      runtime.resolveToolApproval(request.requestId, { allow: false, message: 'Not now.' });
+      await pending;
+    }
+
+    const denied = await runPrompt('ask-tool:NotebookEdit', typed, 'app-session-takeover-denied');
+    assert.ok(!kinds(denied).includes('permission_request'), 'a denied tool is not even asked about');
+    const answer = (await permissionAnswers()).at(-1);
+    assert.deepEqual([answer?.response.behavior, answer?.response.message], ['deny', 'Tool disallowed by settings']);
+  });
+  assert.deepEqual(asked, [false, false, false], 'the sandbox is asked for on every unmarked run');
 });
 
 test('a person\'s own session is unchanged: skipPermissions still settles a call without a prompt, and plan mode still allows its reads', async () => {
@@ -99,14 +124,14 @@ test('a person\'s own session is unchanged: skipPermissions still settles a call
   assert.ok(argValue((await lastSpawn()).argv, '--allowedTools').split(',').includes('Read'));
 });
 
-test('confineSandboxedPermissions keeps a mode a sandboxed run may use, puts any other back to default and drops what plan mode added', () => {
-  const options: Record<string, unknown> = { permissionMode: 'bypassPermissions', allowedTools: ['Read', 'WebFetch', 'Bash'] };
-  confineSandboxedPermissions(options, { permissionMode: 'auto', allowedTools: ['Bash', 7] });
-  assert.deepEqual(options, { allowedTools: ['Bash'] });
+test('confineSandboxedPermissions keeps a mode a sandboxed run may use, puts any other back to default and allows no tool outright', () => {
+  const options: Record<string, unknown> = { permissionMode: 'bypassPermissions', allowedTools: ['Read', 'WebFetch', 'Bash'], disallowedTools: ['Grep'] };
+  confineSandboxedPermissions(options, { permissionMode: 'auto' });
+  assert.deepEqual(options, { allowedTools: [], disallowedTools: ['Grep'] });
   confineSandboxedPermissions(options, { permissionMode: 'plan' });
-  assert.deepEqual(options, { permissionMode: 'plan', allowedTools: [] });
-  confineSandboxedPermissions(options, { permissionMode: undefined, allowedTools: 'Read' });
-  assert.deepEqual(options, { allowedTools: [] });
+  assert.deepEqual(options, { permissionMode: 'plan', allowedTools: [], disallowedTools: ['Grep'] });
+  confineSandboxedPermissions(options, { permissionMode: undefined });
+  assert.deepEqual(options, { allowedTools: [], disallowedTools: ['Grep'] });
 });
 
 test('a run marked as the bridge\'s is refused with nobody to ask for its sandbox, and the provider is told which runs are marked', async () => {

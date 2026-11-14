@@ -321,8 +321,8 @@ test('the sandbox sent with the start reaches the CLI: the SDK sandbox option, t
     failIfUnavailable: true,
     autoAllowBashIfSandboxed: true,
     allowUnsandboxedCommands: false,
-    network: { ...policy.network, strictAllowlist: true },
-    filesystem: policy.filesystem,
+    network: { ...policy.network, allowAllUnixSockets: true, strictAllowlist: true },
+    filesystem: { ...policy.filesystem, denyRead: [...new Set([...policy.filesystem.denyRead, '/run', '/tmp', '/var/tmp', '/home', '/mnt', '/media', '/srv'])] },
     credentials: policy.credentials,
   });
   assert.deepEqual(settings.permissions.allow, policy.permissions.allow);

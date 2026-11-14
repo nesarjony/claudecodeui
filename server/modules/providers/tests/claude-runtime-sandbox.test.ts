@@ -305,15 +305,15 @@ for (const { prompt, toolName } of INTERACTIVE_TOOLS) {
 // canUseTool in a sandboxed run: the sandbox bounds what a call can do, the denied tools stay denied
 // ---------------------------------------------------------------------------------------------
 
-// A bypass mode does not: see claude-runtime-sandbox-modes.test.ts.
-test('in a sandboxed run a stored allow rule settles a call without a prompt, as in any run', async () => {
+// Only the policy's rules allow a call outright (the CLI applies them from the settings); a bypass mode does not either: see claude-runtime-sandbox-modes.test.ts.
+test('in a sandboxed run the UI\'s stored allow rule settles nothing: the call is asked about', async () => {
   await withSandboxProvider(() => sandboxAdditions({ disallowedTools: [] }), async () => {
-    const before = (await permissionAnswers()).length;
-    const rule = await runPrompt('ask', { toolsSettings: settingsWith({ allowedTools: ['Bash'] }) }, 'app-session-sb-rule');
-    assert.ok(!kinds(rule).includes('permission_request'));
-    const answers = await permissionAnswers();
-    assert.equal(answers.length, before + 1);
-    assert.equal(answers.at(-1)?.response.behavior, 'allow');
+    const pending = runPrompt('ask', { toolsSettings: settingsWith({ allowedTools: ['Bash'] }) }, 'app-session-sb-rule');
+    const request = await waitForPermissionRequest('app-session-sb-rule');
+    assert.equal(request.toolName, 'Bash');
+    runtime.resolveToolApproval(request.requestId, { allow: true });
+    await pending;
+    assert.equal((await permissionAnswers()).at(-1)?.response.behavior, 'allow', 'allowed by whoever answered, not by the rule');
   });
 });
 

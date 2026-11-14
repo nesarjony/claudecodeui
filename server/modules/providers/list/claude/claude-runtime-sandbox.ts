@@ -133,18 +133,20 @@ export function applyRuntimeSandboxAdditions(sdkOptions: RuntimeSdkOptions, addi
 }
 
 /**
- * Puts a sandboxed run back under its permission prompts, whatever its options asked for. The sandbox isolates Bash only; the file tools are
- * held by the rules and the prompts. So the run's mode is the requested one only when a sandboxed run may use it (`default` otherwise, which
- * also undoes the UI's "skip permissions" setting), and the read-only tools the runtime allows outright in plan mode for a person (Read and
- * the web tools, anywhere) are taken back: a worker's reads go through its rules. The UI's own allowed tools are kept.
+ * Puts a sandboxed run back under its sandbox's rules and prompts, whatever its options asked for. The sandbox isolates Bash only; the file
+ * tools are held by the rules and the prompts. So the run's mode is the requested one only when a sandboxed run may use it (`default`
+ * otherwise, which also undoes the UI's "skip permissions" setting), and nothing in the run's options allows a tool outright: neither the
+ * read-only tools the runtime allows a person in plan mode (Read and the web tools, anywhere) nor the UI's own allowed tools, which a person
+ * typing into a worker's session would otherwise bring along. Only the policy's permission rules allow; the UI's denied tools stay, as they
+ * only narrow.
  */
 // Consumed by claude-runtime.provider.js once a run turns out to be sandboxed, and by the Claude runtime sandbox tests.
-export function confineSandboxedPermissions(sdkOptions: RuntimeSdkOptions, requested: { permissionMode?: unknown; allowedTools?: unknown }): void {
+export function confineSandboxedPermissions(sdkOptions: RuntimeSdkOptions, requested: { permissionMode?: unknown }): void {
   const mode = isSandboxedPermissionMode(requested.permissionMode) ? requested.permissionMode : 'default';
   if (mode === 'default') {
     delete sdkOptions.permissionMode;
   } else {
     sdkOptions.permissionMode = mode;
   }
-  sdkOptions.allowedTools = Array.isArray(requested.allowedTools) ? requested.allowedTools.filter((entry) => typeof entry === 'string') : [];
+  sdkOptions.allowedTools = [];
 }
