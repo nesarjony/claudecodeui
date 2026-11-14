@@ -1,5 +1,60 @@
+import { isDeepStrictEqual } from 'node:util';
+
 import type { ForemanSessionStateRow } from '@/modules/database/index.js';
 import { parseSandboxPolicy, type ForemanSandboxPolicy } from '@/modules/foreman/foreman-sandbox.service.js';
+import type { ForemanSessionStatePatch, ForemanSessionStateService, ForemanSupervision } from '@/modules/foreman/foreman-session-state.service.js';
+import { AppError, isSandboxedPermissionMode, SANDBOXED_PERMISSION_MODES } from '@/shared/utils.js';
+
+/**
+ * The sandbox of a session the Foreman bridge drives: whether the session is sandboxed, the permission modes it may run in, how its policy is
+ * recorded when it starts and how each of its runs reads it back.
+ */
+
+/** Every session Foreman started runs sandboxed (a stored policy says so too); one handed over runs as its owner set it up. */
+// Consumed by foreman-sessions.service.ts (the modes a message may ask for, the mark on a run) and foreman-session-state.service.ts (the
+// stored mode it hands back).
+export function isSandboxedSession(session: { supervision: ForemanSupervision; sandboxJson: string | null }): boolean {
+  return session.supervision === 'started' || session.sandboxJson !== null;
+}
+
+/**
+ * Refuses a permission mode a sandboxed session may not run in. The sandbox isolates Bash only; the file tools are held by the prompts that
+ * `bypassPermissions` skips and `auto` hands to a classifier.
+ */
+// Consumed by foreman-sessions.service.ts for a start and for every message or compact of a sandboxed session.
+export function requireSandboxedMode(permissionMode: string | undefined): void {
+  if (permissionMode !== undefined && !isSandboxedPermissionMode(permissionMode)) {
+    throw new AppError(
+      `permissionMode "${permissionMode}" is not allowed for a sandboxed session: the sandbox covers Bash only and the file tools rely on the prompts it would skip. Use one of: ${SANDBOXED_PERMISSION_MODES.join(', ')}.`,
+      { code: 'PERMISSION_MODE_FORBIDDEN', statusCode: 400 },
+    );
+  }
+}
+
+/**
+ * Records a session the bridge starts, with its sandbox, before its first run: with a write that throws when it fails, then read back the
+ * way every run of the session reads it. Anything but exactly the policy that was sent stops the start, because the session's runs would not
+ * find their sandbox.
+ */
+// Consumed by foreman-sessions.service.ts when it starts a session.
+export function recordSandboxedStart(
+  state: Pick<ForemanSessionStateService, 'trackStrict' | 'sandboxOf'>,
+  sessionId: string,
+  patch: ForemanSessionStatePatch & { sandbox: ForemanSandboxPolicy },
+): void {
+  const notRecorded = (reason: string) =>
+    new AppError(`The sandbox of the session was not recorded (${reason}), so nothing was run.`, { code: 'SANDBOX_NOT_RECORDED', statusCode: 500 });
+  try {
+    state.trackStrict(sessionId, patch);
+  } catch (error) {
+    throw notRecorded(`the write failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const readBack = state.sandboxOf(sessionId, { required: true });
+  if (!readBack || !('policy' in readBack) || !isDeepStrictEqual(readBack.policy, patch.sandbox)) {
+    throw notRecorded('what is stored does not read back as the policy that was sent');
+  }
+}
+
 
 /** What a run of a session is to do about its sandbox: apply this policy, not run at all (and why), or run without one (`null`). */
 type SandboxAnswer = { policy: ForemanSandboxPolicy } | { refuse: string } | null;

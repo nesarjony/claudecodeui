@@ -40,7 +40,7 @@ export type RuntimeSandboxRefusal = { refuse: string };
  * for a sandboxed session (`foremanSandbox: true` in its options). Such a run never goes ahead without a sandbox; an unmarked run (a person
  * typing in the UI) is never refused just because the bridge's records cannot be read.
  */
-export type RuntimeSandboxRun = { required: boolean };
+type RuntimeSandboxRun = { required: boolean };
 
 /**
  * The sandbox provider the Foreman bridge registers. It answers synchronously for an app session id: `null` for a session without a sandbox,

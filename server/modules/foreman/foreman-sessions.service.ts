@@ -1,12 +1,12 @@
-import { isDeepStrictEqual } from 'node:util';
-
 import type { projectsDb, sessionsDb } from '@/modules/database/index.js';
 import { applyModelBilling, splitModelBilling } from '@/modules/foreman/foreman-billing.service.js';
 import type { ForemanSandboxPolicy } from '@/modules/foreman/foreman-sandbox.service.js';
 import type { ForemanSessionReadsService } from '@/modules/foreman/foreman-session-reads.service.js';
-import type { ForemanSessionState, ForemanSessionStatePatch, ForemanSessionStateService } from '@/modules/foreman/foreman-session-state.service.js';
+import { isSandboxedSession, recordSandboxedStart, requireSandboxedMode } from '@/modules/foreman/foreman-session-sandbox.service.js';
+import type { ForemanSessionState, ForemanSessionStateService } from '@/modules/foreman/foreman-session-state.service.js';
+import { awaitTurnAdmission } from '@/modules/foreman/foreman-turn-admission.service.js';
 import type { ForemanBilling } from '@/shared/types.js';
-import { AppError, clipText, isSandboxedPermissionMode, SANDBOXED_PERMISSION_MODES, summarizeToolInput } from '@/shared/utils.js';
+import { AppError, clipText, summarizeToolInput } from '@/shared/utils.js';
 
 /** The options of a turn the bridge dispatches: the settings the UI sends with every turn, and the mark of a sandboxed session's run. */
 type ForemanTurnOptions = {
@@ -75,22 +75,6 @@ const MAX_TITLE_LENGTH = 100;
 const MAX_SUMMARY_LENGTH = 80;
 const MAX_PERMISSION_INPUT_LENGTH = 1000;
 
-/** Every session Foreman started runs sandboxed (a stored policy says so too); one handed over runs as its owner set it up. */
-const isSandboxed = (state: ForemanSessionState): boolean => state.supervision === 'started' || state.sandboxJson !== null;
-
-/**
- * Refuses a permission mode a sandboxed session may not run in. The sandbox isolates Bash only; the file tools are held by the prompts that
- * `bypassPermissions` skips and `auto` hands to a classifier.
- */
-function requireSandboxedMode(permissionMode: string | undefined): void {
-  if (permissionMode !== undefined && !isSandboxedPermissionMode(permissionMode)) {
-    throw new AppError(
-      `permissionMode "${permissionMode}" is not allowed for a sandboxed session: the sandbox covers Bash only and the file tools rely on the prompts it would skip. Use one of: ${SANDBOXED_PERMISSION_MODES.join(', ')}.`,
-      { code: 'PERMISSION_MODE_FORBIDDEN', statusCode: 400 },
-    );
-  }
-}
-
 /**
  * Drives the sessions Foreman supervises: starting one, sending its turns, answering its permission prompts, stopping it and changing its
  * model. Every send, start and stop goes through the same code the UI uses, so a Foreman-driven session behaves (and appears) exactly like one
@@ -112,68 +96,8 @@ export function createForemanSessionsService(deps: ForemanSessionsDependencies) 
     return state;
   }
 
-  /**
-   * Records a session this bridge starts, with its sandbox, before its first run: with a write that throws when it fails, then read back
-   * the way every run of the session reads it. Anything but exactly the policy that was sent stops the start, because the session's runs
-   * would not find their sandbox.
-   */
-  function recordSandboxedStart(sessionId: string, patch: ForemanSessionStatePatch & { sandbox: ForemanSandboxPolicy }): void {
-    const notRecorded = (reason: string) =>
-      new AppError(`The sandbox of the session was not recorded (${reason}), so nothing was run.`, { code: 'SANDBOX_NOT_RECORDED', statusCode: 500 });
-    try {
-      deps.state.trackStrict(sessionId, patch);
-    } catch (error) {
-      throw notRecorded(`the write failed: ${error instanceof Error ? error.message : String(error)}`);
-    }
-    const readBack = deps.state.sandboxOf(sessionId, { required: true });
-    if (!readBack || !('policy' in readBack) || !isDeepStrictEqual(readBack.policy, patch.sandbox)) {
-      throw notRecorded('what is stored does not read back as the policy that was sent');
-    }
-  }
-
   /** Starts a turn and waits only long enough to report an immediate refusal or startup failure. */
-  async function dispatchTurn(input: StartTurnInput): Promise<void> {
-    const outcome = deps.startTurn(input).then(
-      (result) => ({ ok: true as const, result }),
-      (failure: unknown) => ({ ok: false as const, failure }),
-    );
-    const early = await Promise.race([
-      outcome,
-      new Promise<null>((resolve) => {
-        const timer = setTimeout(() => resolve(null), admissionWindowMs);
-        timer.unref?.();
-      }),
-    ]);
-
-    if (!early) {
-      // Admitted and still running; whatever happens next reaches Foreman as events.
-      void outcome.then((settled) => {
-        const message = settled.ok ? settled.result.error : settled.failure instanceof Error ? settled.failure.message : String(settled.failure);
-        if (message) {
-          console.warn(`[Foreman bridge] turn for session ${input.sessionId} failed: ${message}`);
-        }
-      });
-      return;
-    }
-
-    if (!early.ok) {
-      throw new AppError(
-        `The turn could not be started: ${early.failure instanceof Error ? early.failure.message : String(early.failure)}`,
-        { code: 'TURN_START_FAILED', statusCode: 502 },
-      );
-    }
-    if (!early.result.started) {
-      const message = early.result.error ?? 'The turn was not started.';
-      const lostRace = /already in progress/i.test(message);
-      throw new AppError(message, {
-        code: lostRace ? 'RUN_IN_PROGRESS' : 'TURN_START_FAILED',
-        statusCode: lostRace ? 409 : 502,
-      });
-    }
-    if (early.result.error) {
-      throw new AppError(`The turn failed immediately: ${early.result.error}`, { code: 'TURN_START_FAILED', statusCode: 502 });
-    }
-  }
+  const dispatchTurn = (input: StartTurnInput): Promise<void> => awaitTurnAdmission(input.sessionId, deps.startTurn(input), admissionWindowMs);
 
   async function sendUserTurn(
     sessionId: string,
@@ -188,7 +112,7 @@ export function createForemanSessionsService(deps: ForemanSessionsDependencies) 
     if (state.supervision === 'adopted' && options.permissionMode) {
       throw new AppError('A session handed over keeps its owner\'s permission mode: permissionMode cannot be set.', { code: 'PERMISSION_MODE_LOCKED', statusCode: 400 });
     }
-    const sandboxed = isSandboxed(state);
+    const sandboxed = isSandboxedSession(state);
     if (sandboxed) {
       requireSandboxedMode(options.permissionMode);
     }
@@ -266,7 +190,7 @@ export function createForemanSessionsService(deps: ForemanSessionsDependencies) 
       deps.managed?.mark(created.sessionId);
       // Recorded before the run starts, so the run that this call starts is already sandboxed and its events are the session's, and a
       // run that is resumed after a restart still has the permission mode and sandbox it started with.
-      recordSandboxedStart(created.sessionId, {
+      recordSandboxedStart(deps.state, created.sessionId, {
         taskId: input.taskId ?? null,
         billing: input.billing,
         permissionMode: input.permissionMode,

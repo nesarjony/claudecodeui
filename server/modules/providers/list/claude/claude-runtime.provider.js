@@ -1253,7 +1253,7 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
         if (enforcedDisallowedTools.some(entry => matchesToolPermission(entry, toolName, input))) {
           return { behavior: 'deny', message: 'Tool disallowed by settings' };
         }
-        // Never for a sandboxed run: its mode is never a bypass, and this keeps it so if that ever changes.
+        // Not for a sandboxed run, whose mode was confined above: the sandbox covers Bash only, so its file tools must keep their prompts.
         if (!sandboxed && sdkOptions.permissionMode === 'bypassPermissions') {
           return { behavior: 'allow', updatedInput: input };
         }

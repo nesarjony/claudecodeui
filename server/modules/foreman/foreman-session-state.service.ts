@@ -1,6 +1,6 @@
 import type { ForemanSessionStateRow } from '@/modules/database/index.js';
 import type { ForemanSandboxPolicy } from '@/modules/foreman/foreman-sandbox.service.js';
-import { createSessionSandboxReader } from '@/modules/foreman/foreman-session-sandbox.service.js';
+import { createSessionSandboxReader, isSandboxedSession } from '@/modules/foreman/foreman-session-sandbox.service.js';
 import type { ClaudeRuntimeEvent, ForemanBilling } from '@/shared/types.js';
 import { isErrorTurnResult, isSandboxedPermissionMode } from '@/shared/utils.js';
 
@@ -40,6 +40,7 @@ export type ForemanSessionStateStore = {
  * Fields `track` and `trackStrict` may set. `undefined` leaves a field as it is; `null` clears it. Only `trackStrict` records a sandbox, and
  * nothing clears one: a session that has a sandbox keeps it.
  */
+// Consumed by foreman-session-sandbox.service.ts, which records a starting session's sandbox with it.
 export type ForemanSessionStatePatch = {
   taskId?: string | null;
   status?: ForemanSessionStatus;
@@ -114,7 +115,7 @@ export function createForemanSessionStateService(dependencies: {
 
   function fromRow(row: ForemanSessionStateRow): ForemanSessionState {
     // A mode stored before sandboxed sessions were held to their prompts (`bypassPermissions`, `auto`) is not handed back to resume with.
-    const sandboxed = row.supervision === 'started' || row.sandbox_json !== null;
+    const sandboxed = isSandboxedSession({ supervision: row.supervision, sandboxJson: row.sandbox_json });
     return {
       sessionId: row.session_id,
       taskId: row.task_id,
