@@ -43,9 +43,7 @@ export default function SidebarFooter({
         </>
       )}
 
-      <div className="px-2 pt-1.5">
-        <ForemanSidebarEntry />
-      </div>
+      <ForemanSidebarEntry />
 
       {/* Settings */}
       <div className="nav-divider" />

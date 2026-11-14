@@ -6,8 +6,10 @@ import { ForemanSidebarLink } from '@/modules/foreman-next/sidebar/ForemanSideba
 /** Loaded lazily by ForemanSidebarEntry: the sidebar's Foreman link with the app's API. */
 export default function SidebarEntry() {
   return (
-    <ForemanApiProvider api={foremanApi}>
-      <ForemanSidebarLink />
-    </ForemanApiProvider>
+    <div className="px-2 pt-1.5">
+      <ForemanApiProvider api={foremanApi}>
+        <ForemanSidebarLink />
+      </ForemanApiProvider>
+    </div>
   );
 }
