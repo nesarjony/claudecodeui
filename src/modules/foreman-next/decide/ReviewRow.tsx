@@ -5,14 +5,14 @@ import type { FormEvent } from 'react';
 import type { ReviewItem } from '@/modules/foreman-next/api/contract';
 import { InlineError } from '@/modules/foreman-next/components/InlineError';
 import { VetoCountdown } from '@/modules/foreman-next/components/VetoCountdown';
+import { ReviewAcknowledgeButton } from '@/modules/foreman-next/decide/ReviewAcknowledgeButton';
+import { ReviewInspectLink } from '@/modules/foreman-next/decide/ReviewInspectLink';
 import { useAction } from '@/modules/foreman-next/hooks/useAction';
 import { useForemanApi } from '@/modules/foreman-next/hooks/useForemanApi';
 import { Button, Input } from '@/shared/ui';
 
-type ReviewRowProps = { item: ReviewItem; onSettled: () => void };
-
-/** Used by the Review tab for one thing Foreman decided alone: its evidence, how long the owner can still veto it, and OK, Veto (with the reason that becomes a lesson) or Details. */
-export function ReviewRow({ item, onSettled }: ReviewRowProps) {
+/** Used by the Review tab for one thing Foreman decided alone: its evidence, how long the owner can still veto it, and OK, Veto (with the reason that becomes a lesson), Details or the page it is about. */
+export function ReviewRow({ item }: { item: ReviewItem }) {
   const { t } = useTranslation('foremanNext');
   const api = useForemanApi();
   const { busy, failed, run } = useAction();
@@ -22,13 +22,9 @@ export function ReviewRow({ item, onSettled }: ReviewRowProps) {
   const [vetoing, setVetoing] = useState(false);
   const [reason, setReason] = useState('');
 
-  const settle = async (task: () => Promise<unknown>) => {
-    if (await run(task)) onSettled();
-  };
-
   const confirmVeto = (event: FormEvent) => {
     event.preventDefault();
-    void settle(() => api.vetoReviewItem(item.id, reason.trim()));
+    void run(() => api.vetoReviewItem(item.id, reason.trim()));
   };
 
   return (
@@ -45,15 +41,14 @@ export function ReviewRow({ item, onSettled }: ReviewRowProps) {
         </div>
         <div className="flex flex-wrap items-center gap-2 text-xs">
           <VetoCountdown closesAt={item.closesAt} />
+          <ReviewInspectLink item={item} />
           <Button variant="ghost" size="sm" aria-expanded={showDetail} onClick={() => setShowDetail((open) => !open)}>
             {t('review.details')}
           </Button>
           <Button variant="outline" size="sm" disabled={busy} onClick={() => setVetoing(true)}>
             {t('review.veto')}
           </Button>
-          <Button variant="outline" size="sm" disabled={busy} onClick={() => void settle(() => api.acknowledgeReviewItem(item.id))}>
-            {t('review.ok')}
-          </Button>
+          <ReviewAcknowledgeButton item={item} labelKey="review.ok" />
         </div>
       </div>
       {showDetail ? <p className="rounded-md bg-muted/50 p-3 text-sm text-muted-foreground">{item.detail}</p> : null}

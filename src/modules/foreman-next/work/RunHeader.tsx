@@ -9,7 +9,7 @@ import { RunControls } from '@/modules/foreman-next/work/RunControls';
 import { RunStages } from '@/modules/foreman-next/work/RunStages';
 
 /** Used by the run view for where the run is: breadcrumb, model and clock, the stages, when Opus is next consulted, and the controls. */
-export function RunHeader({ run, onChanged }: { run: RunDetail; onChanged: () => void }) {
+export function RunHeader({ run }: { run: RunDetail }) {
   const { t } = useTranslation('foremanNext');
   const meta = [
     run.model,
@@ -31,8 +31,8 @@ export function RunHeader({ run, onChanged }: { run: RunDetail; onChanged: () =>
         <p className="text-muted-foreground">
           <span className="font-medium text-foreground">{t('run.nextCheck')}</span> {run.nextCheck}
         </p>
-        <RunBanners run={run} onChanged={onChanged} />
-        <RunControls run={run} onChanged={onChanged} />
+        <RunBanners run={run} />
+        <RunControls run={run} />
       </div>
     </Panel>
   );

@@ -7,8 +7,7 @@ import type { ForemanStatus } from '@/modules/foreman-next/api/contract';
 import { InlineError } from '@/modules/foreman-next/components/InlineError';
 import { useAction } from '@/modules/foreman-next/hooks/useAction';
 import { useForemanApi } from '@/modules/foreman-next/hooks/useForemanApi';
-import { useRefreshStatus } from '@/modules/foreman-next/hooks/useForemanStatus';
-import { StopAllDialog } from '@/modules/foreman-next/shell/StopAllDialog';
+import { StopAllDialog } from '@/modules/foreman-next/modals/StopAllDialog';
 import { Button } from '@/shared/ui';
 
 type StatusControlsProps = {
@@ -22,7 +21,6 @@ type StatusControlsProps = {
 export function StatusControls({ status, chatOpen, chatButtonRef, onToggleChat }: StatusControlsProps) {
   const { t } = useTranslation('foremanNext');
   const api = useForemanApi();
-  const refreshStatus = useRefreshStatus();
   const { busy, failed, run } = useAction();
   // Whether the "Stop all" confirmation is showing; stopping every worker is never one click.
   const [confirmingStop, setConfirmingStop] = useState(false);
@@ -30,19 +28,15 @@ export function StatusControls({ status, chatOpen, chatButtonRef, onToggleChat }
   const canResume = status !== null && (status.state === 'stopped' || status.pauseReason === 'owner');
   const canPause = status !== null && (status.state === 'running' || status.state === 'workers-paused');
 
-  const change = async (task: () => Promise<unknown>) => {
-    if (await run(task)) await refreshStatus();
-  };
-
   return (
     <div className="ml-auto flex flex-wrap items-center gap-2">
       {failed ? <InlineError /> : null}
       {canResume ? (
-        <Button variant="outline" size="sm" disabled={busy} onClick={() => void change(() => api.resumeAll())}>
+        <Button variant="outline" size="sm" disabled={busy} onClick={() => void run(() => api.resumeAll())}>
           <Play /> {t('status.resumeAll')}
         </Button>
       ) : (
-        <Button variant="outline" size="sm" disabled={busy || !canPause} onClick={() => void change(() => api.pauseAll())}>
+        <Button variant="outline" size="sm" disabled={busy || !canPause} onClick={() => void run(() => api.pauseAll())}>
           <Pause /> {t('status.pauseAll')}
         </Button>
       )}
@@ -64,7 +58,7 @@ export function StatusControls({ status, chatOpen, chatButtonRef, onToggleChat }
         <StopAllDialog
           busy={busy}
           onClose={() => setConfirmingStop(false)}
-          onConfirm={() => void change(() => api.stopAll()).then(() => setConfirmingStop(false))}
+          onConfirm={() => void run(() => api.stopAll()).then(() => setConfirmingStop(false))}
         />
       ) : null}
     </div>

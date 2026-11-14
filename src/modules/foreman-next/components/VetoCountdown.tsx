@@ -1,7 +1,7 @@
 import { useTranslation } from 'react-i18next';
 
 import type { IsoTime } from '@/modules/foreman-next/api/contract';
-import { useNow } from '@/modules/foreman-next/hooks/useNow';
+import { useNow } from '@/shared/hooks/useNow';
 import { formatClock, formatRemaining } from '@/modules/foreman-next/utils/foremanFormat';
 import { cn } from '@/shared/utils';
 

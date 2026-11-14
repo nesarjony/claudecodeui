@@ -1,7 +1,9 @@
+import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 
 import type { ForemanStatus } from '@/modules/foreman-next/api/contract';
 import { formatClock, formatDay, formatUsd } from '@/modules/foreman-next/utils/foremanFormat';
+import { foremanPath } from '@/modules/foreman-next/utils/foremanPaths';
 
 function stateKey(status: ForemanStatus): { key: string; values: Record<string, string | number> } {
   const { state, pauseReason, resumesAt, minimax } = status;
@@ -38,7 +40,11 @@ export function StatusSummary({ status }: { status: ForemanStatus }) {
       </span>
       <span className="text-muted-foreground">{t('status.spend', { spent: formatUsd(status.spend.monthUsd), ceiling: formatUsd(status.spend.ceilingUsd) })}</span>
       <span className="text-muted-foreground">{t('status.minimax', { fiveHour: status.minimax.fiveHourPct, weekly: status.minimax.weeklyPct })}</span>
-      {status.alerts > 0 ? <span className="font-medium text-amber-700 dark:text-amber-400">{t('status.alerts', { count: status.alerts })}</span> : null}
+      {status.alerts > 0 ? (
+        <Link to={foremanPath.alerts} className="font-medium text-amber-700 hover:underline dark:text-amber-400">
+          {t('status.alerts', { count: status.alerts })}
+        </Link>
+      ) : null}
     </div>
   );
 }

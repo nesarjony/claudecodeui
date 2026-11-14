@@ -27,6 +27,7 @@ export function HistoryTab() {
                 </p>
               </div>
               <div className="flex items-center gap-2">
+                {entry.delegationKind ? <Chip>{t(`delegation.kind.${entry.delegationKind}`)}</Chip> : null}
                 <Chip>{t(`history.by.${entry.decidedBy}`)}</Chip>
                 {entry.agreedWithRecommendation === null ? null : (
                   <Chip tone={entry.agreedWithRecommendation ? 'good' : 'warn'}>{t(entry.agreedWithRecommendation ? 'history.agreed' : 'history.differed')}</Chip>

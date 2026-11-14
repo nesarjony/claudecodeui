@@ -14,10 +14,16 @@ export function DecisionRecordScreen() {
   return (
     <div className="mx-auto max-w-3xl space-y-4">
       <h1 className="sr-only">{t('record.screen')}</h1>
-      <Link to={foremanPath.history} className="text-sm text-primary hover:underline">
-        ◂ {t('record.back')}
-      </Link>
-      <ResourceView resource={record}>{(data) => <DecisionRecordCard record={data} onSaved={() => void record.refresh()} />}</ResourceView>
+      <ResourceView resource={record}>
+        {(data) => (
+          <>
+            <Link to={data.runId ? foremanPath.run(data.runId) : foremanPath.history} className="text-sm text-primary hover:underline">
+              ◂ {t(data.runId ? 'record.backToRun' : 'record.back')}
+            </Link>
+            <DecisionRecordCard record={data} />
+          </>
+        )}
+      </ResourceView>
     </div>
   );
 }

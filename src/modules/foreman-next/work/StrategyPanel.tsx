@@ -11,31 +11,27 @@ import { useForemanApi } from '@/modules/foreman-next/hooks/useForemanApi';
 import { formatClock } from '@/modules/foreman-next/utils/foremanFormat';
 import { Button, Input } from '@/shared/ui';
 
-type StrategyPanelProps = { goalId: string; strategy: Strategy; onChanged: () => void };
+type StrategyPanelProps = { goalId: string; strategy: Strategy; compareOnOpen: boolean };
 
 /** Used by the goal page for the strategy: its steps and risks, the comparison with the previous version, and Approve or Adjust while it waits for the owner (BR-1.11). */
-export function StrategyPanel({ goalId, strategy, onChanged }: StrategyPanelProps) {
+export function StrategyPanel({ goalId, strategy, compareOnOpen }: StrategyPanelProps) {
   const { t } = useTranslation('foremanNext');
   const api = useForemanApi();
   const { busy, failed, run } = useAction();
-  // Whether the previous version's steps are shown next to the current ones.
-  const [comparing, setComparing] = useState(false);
+  // Whether the previous version's steps are shown next to the current ones; a Review link to a re-plan's diff opens it already.
+  const [comparing, setComparing] = useState(compareOnOpen);
   // Whether the Adjust note field is open, and what has been typed.
   const [adjusting, setAdjusting] = useState(false);
   const [note, setNote] = useState('');
   const awaiting = strategy.status === 'awaiting-approval';
 
-  const change = async (task: () => Promise<unknown>) => {
-    if (await run(task)) {
+  const sendAdjustment = async (event: FormEvent) => {
+    event.preventDefault();
+    const sent = await run(() => api.adjustStrategy(goalId, note.trim()));
+    if (sent.ok) {
       setAdjusting(false);
       setNote('');
-      onChanged();
     }
-  };
-
-  const sendAdjustment = (event: FormEvent) => {
-    event.preventDefault();
-    void change(() => api.adjustStrategy(goalId, note.trim()));
   };
 
   return (
@@ -73,7 +69,7 @@ export function StrategyPanel({ goalId, strategy, onChanged }: StrategyPanelProp
         {awaiting ? (
           <div className="space-y-2">
             <div className="flex gap-2">
-              <Button size="sm" disabled={busy} onClick={() => void change(() => api.approveStrategy(goalId))}>
+              <Button size="sm" disabled={busy} onClick={() => void run(() => api.approveStrategy(goalId))}>
                 {t('work.strategy.approve')}
               </Button>
               <Button variant="outline" size="sm" disabled={busy} aria-expanded={adjusting} onClick={() => setAdjusting(true)}>
@@ -81,7 +77,7 @@ export function StrategyPanel({ goalId, strategy, onChanged }: StrategyPanelProp
               </Button>
             </div>
             {adjusting ? (
-              <form onSubmit={sendAdjustment} className="flex flex-wrap items-center gap-2">
+              <form onSubmit={(event) => void sendAdjustment(event)} className="flex flex-wrap items-center gap-2">
                 <label htmlFor="strategy-note" className="text-sm text-muted-foreground">
                   {t('work.strategy.note')}
                 </label>

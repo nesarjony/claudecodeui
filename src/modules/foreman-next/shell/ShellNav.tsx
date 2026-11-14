@@ -1,4 +1,4 @@
-import { NavLink } from 'react-router-dom';
+import { Link, NavLink } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 
 import { useForemanStatus } from '@/modules/foreman-next/hooks/useForemanStatus';
@@ -36,8 +36,11 @@ export function ShellNav() {
           ) : null}
         </NavLink>
       ))}
+      <Link to="/" className="whitespace-nowrap rounded-md px-3 py-2 text-sm text-muted-foreground hover:bg-accent md:mt-auto">
+        ◂ {t('nav.workspace')}
+      </Link>
       {status?.studioUrl ? (
-        <a href={status.studioUrl} target="_blank" rel="noreferrer" className="whitespace-nowrap rounded-md px-3 py-2 text-sm text-muted-foreground hover:bg-accent md:mt-auto">
+        <a href={status.studioUrl} target="_blank" rel="noreferrer" className="whitespace-nowrap rounded-md px-3 py-2 text-sm text-muted-foreground hover:bg-accent">
           {t('nav.studio')} ↗
         </a>
       ) : null}

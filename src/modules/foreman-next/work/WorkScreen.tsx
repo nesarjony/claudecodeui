@@ -4,21 +4,20 @@ import { useTranslation } from 'react-i18next';
 
 import { ResourceView } from '@/modules/foreman-next/components/ResourceView';
 import { useForemanResource } from '@/modules/foreman-next/hooks/useForemanResource';
+import { NewGoalDialog } from '@/modules/foreman-next/modals/NewGoalDialog';
 import { GoalBoard } from '@/modules/foreman-next/work/GoalBoard';
 import { GoalList } from '@/modules/foreman-next/work/GoalList';
-import { NewGoalDialog } from '@/modules/foreman-next/work/NewGoalDialog';
 import { NoGoalsState } from '@/modules/foreman-next/work/NoGoalsState';
 import { Button } from '@/shared/ui';
 
 const VIEWS = ['board', 'list'] as const;
-const WORK_POLL_MS = 15_000;
 
 /** Used by ForemanNextRoutes for Work (wireframes §6a): the programme, the New goal action and the goals as a board or a list. */
 export function WorkScreen() {
   const { t } = useTranslation('foremanNext');
   const [params, setParams] = useSearchParams();
   const view = params.get('view') === 'list' ? 'list' : 'board';
-  const goals = useForemanResource((api) => api.goals(), { pollMs: WORK_POLL_MS });
+  const goals = useForemanResource((api) => api.goals());
   // Whether the New goal dialog is open.
   const [creating, setCreating] = useState(false);
   return (

@@ -21,7 +21,7 @@ export function RunDecisionsPanel({ decisions }: { decisions: RunDecision[] }) {
     <Panel title={t('run.decisions')}>
       <ol className="space-y-2 text-sm">
         {decisions.map((decision) => (
-          <li key={decision.turn} className="space-y-0.5">
+          <li key={decision.id} className="space-y-0.5">
             <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
               <span className="w-14 tabular-nums text-muted-foreground">{t('run.decisionTurn', { turn: decision.turn })}</span>
               <span className="w-24 font-medium">{t(`run.choice.${decision.choice}`)}</span>

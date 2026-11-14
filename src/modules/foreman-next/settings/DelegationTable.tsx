@@ -1,14 +1,14 @@
 import { useTranslation } from 'react-i18next';
 
-import { ResourceView } from '@/modules/foreman-next/components/ResourceView';
+import type { DelegationRule } from '@/modules/foreman-next/api/contract';
 import { Panel } from '@/modules/foreman-next/components/Panel';
-import { useForemanResource } from '@/modules/foreman-next/hooks/useForemanResource';
+import { ResourceView } from '@/modules/foreman-next/components/ResourceView';
+import type { Resource } from '@/modules/foreman-next/hooks/useForemanResource';
 import { DelegationRow } from '@/modules/foreman-next/settings/DelegationRow';
 
 /** Used by the Settings screen for the trust ladder (BR-5.13): per kind of decision, how much Foreman decides alone, with the agreement rate that earns it more. */
-export function DelegationTable() {
+export function DelegationTable({ delegation }: { delegation: Resource<DelegationRule[]> }) {
   const { t } = useTranslation('foremanNext');
-  const delegation = useForemanResource((api) => api.delegation());
   return (
     <Panel title={t('delegation.title')}>
       <ResourceView resource={delegation}>
@@ -26,7 +26,7 @@ export function DelegationTable() {
                 </thead>
                 <tbody>
                   {rules.map((rule) => (
-                    <DelegationRow key={rule.kind} rule={rule} onChanged={() => void delegation.refresh()} />
+                    <DelegationRow key={rule.kind} rule={rule} />
                   ))}
                 </tbody>
               </table>

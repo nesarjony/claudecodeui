@@ -2,13 +2,12 @@ import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { FormEvent, KeyboardEvent } from 'react';
 
+import { REMEMBER_SCOPES } from '@/modules/foreman-next/api/contract';
 import type { OwnerQuestion, RememberScope } from '@/modules/foreman-next/api/contract';
 import { InlineError } from '@/modules/foreman-next/components/InlineError';
 import { useAction } from '@/modules/foreman-next/hooks/useAction';
 import { useForemanApi } from '@/modules/foreman-next/hooks/useForemanApi';
 import { Button, Input } from '@/shared/ui';
-
-const SCOPES: RememberScope[] = ['repo', 'goal', 'global'];
 
 const ARROW_STEP: Record<string, number> = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 };
 
@@ -21,10 +20,10 @@ function moveFocus(event: KeyboardEvent<HTMLDivElement>) {
   event.preventDefault();
 }
 
-type QuestionAnswerFormProps = { question: OwnerQuestion; asks: string; onAnswered: () => void };
+type QuestionAnswerFormProps = { question: OwnerQuestion; asks: string | null };
 
 /** Used by the question card for the one-tap answer buttons, a free-text reply, and the two things an answer can teach Foreman: a rule, and a step up the trust ladder. */
-export function QuestionAnswerForm({ question, asks, onAnswered }: QuestionAnswerFormProps) {
+export function QuestionAnswerForm({ question, asks }: QuestionAnswerFormProps) {
   const { t } = useTranslation('foremanNext');
   const api = useForemanApi();
   const { busy, failed, run } = useAction();
@@ -36,10 +35,8 @@ export function QuestionAnswerForm({ question, asks, onAnswered }: QuestionAnswe
   // Whether this kind of decision moves up the trust ladder with this answer.
   const [delegate, setDelegate] = useState(false);
 
-  const answer = async (optionId: string | null, text: string | null) => {
-    const saved = await run(() => api.answerQuestion(question.id, { optionId, reply: text, remember: remember ? scope : null, delegate }));
-    if (saved) onAnswered();
-  };
+  const answer = (optionId: string | null, text: string | null) =>
+    run(() => api.answerQuestion(question.id, { optionId, reply: text, remember: remember ? scope : null, delegate: question.delegable && delegate }));
 
   const sendReply = (event: FormEvent) => {
     event.preventDefault();
@@ -80,7 +77,7 @@ export function QuestionAnswerForm({ question, asks, onAnswered }: QuestionAnswe
         <fieldset disabled={!remember} className="flex flex-wrap items-center gap-x-3 text-muted-foreground">
           <legend className="sr-only">{t('decide.scope')}</legend>
           <span aria-hidden>{t('decide.scope')}</span>
-          {SCOPES.map((option) => (
+          {REMEMBER_SCOPES.map((option) => (
             <label key={option} className="flex items-center gap-1.5">
               <input type="radio" name={`scope-${question.id}`} checked={scope === option} onChange={() => setScope(option)} />
               {option === 'repo' ? question.repo : t(`decide.scopes.${option}`)}
@@ -88,10 +85,12 @@ export function QuestionAnswerForm({ question, asks, onAnswered }: QuestionAnswe
           ))}
         </fieldset>
       </div>
-      <label className="flex items-start gap-1.5 text-sm">
-        <input type="checkbox" className="mt-1" checked={delegate} onChange={(event) => setDelegate(event.target.checked)} />
-        {t('decide.delegate', { asks })}
-      </label>
+      {question.delegable && asks ? (
+        <label className="flex items-start gap-1.5 text-sm">
+          <input type="checkbox" className="mt-1" checked={delegate} onChange={(event) => setDelegate(event.target.checked)} />
+          {t('decide.delegate', { asks })}
+        </label>
+      ) : null}
       {failed ? <InlineError /> : null}
     </div>
   );

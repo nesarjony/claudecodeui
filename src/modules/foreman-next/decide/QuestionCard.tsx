@@ -10,15 +10,14 @@ import { useAgo } from '@/modules/foreman-next/hooks/useAgo';
 import { foremanPath } from '@/modules/foreman-next/utils/foremanPaths';
 import { Card } from '@/shared/ui';
 
-type QuestionCardProps = { question: OwnerQuestion; onAnswered: () => void };
-
 /** Used by the Needs you tab for one decision built for a single tap (wireframes §5a): context, options with impact, Foreman's recommendation, what happens unanswered. */
-export function QuestionCard({ question, onAnswered }: QuestionCardProps) {
+export function QuestionCard({ question }: { question: OwnerQuestion }) {
   const { t } = useTranslation('foremanNext');
   const headingId = useId();
   const ago = useAgo(question.askedAt);
-  const kindLabel = t(`delegation.kind.${question.delegationKind}`);
-  const asks = t(`delegation.asks.${question.delegationKind}`);
+  const { delegationKind } = question;
+  const kindLabel = delegationKind ? t(`delegation.kind.${delegationKind}`) : null;
+  const asks = delegationKind ? t(`delegation.asks.${delegationKind}`) : null;
   return (
     <Card role="article" aria-labelledby={headingId} className="space-y-4 p-4">
       <header className="space-y-1">
@@ -27,15 +26,17 @@ export function QuestionCard({ question, onAnswered }: QuestionCardProps) {
             {question.title}
           </h2>
           <p className="text-xs text-muted-foreground">
-            {kindLabel} · {t('decide.holdsAsked', { count: question.holdsRows, ago })}
+            {kindLabel ? `${kindLabel} · ` : ''}{t('decide.holdsAsked', { count: question.holdsRows, ago })}
           </p>
         </div>
-        <p className="text-sm text-muted-foreground">
-          {t('decide.whyYours', { asks, level: t(`delegation.level.${question.delegationLevel}`) })}{' '}
-          <Link to={foremanPath.settings} className="text-primary hover:underline">
-            {t('decide.changeRule')}
-          </Link>
-        </p>
+        {asks ? (
+          <p className="text-sm text-muted-foreground">
+            {t('decide.whyYours', { asks, level: t(`delegation.level.${question.delegationLevel}`) })}{' '}
+            <Link to={foremanPath.settings} className="text-primary hover:underline">
+              {t('decide.changeRule')}
+            </Link>
+          </p>
+        ) : null}
       </header>
       <section className="space-y-1">
         <h3 className="text-sm font-medium">{t('decide.context')}</h3>
@@ -46,7 +47,7 @@ export function QuestionCard({ question, onAnswered }: QuestionCardProps) {
       <p className="text-sm">
         <span className="font-medium">{t('decide.ifUnanswered')}</span> {question.ifUnanswered}
       </p>
-      <QuestionAnswerForm question={question} asks={asks} onAnswered={onAnswered} />
+      <QuestionAnswerForm question={question} asks={asks} />
     </Card>
   );
 }

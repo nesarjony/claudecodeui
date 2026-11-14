@@ -1,4 +1,4 @@
-import type { ChatLink } from '@/modules/foreman-next/api/contract';
+import type { EntityRef } from '@/modules/foreman-next/api/contract';
 
 const ROOT = '/foreman';
 
@@ -12,13 +12,16 @@ export const foremanPath = {
   decision: (id: string) => `${ROOT}/decisions/${id}`,
   work: `${ROOT}/work`,
   goal: (id: string) => `${ROOT}/work/${id}`,
+  goalCompare: (id: string) => `${ROOT}/work/${id}?compare=previous`,
   run: (id: string) => `${ROOT}/work/runs/${id}`,
   settings: `${ROOT}/settings`,
+  alerts: `${ROOT}/alerts`,
+  session: (id: string) => `/session/${id}`,
 };
 
-/** Where an evidence link in a chat answer opens. */
-export function chatLinkPath(link: ChatLink): string {
-  if (link.kind === 'run') return foremanPath.run(link.id);
-  if (link.kind === 'decision') return foremanPath.decision(link.id);
-  return foremanPath.goal(link.id);
+/** Where a link to a goal, a run or a decision opens: chat evidence, alerts and the like. */
+export function entityPath(entity: EntityRef): string {
+  if (entity.kind === 'run') return foremanPath.run(entity.id);
+  if (entity.kind === 'decision') return foremanPath.decision(entity.id);
+  return foremanPath.goal(entity.id);
 }

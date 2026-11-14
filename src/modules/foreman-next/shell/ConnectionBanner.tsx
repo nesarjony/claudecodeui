@@ -4,7 +4,7 @@ import type { ReactNode } from 'react';
 
 import { useForemanStatus } from '@/modules/foreman-next/hooks/useForemanStatus';
 import { useOnline } from '@/modules/foreman-next/hooks/useOnline';
-import { ServiceLogDialog } from '@/modules/foreman-next/shell/ServiceLogDialog';
+import { ServiceLogDialog } from '@/modules/foreman-next/modals/ServiceLogDialog';
 import { Button } from '@/shared/ui';
 
 function Banner({ children }: { children: ReactNode }) {

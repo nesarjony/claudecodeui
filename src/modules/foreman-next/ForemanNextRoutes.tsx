@@ -2,6 +2,7 @@ import { Navigate, Route, Routes } from 'react-router-dom';
 
 import '@/modules/foreman-next/i18n';
 import type { ForemanApi } from '@/modules/foreman-next/api/contract';
+import { AlertsScreen } from '@/modules/foreman-next/alerts/AlertsScreen';
 import { ForemanApiProvider } from '@/modules/foreman-next/context/ForemanApiProvider';
 import { DecideScreen } from '@/modules/foreman-next/decide/DecideScreen';
 import { DecisionRecordScreen } from '@/modules/foreman-next/decide/DecisionRecordScreen';
@@ -16,8 +17,8 @@ import { GoalScreen } from '@/modules/foreman-next/work/GoalScreen';
 import { RunScreen } from '@/modules/foreman-next/work/RunScreen';
 import { WorkScreen } from '@/modules/foreman-next/work/WorkScreen';
 
-/** Used by the app's router under `/foreman/*`: the new Foreman control UI, separate from the Foreman tab in the workspace. Tests pass their own API. */
-export function ForemanNextRoutes({ api }: { api?: ForemanApi }) {
+/** Used by RoutesEntry (and the tests) for the new Foreman control UI, separate from the Foreman tab in the workspace. */
+export function ForemanNextRoutes({ api }: { api: ForemanApi }) {
   return (
     <ForemanApiProvider api={api}>
       <Routes>
@@ -34,6 +35,7 @@ export function ForemanNextRoutes({ api }: { api?: ForemanApi }) {
           <Route path="work/runs/:runId" element={<RunScreen />} />
           <Route path="work/:goalId" element={<GoalScreen />} />
           <Route path="settings" element={<SettingsScreen />} />
+          <Route path="alerts" element={<AlertsScreen />} />
           <Route path="*" element={<Navigate to={foremanPath.today} replace />} />
         </Route>
       </Routes>

@@ -1,17 +1,16 @@
 import { useTranslation } from 'react-i18next';
 import type { ChangeEvent } from 'react';
 
+import { DELEGATION_LEVELS } from '@/modules/foreman-next/api/contract';
 import type { DelegationChange, DelegationLevel, DelegationRule } from '@/modules/foreman-next/api/contract';
 import { InlineError } from '@/modules/foreman-next/components/InlineError';
+import { NativeSelect } from '@/modules/foreman-next/components/NativeSelect';
 import { useAction } from '@/modules/foreman-next/hooks/useAction';
 import { useForemanApi } from '@/modules/foreman-next/hooks/useForemanApi';
 import { Button } from '@/shared/ui';
 
-const LEVELS: DelegationLevel[] = ['ask', 'recommend-wait', 'decide-tell', 'decide-silent'];
 const VETO_WINDOWS_HOURS = [1, 2, 6, 12, 24];
 const DEFAULT_VETO_HOURS = 6;
-
-const SELECT_CLASS = 'h-9 rounded-md border border-input bg-transparent px-2 text-sm';
 
 const changeTo = (level: DelegationLevel, vetoWindowHours: number | null): DelegationChange => ({
   level,
@@ -19,17 +18,18 @@ const changeTo = (level: DelegationLevel, vetoWindowHours: number | null): Deleg
 });
 
 /** Used by the delegation table for one kind of decision on the trust ladder: its level, how often the owner agreed with Foreman, and Foreman's suggestion to move it up. */
-export function DelegationRow({ rule, onChanged }: { rule: DelegationRule; onChanged: () => void }) {
+export function DelegationRow({ rule }: { rule: DelegationRule }) {
   const { t } = useTranslation('foremanNext');
   const api = useForemanApi();
   const { busy, failed, run } = useAction();
   const kindLabel = t(`delegation.kind.${rule.kind}`);
 
-  const apply = async (change: DelegationChange) => {
-    if (await run(() => api.setDelegation(rule.kind, change))) onChanged();
-  };
+  const apply = (change: DelegationChange) => run(() => api.setDelegation(rule.kind, change));
 
-  const chooseLevel = (event: ChangeEvent<HTMLSelectElement>) => void apply(changeTo(event.target.value as DelegationLevel, rule.vetoWindowHours));
+  const chooseLevel = (event: ChangeEvent<HTMLSelectElement>) => {
+    const level = DELEGATION_LEVELS.find((candidate) => candidate === event.target.value);
+    if (level) void apply(changeTo(level, rule.vetoWindowHours));
+  };
   const chooseWindow = (event: ChangeEvent<HTMLSelectElement>) => void apply(changeTo('decide-tell', Number(event.target.value)));
 
   return (
@@ -43,21 +43,21 @@ export function DelegationRow({ rule, onChanged }: { rule: DelegationRule; onCha
           <span className="text-muted-foreground">{t('delegation.locked')}</span>
         ) : (
           <div className="flex flex-wrap items-center gap-2">
-            <select aria-label={t('delegation.levelFor', { kind: kindLabel })} value={rule.level} disabled={busy} onChange={chooseLevel} className={SELECT_CLASS}>
-              {LEVELS.map((level) => (
+            <NativeSelect aria-label={t('delegation.levelFor', { kind: kindLabel })} value={rule.level} disabled={busy} onChange={chooseLevel}>
+              {DELEGATION_LEVELS.map((level) => (
                 <option key={level} value={level}>
                   {t(`delegation.level.${level}`)}
                 </option>
               ))}
-            </select>
+            </NativeSelect>
             {rule.level === 'decide-tell' ? (
-              <select aria-label={t('delegation.vetoFor', { kind: kindLabel })} value={rule.vetoWindowHours ?? DEFAULT_VETO_HOURS} disabled={busy} onChange={chooseWindow} className={SELECT_CLASS}>
+              <NativeSelect aria-label={t('delegation.vetoFor', { kind: kindLabel })} value={rule.vetoWindowHours ?? DEFAULT_VETO_HOURS} disabled={busy} onChange={chooseWindow}>
                 {VETO_WINDOWS_HOURS.map((hours) => (
                   <option key={hours} value={hours}>
                     {t('delegation.veto', { hours })}
                   </option>
                 ))}
-              </select>
+              </NativeSelect>
             ) : null}
           </div>
         )}
@@ -68,7 +68,7 @@ export function DelegationRow({ rule, onChanged }: { rule: DelegationRule; onCha
         {rule.suggestion ? (
           <div className="flex flex-wrap items-center gap-2">
             <span>{t('delegation.suggests', { level: t(`delegation.level.${rule.suggestion}`) })}</span>
-            <Button size="sm" disabled={busy} onClick={() => void apply(changeTo(rule.suggestion as DelegationLevel, null))}>
+            <Button size="sm" disabled={busy} onClick={() => rule.suggestion && void apply(changeTo(rule.suggestion, null))}>
               {t('delegation.approve')}
             </Button>
           </div>

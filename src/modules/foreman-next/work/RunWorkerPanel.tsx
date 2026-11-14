@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 
 import type { RunDetail } from '@/modules/foreman-next/api/contract';
 import { Panel } from '@/modules/foreman-next/components/Panel';
+import { foremanPath } from '@/modules/foreman-next/utils/foremanPaths';
 
 /** Used by the run view for what the worker (or the handed-over session) is doing now, and the way into its session. */
 export function RunWorkerPanel({ run }: { run: RunDetail }) {
@@ -35,7 +36,7 @@ export function RunWorkerPanel({ run }: { run: RunDetail }) {
         <p className="text-sm text-muted-foreground">{t('run.workerDone')}</p>
       )}
       {run.sessionId ? (
-        <Link to={`/session/${run.sessionId}`} className="mt-3 inline-block text-sm text-primary hover:underline">
+        <Link to={foremanPath.session(run.sessionId)} className="mt-3 inline-block text-sm text-primary hover:underline">
           {t('run.openSession')} ↗
         </Link>
       ) : null}

@@ -10,13 +10,13 @@ import { RunningNowPanel } from '@/modules/foreman-next/today/RunningNowPanel';
 import { WeekPanel } from '@/modules/foreman-next/today/WeekPanel';
 import { NoGoalsState } from '@/modules/foreman-next/work/NoGoalsState';
 
-const TODAY_POLL_MS = 15_000;
-
 /** Used by ForemanNextRoutes for Today (wireframes §4): the briefing first, then only what is actionable, then the state of work. */
 export function TodayScreen() {
   const { t } = useTranslation('foremanNext');
-  const goals = useForemanResource((api) => api.goals(), { pollMs: TODAY_POLL_MS });
-  const today = useForemanResource((api) => api.today(), { pollMs: TODAY_POLL_MS });
+  const goals = useForemanResource((api) => api.goals());
+  const today = useForemanResource((api) => api.today());
+  const questions = useForemanResource((api) => api.questions());
+  const review = useForemanResource((api) => api.review());
   return (
     <div className="mx-auto max-w-5xl space-y-4">
       <h1 className="sr-only">{t('nav.today')}</h1>
@@ -27,8 +27,8 @@ export function TodayScreen() {
               <>
                 <BriefingPanel briefing={snapshot.briefing} />
                 <div className="grid gap-4 md:grid-cols-2">
-                  <NeedsYouPanel />
-                  <ReviewPanel />
+                  <NeedsYouPanel questions={questions} />
+                  <ReviewPanel review={review} />
                 </div>
                 <GoalsPanel goals={overview.goals} />
                 <div className="grid gap-4 md:grid-cols-2">

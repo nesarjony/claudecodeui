@@ -7,10 +7,8 @@ import { useAction } from '@/modules/foreman-next/hooks/useAction';
 import { useForemanApi } from '@/modules/foreman-next/hooks/useForemanApi';
 import { Button, Dialog, DialogContent, DialogTitle, Input } from '@/shared/ui';
 
-type HandOverDialogProps = { sessionId: string; onClose: () => void; onHandedOver: () => void };
-
 /** Used by the session bar to hand one of the owner's own sessions to Foreman (BR-2.10): an optional goal, then a confirmation. */
-export function HandOverDialog({ sessionId, onClose, onHandedOver }: HandOverDialogProps) {
+export function HandOverDialog({ sessionId, onClose }: { sessionId: string; onClose: () => void }) {
   const { t } = useTranslation('foremanNext');
   const api = useForemanApi();
   const { busy, failed, run } = useAction();
@@ -19,10 +17,7 @@ export function HandOverDialog({ sessionId, onClose, onHandedOver }: HandOverDia
 
   const confirm = async (event: FormEvent) => {
     event.preventDefault();
-    if (await run(() => api.handOverSession(sessionId, goal.trim() || undefined))) {
-      onHandedOver();
-      onClose();
-    }
+    if ((await run(() => api.handOverSession(sessionId, goal.trim() || undefined))).ok) onClose();
   };
 
   return (

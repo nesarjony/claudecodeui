@@ -5,7 +5,7 @@ import type { OwnerQuestion } from '@/modules/foreman-next/api/contract';
 import { Panel } from '@/modules/foreman-next/components/Panel';
 import { ResourceView } from '@/modules/foreman-next/components/ResourceView';
 import { useAgo } from '@/modules/foreman-next/hooks/useAgo';
-import { useForemanResource } from '@/modules/foreman-next/hooks/useForemanResource';
+import type { Resource } from '@/modules/foreman-next/hooks/useForemanResource';
 import { foremanPath } from '@/modules/foreman-next/utils/foremanPaths';
 import { buttonVariants } from '@/shared/ui';
 
@@ -30,20 +30,17 @@ function QuestionLine({ question }: { question: OwnerQuestion }) {
   );
 }
 
-/** Used by the Today screen to list the decisions that block work, the ones holding the most rows first. */
-export function NeedsYouPanel() {
+/** Used by the Today screen to list the decisions that block work, in the order Foreman gives them (most rows held first). */
+export function NeedsYouPanel({ questions }: { questions: Resource<OwnerQuestion[]> }) {
   const { t } = useTranslation('foremanNext');
-  const questions = useForemanResource((api) => api.questions());
   return (
     <Panel title={t('today.needsYou')}>
       <ResourceView resource={questions} isEmpty={(items) => items.length === 0} empty={<p className="text-sm text-muted-foreground">{t('today.needsYouNone')}</p>}>
         {(items) => (
           <ul className="space-y-3">
-            {[...items]
-              .sort((first, second) => second.holdsRows - first.holdsRows)
-              .map((question) => (
-                <QuestionLine key={question.id} question={question} />
-              ))}
+            {items.map((question) => (
+              <QuestionLine key={question.id} question={question} />
+            ))}
           </ul>
         )}
       </ResourceView>

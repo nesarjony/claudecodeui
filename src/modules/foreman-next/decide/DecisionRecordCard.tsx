@@ -2,6 +2,7 @@ import { useTranslation } from 'react-i18next';
 
 import type { DecisionRecord } from '@/modules/foreman-next/api/contract';
 import { DecisionFeedbackForm } from '@/modules/foreman-next/decide/DecisionFeedbackForm';
+import { Chip } from '@/modules/foreman-next/components/Chip';
 import { formatSeconds, formatUsd } from '@/modules/foreman-next/utils/foremanFormat';
 import { Card } from '@/shared/ui';
 
@@ -22,15 +23,16 @@ function MakerText({ record }: { record: DecisionRecord }) {
   return <>{t('record.makerRole', { role: maker.role, version: maker.version, model: model ?? '' })}</>;
 }
 
-type DecisionRecordCardProps = { record: DecisionRecord; onSaved: () => void };
-
 /** Used by the decision screen for one decision (wireframes §7): what Foreman saw, used, considered and chose, the outcome, its cost, and the owner's view. */
-export function DecisionRecordCard({ record, onSaved }: DecisionRecordCardProps) {
+export function DecisionRecordCard({ record }: { record: DecisionRecord }) {
   const { t } = useTranslation('foremanNext');
   return (
     <Card role="article" aria-label={record.title} className="space-y-4 p-4">
       <header className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-        <h2 className="text-base font-semibold">{record.title}</h2>
+        <div className="flex items-center gap-2">
+          <h2 className="text-base font-semibold">{record.title}</h2>
+          {record.delegationKind ? <Chip>{t(`delegation.kind.${record.delegationKind}`)}</Chip> : null}
+        </div>
         <p className="flex items-center gap-3 text-xs text-muted-foreground">
           <span>
             <MakerText record={record} /> · {formatUsd(record.costUsd)} · {formatSeconds(record.durationMs)}
@@ -49,7 +51,7 @@ export function DecisionRecordCard({ record, onSaved }: DecisionRecordCardProps)
         <Field label={t('record.chose')}>{record.chose}</Field>
         <Field label={t('record.outcome')}>{record.outcome ?? t('record.noOutcome')}</Field>
       </dl>
-      <DecisionFeedbackForm record={record} onSaved={onSaved} />
+      <DecisionFeedbackForm record={record} />
     </Card>
   );
 }

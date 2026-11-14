@@ -16,7 +16,9 @@
     "settings": "Settings",
     "studio": "Studio",
     "blocking_one": "{{count}} decision needs you",
-    "blocking_other": "{{count}} decisions need you"
+    "blocking_other": "{{count}} decisions need you",
+    "workspace": "Workspace",
+    "foreman": "Foreman"
   },
   "status": {
     "label": "Foreman status",
@@ -176,7 +178,9 @@
     "veto": "Veto",
     "ok": "OK",
     "vetoReason": "Why are you vetoing this?",
-    "confirmVeto": "Veto and record why"
+    "confirmVeto": "Veto and record why",
+    "diff": "Diff",
+    "card": "Card"
   },
   "history": {
     "none": "No decisions yet.",
@@ -205,7 +209,8 @@
     "bad": "Bad",
     "shouldHave": "What should it have done?",
     "savedCorrection": "Saved. Your correction is now a test case: \"{{correction}}\"",
-    "testCaseNote": "A Bad with a correction becomes a test case, so this mistake can't quietly return."
+    "testCaseNote": "A Bad with a correction becomes a test case, so this mistake can't quietly return.",
+    "backToRun": "Run"
   },
   "delegation": {
     "title": "Delegation · how much Foreman decides for you",
@@ -302,7 +307,8 @@
       "active": "active",
       "queued": "queued",
       "paused": "paused",
-      "done": "done"
+      "done": "done",
+      "studying": "studying"
     },
     "handedOver": "handed over",
     "card": {
@@ -312,7 +318,8 @@
       "noStrategy": "no strategy yet",
       "days_one": "{{count}} day",
       "days_other": "{{count}} days",
-      "handedOverLine": "turn {{turn}} · {{minutes}}m"
+      "handedOverLine": "turn {{turn}} · {{minutes}}m",
+      "studying": "Foreman studies the repo"
     },
     "list": {
       "goal": "Goal",
@@ -381,6 +388,23 @@
       "all_one": "All {{count}} batch",
       "all_other": "All {{count}} batches",
       "fewer": "Fewer batches"
+    },
+    "noRepos": "Foreman has no repos yet.",
+    "study": {
+      "title": "Foreman studies",
+      "intro": "Before it plans, Foreman reads what it needs. The strategy then waits for your approval.",
+      "state": {
+        "done": "done",
+        "running": "reading now",
+        "pending": "not started"
+      },
+      "step": {
+        "docs": "docs",
+        "conventions": "conventions",
+        "checklist": "checklist",
+        "git": "git history",
+        "code-map": "infigraph code map"
+      }
     }
   },
   "run": {
@@ -489,7 +513,10 @@
       "next-safe-point": "next safe point",
       "after-batch": "after batch"
     },
-    "sendFailed": "The message was not sent."
+    "remember": "Remember",
+    "remembered": "Remembered as knowledge",
+    "general": "Foreman",
+    "looking": "Looking at: {{label}}"
   },
   "handover": {
     "button": "Hand to Foreman",
@@ -501,6 +528,43 @@
     "banner": "Foreman is supervising this session.",
     "goal": "Goal: {{goal}}.",
     "watch": "Watch in Foreman",
-    "takeBack": "Take back"
+    "takeBack": "Take back",
+    "worker": {
+      "title": "Foreman worker",
+      "batch": "batch {{batch}}",
+      "supervised": "supervised",
+      "labelled": "Foreman's messages in this session are labelled \"Foreman\"."
+    }
+  },
+  "alerts": {
+    "title": "Alerts",
+    "none": "No alerts.",
+    "severity": {
+      "warning": "warning",
+      "critical": "critical"
+    },
+    "open": {
+      "goal": "Open goal",
+      "run": "Open run",
+      "decision": "Open decision card"
+    }
+  },
+  "facts": {
+    "title": "Budget, models and repos",
+    "budget": "Budget",
+    "budgetLine": "API {{monthly}} a month (owner only) · pace about {{pace}} a day",
+    "share": "goal share: {{goal}} {{usd}}",
+    "minimax": "MiniMax",
+    "minimaxResume": "stop desk workers at {{pct}}% of the 5-hour or weekly window; the rest stays yours; auto-resume",
+    "minimaxStay": "stop desk workers at {{pct}}% of the 5-hour or weekly window; the rest stays yours",
+    "models": "Models",
+    "roles": "Roles",
+    "editor": "Editor",
+    "repo": "Repo {{name}}",
+    "checks": "checks: {{command}}",
+    "protected_one": "{{count}} protected path",
+    "protected_other": "{{count}} protected paths",
+    "indexed": "infigraph ✓ indexed {{clock}}",
+    "notIndexed": "infigraph not indexed"
   }
 }

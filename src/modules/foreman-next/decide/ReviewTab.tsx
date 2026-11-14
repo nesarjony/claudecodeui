@@ -16,7 +16,7 @@ export function ReviewTab() {
         {(items) => (
           <ul className="divide-y rounded-lg border bg-card px-4">
             {items.map((item) => (
-              <ReviewRow key={item.id} item={item} onSettled={() => void review.refresh()} />
+              <ReviewRow key={item.id} item={item} />
             ))}
           </ul>
         )}

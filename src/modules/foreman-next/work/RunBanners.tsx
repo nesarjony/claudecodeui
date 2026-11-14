@@ -7,13 +7,10 @@ import { useForemanApi } from '@/modules/foreman-next/hooks/useForemanApi';
 import { Button } from '@/shared/ui';
 
 /** Used by the run view for the three things that change what the owner should do: a failed run, a run the owner is driving, and a session handed over to Foreman. */
-export function RunBanners({ run, onChanged }: { run: RunDetail; onChanged: () => void }) {
+export function RunBanners({ run }: { run: RunDetail }) {
   const { t } = useTranslation('foremanNext');
   const api = useForemanApi();
   const { busy, failed, run: perform } = useAction();
-  const handBack = async () => {
-    if (await perform(() => api.handBackRun(run.id))) onChanged();
-  };
   return (
     <div className="space-y-2">
       {run.failure ? (
@@ -24,7 +21,7 @@ export function RunBanners({ run, onChanged }: { run: RunDetail; onChanged: () =
       {run.kind === 'worker' && run.control === 'owner' ? (
         <div role="status" className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm">
           <span>{t('run.drivingBanner', { batch: run.batch })}</span>
-          <Button variant="outline" size="sm" disabled={busy} onClick={() => void handBack()}>
+          <Button variant="outline" size="sm" disabled={busy} onClick={() => void perform(() => api.handBackRun(run.id))}>
             {t('run.handBack')}
           </Button>
         </div>

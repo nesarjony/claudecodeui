@@ -21,6 +21,7 @@ function CardLines({ goal, column }: { goal: GoalSummary; column: BoardColumnId 
       </>
     );
   }
+  if (column === 'active' && goal.state === 'studying') return <p>{t('work.card.studying')}</p>;
   if (column === 'active') {
     return (
       <>
