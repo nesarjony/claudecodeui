@@ -1,7 +1,8 @@
 // Service Worker for CloudCLI PWA
 // Cache only manifest (needed for PWA install). HTML and JS are never pre-cached
 // so a rebuild + refresh always picks up the latest assets.
-const CACHE_NAME = 'claude-ui-v3';
+// v4: drops entries v3 may have cached from a failed asset response.
+const CACHE_NAME = 'claude-ui-v4';
 const urlsToCache = [
   '/manifest.json'
 ];
@@ -15,12 +16,24 @@ self.addEventListener('install', event => {
   self.skipWaiting();
 });
 
-// Fetch event — network-first for everything except hashed assets
+// Fetch event — network-first for everything except hashed assets.
+//
+// Every respondWith() has to settle to a Response. caches.match() resolves to
+// undefined for anything not cached (only the manifest and hashed assets ever
+// are), and handing that to respondWith() fails the request with "Failed to
+// convert value to 'Response'". A miss therefore answers Response.error(): the
+// same network failure the page would see with no service worker at all.
 self.addEventListener('fetch', event => {
-  const url = event.request.url;
+  const request = event.request;
 
-  // Never intercept API requests or WebSocket upgrades
-  if (url.includes('/api/') || url.includes('/ws')) {
+  // Only same-origin GETs are answered here. Writes (POST and the rest),
+  // cross-origin calls (the GitHub API, fonts), API requests and WebSocket
+  // upgrades go to the network untouched.
+  if (request.method !== 'GET') {
+    return;
+  }
+  const { origin, pathname } = new URL(request.url);
+  if (origin !== self.location.origin || pathname.includes('/api/') || pathname.includes('/ws')) {
     return;
   }
 
@@ -31,9 +44,9 @@ self.addEventListener('fetch', event => {
   // cross-origin login response, rejects, and we'd wrongly serve "Offline" —
   // masking the Access login. The bogus offline page only shows on a real
   // network failure now.
-  if (event.request.mode === 'navigate') {
+  if (request.mode === 'navigate') {
     event.respondWith(
-      fetch(event.request, { redirect: 'manual' }).catch(() =>
+      fetch(request, { redirect: 'manual' }).catch(() =>
         new Response('<h1>Offline</h1><p>Please check your connection.</p>', {
           headers: { 'Content-Type': 'text/html' }
         })
@@ -43,23 +56,30 @@ self.addEventListener('fetch', event => {
   }
 
   // Hashed assets (JS/CSS in /assets/) — cache-first since filenames change per build
-  if (url.includes('/assets/')) {
+  if (pathname.includes('/assets/')) {
     event.respondWith(
-      caches.match(event.request).then(cached => {
-        if (cached) return cached;
-        return fetch(event.request).then(response => {
-          const clone = response.clone();
-          caches.open(CACHE_NAME).then(cache => cache.put(event.request, clone));
+      caches.match(request)
+        .then(cached => cached || fetch(request).then(response => {
+          // Only a good response is kept: the file name never changes, so a
+          // 404 cached in the middle of a deploy would be served for good.
+          if (response.ok) {
+            const clone = response.clone();
+            caches.open(CACHE_NAME)
+              .then(cache => cache.put(request, clone))
+              .catch(() => {});
+          }
           return response;
-        });
-      })
+        }))
+        .catch(() => Response.error())
     );
     return;
   }
 
-  // Everything else — network-first
+  // Everything else — network-first, the cached copy when offline
   event.respondWith(
-    fetch(event.request).catch(() => caches.match(event.request))
+    fetch(request).catch(() =>
+      caches.match(request).then(cached => cached || Response.error())
+    )
   );
 });
 
