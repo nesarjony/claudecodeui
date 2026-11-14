@@ -4,6 +4,10 @@
 // `steps` is a list of tool calls ({ tool, input }). The server emits them one per assistant turn and records what the CLI
 // answered for each (the tool result, and whether it was an error). Anything else the CLI asks for (titles, token counts, model
 // discovery) gets a harmless answer.
+// `marker` keeps the steps to one session: the instance is shared, and a conversation that does not carry the marker (another session sent here
+// while a script has the instance) gets an error instead of the scripted calls. `onStep(index)` is awaited before step `index` is issued (and with
+// `steps.length` before the final answer), that is after the previous step's result came back: a script reads the host there to judge each step
+// by its own effect.
 import http from 'node:http'
 
 /** @typedef {{ tool: string, input: Record<string, unknown> }} Step */
@@ -14,8 +18,11 @@ const textOf = content => {
   return ''
 }
 
-/** @param {Step[]} steps */
-export async function startFakeApi(steps, { model: answeringModel = 'MiniMax-M3', port: wantedPort = 0, quota = null } = {}) {
+/**
+ * @param {Step[]} steps
+ * @param {{ model?: string, port?: number, quota?: { reason: string, resetAt?: string | null, retryAfter?: number, message: string } | null, marker?: string | null, onStep?: ((index: number) => Promise<void> | void) | null }} [options]
+ */
+export async function startFakeApi(steps, { model: answeringModel = 'MiniMax-M3', port: wantedPort = 0, quota = null, marker = null, onStep = null } = {}) {
   // `quota` makes every request answer like claude-cap does for a profile over its share: 429 `profile_quota` with `retry-after`.
   /** @type {Array<{ i: number, tool: string, input: unknown, isError: boolean, text: string }>} */
   const results = []
@@ -24,6 +31,9 @@ export async function startFakeApi(steps, { model: answeringModel = 'MiniMax-M3'
   /** The path prefixes the CLI addressed `/v1/messages` through: `/profile/<name>` when it routes by the profile URL. */
   const requestPaths = new Set()
   let otherRequests = 0
+  let foreignRequests = 0
+  /** The step indexes `onStep` was awaited for: a request the CLI retries does not read the host a second time. */
+  const stepped = new Set()
 
   const sse = (res, events) => {
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' })
@@ -59,7 +69,7 @@ export async function startFakeApi(steps, { model: answeringModel = 'MiniMax-M3'
     sse(res, events)
   }
 
-  const handleMessages = (body, res) => {
+  const handleMessages = async (body, res) => {
     const model = answeringModel
     const tools = Array.isArray(body.tools) ? body.tools : []
     const isMain = tools.some(t => t && (t.name === 'Bash' || t.name === 'Read'))
@@ -70,8 +80,13 @@ export async function startFakeApi(steps, { model: answeringModel = 'MiniMax-M3'
       res.writeHead(200, { 'content-type': 'application/json' })
       return res.end(JSON.stringify(message(model, reply, 'end_turn')))
     }
-    mainRequests += 1
     const messages = Array.isArray(body.messages) ? body.messages : []
+    if (marker && !JSON.stringify(messages).includes(marker)) {
+      foreignRequests += 1
+      res.writeHead(503, { 'content-type': 'application/json' })
+      return res.end(JSON.stringify({ type: 'error', error: { type: 'api_error', message: 'This endpoint is a scripted stand-in for the sandbox battery and answers only its own session.' } }))
+    }
+    mainRequests += 1
     // What the CLI answered for the tool calls this server made so far.
     let issued = 0
     const ids = []
@@ -88,6 +103,10 @@ export async function startFakeApi(steps, { model: answeringModel = 'MiniMax-M3'
           }
         }
       }
+    }
+    if (onStep && !stepped.has(issued)) {
+      stepped.add(issued)
+      await onStep(issued)
     }
     if (issued < steps.length) {
       const step = steps[issued]
@@ -111,7 +130,12 @@ export async function startFakeApi(steps, { model: answeringModel = 'MiniMax-M3'
         return res.end(JSON.stringify({ error: { type: 'profile_quota', reason: quota.reason, message: quota.message, profile: 'foreman-worker', upstream: 'minimax', windows: [], resetAt: quota.resetAt ?? null } }))
       }
       try {
-        if (req.method === 'POST' && /^\/v1\/messages(\?|$)/.test(url)) return handleMessages(body, res)
+        if (req.method === 'POST' && /^\/v1\/messages(\?|$)/.test(url)) {
+          return handleMessages(body, res).catch(error => {
+            res.writeHead(500, { 'content-type': 'application/json' })
+            res.end(JSON.stringify({ type: 'error', error: { type: 'api_error', message: String(error) } }))
+          })
+        }
         otherRequests += 1
         res.writeHead(200, { 'content-type': 'application/json' })
         if (url.includes('/count_tokens')) return res.end(JSON.stringify({ input_tokens: 100 }))
@@ -129,8 +153,9 @@ export async function startFakeApi(steps, { model: answeringModel = 'MiniMax-M3'
     url: `http://127.0.0.1:${port}`,
     port,
     results: () => results.slice().sort((a, b) => a.i - b.i),
-    stats: () => ({ mainRequests, otherRequests }),
+    stats: () => ({ mainRequests, otherRequests, foreignRequests }),
     requestPaths: () => [...requestPaths],
-    close: () => new Promise(resolve => server.close(() => resolve())),
+    // A held CLI process keeps its connection open; close it too, or the port stays taken for the next session's stand-in.
+    close: () => new Promise(resolve => { server.close(() => resolve()); server.closeAllConnections() }),
   }
 }
