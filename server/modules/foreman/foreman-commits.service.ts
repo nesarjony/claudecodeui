@@ -6,7 +6,7 @@ const GIT_TIMEOUT_MS = 10_000;
  * What a session's project has committed: where it is (`headOf`) and how far it has moved since the session started
  * (`commitsSince`). Read from the repository itself, never from what the worker says.
  */
-// Consumed by foreman.module.ts: the sessions service records the starting commit, the recorder counts a turn's commits from it.
+// Consumed by foreman.module.ts: the sessions service and the hand-over record the starting commit, the recorder counts a turn's commits from it.
 export function createForemanCommits(dependencies: { runGit?: GitRunner } = {}) {
   const runGit = dependencies.runGit ?? defaultRunGit;
 

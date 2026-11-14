@@ -13,7 +13,6 @@ import { createBridgeAuthMiddleware } from '@/modules/foreman/foreman-auth.servi
 import { createForemanEventStore } from '@/modules/foreman/foreman-event-store.service.js';
 import { createForemanIdempotency } from '@/modules/foreman/foreman-idempotency.service.js';
 import { createForemanSessionStateService, type ForemanSessionStateStore } from '@/modules/foreman/foreman-session-state.service.js';
-import { createForemanSessionsService, type ForemanBridgeDependencies } from '@/modules/foreman/foreman-sessions.service.js';
 import { createTaskIdStore } from '@/modules/foreman/foreman-task-ids.service.js';
 import {
   createForemanWorktreeRegistry,
@@ -25,7 +24,7 @@ import type { ProjectRepositoryRow } from '@/shared/types.js';
 import { AppError } from '@/shared/utils.js';
 
 import { createMemoryEventStorage } from './foreman-pipeline-support.js';
-import { createMemoryIdempotencyStorage } from './foreman-routes-support.js';
+import { createBridgeServices, createMemoryIdempotencyStorage, type BridgeDependencies } from './foreman-routes-support.js';
 import { samplePolicy } from './foreman-sandbox-support.js';
 
 /**
@@ -99,7 +98,7 @@ function sessionsOver(projects: ReturnType<typeof fakeProjects>) {
     settleAfterRestart: () => ({ reset: 0, waitingPermission: 0 }),
     listSupervised: () => [],
   };
-  const deps: ForemanBridgeDependencies = {
+  const deps: BridgeDependencies = {
     sessionsDb: {
       getSessionById: () => null,
       getRecentSessionsPage: () => ({ sessions: [], total: 0 }) as never,
@@ -132,7 +131,7 @@ function sessionsOver(projects: ReturnType<typeof fakeProjects>) {
     announceSession: async () => undefined,
     admissionWindowMs: 5,
   };
-  return { service: createForemanSessionsService(deps), started, stateRows };
+  return { services: createBridgeServices(deps), started, stateRows };
 }
 
 type Call = (method: string, pathname: string, body?: unknown, token?: string | null) => Promise<{ status: number; body: any }>;
@@ -175,7 +174,7 @@ async function withWorktrees(
   app.use(express.json());
   app.use('/api/foreman', createForemanRouter({
     authMiddleware: createBridgeAuthMiddleware({ tokenFile }),
-    sessions: sessions.service,
+    ...sessions.services,
     idempotency: createForemanIdempotency({ storage: createMemoryIdempotencyStorage() }),
     ...(options.wired === false ? {} : {
       worktrees: createForemanWorktreesService({ projects: projects.gateway, registry, worktreesDir: options.worktreesDir, now: () => new Date(NOW) }),

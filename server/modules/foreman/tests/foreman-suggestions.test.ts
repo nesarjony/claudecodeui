@@ -18,7 +18,6 @@ import {
 } from '@/modules/foreman/foreman-suggestions.service.js';
 import { createForemanUiRouter } from '@/modules/foreman/foreman-ui.routes.js';
 import { createForemanRouter } from '@/modules/foreman/foreman.routes.js';
-import type { createForemanSessionsService } from '@/modules/foreman/foreman-sessions.service.js';
 import type { RealtimeClientConnection } from '@/shared/types.js';
 
 import { createMemoryIdempotencyStorage, createWorld } from './foreman-routes-support.js';
@@ -123,7 +122,10 @@ async function withBridgeRouter(
   app.use(express.json({ limit: '5mb' }));
   app.use('/api/foreman', createForemanRouter({
     authMiddleware: createBridgeAuthMiddleware({ tokenFile }),
-    sessions: {} as ReturnType<typeof createForemanSessionsService>,
+    // The suggestion route needs none of the session services.
+    sessions: {} as Parameters<typeof createForemanRouter>[0]['sessions'],
+    reads: {} as Parameters<typeof createForemanRouter>[0]['reads'],
+    handover: {} as Parameters<typeof createForemanRouter>[0]['handover'],
     idempotency: createForemanIdempotency({ storage: createMemoryIdempotencyStorage() }),
     suggestions,
   }));

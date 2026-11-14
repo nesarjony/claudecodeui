@@ -2,9 +2,11 @@ import express, { type NextFunction, type Request, type RequestHandler, type Res
 
 import { declaredModelBilling } from '@/modules/foreman/foreman-billing.service.js';
 import type { ForemanGitService } from '@/modules/foreman/foreman-git.service.js';
+import type { ForemanHandoverService } from '@/modules/foreman/foreman-handover.service.js';
 import { fingerprintOf, type ForemanIdempotency } from '@/modules/foreman/foreman-idempotency.service.js';
 import { parseSandboxPolicy } from '@/modules/foreman/foreman-sandbox.service.js';
-import type { createForemanSessionsService } from '@/modules/foreman/foreman-sessions.service.js';
+import type { ForemanSessionReadsService } from '@/modules/foreman/foreman-session-reads.service.js';
+import type { ForemanSessionsService } from '@/modules/foreman/foreman-sessions.service.js';
 import {
   parseForemanSuggestion,
   type ForemanSuggestionBroadcaster,
@@ -12,8 +14,6 @@ import {
 import { MAX_WORKTREE_BRANCH_LENGTH, type ForemanWorktreesService } from '@/modules/foreman/foreman-worktrees.service.js';
 import { AppError, asyncHandler, createApiSuccessResponse } from '@/shared/utils.js';
 import type { ForemanBilling } from '@/shared/types.js';
-
-type ForemanSessionsService = ReturnType<typeof createForemanSessionsService>;
 
 const SESSION_ID_PATTERN = /^[a-zA-Z0-9._-]{1,120}$/;
 // Model aliases and ids as the catalog spells them (`sonnet`, `claude-opus-5-5[1m]`), optionally with the `@api` or `@cap` marker.
@@ -157,12 +157,15 @@ function readIntegerQuery(value: unknown, field: string, min: number, max: numbe
 /**
  * Builds the `/api/foreman` router. Every route sits behind `authMiddleware` (the bridge token,
  * not the cloudcli user login) and answers in the standard `{ success, data }` / `{ success, error }`
- * envelopes. Routes only validate input and translate results; the work happens in the service.
+ * envelopes. Routes only validate input and translate results; the work happens in the services: `sessions` drives
+ * sessions (start, send, permissions, interrupt, model, compact), `reads` reports on them, `handover` adopts and releases them.
  */
 // Consumed by foreman.module.ts, which mounts it on the server entrypoint, and by the route tests.
 export function createForemanRouter(options: {
   authMiddleware: RequestHandler;
   sessions: ForemanSessionsService;
+  reads: ForemanSessionReadsService;
+  handover: ForemanHandoverService;
   /** Makes each call that changes a session apply its idempotency key at most once. */
   idempotency: ForemanIdempotency;
   /** Pushes suggestions to open chats; without it `POST /suggestions` answers 503. */
@@ -172,7 +175,7 @@ export function createForemanRouter(options: {
   /** Task worktrees; without it `POST` and `DELETE /projects/worktree` answer 503. */
   worktrees?: ForemanWorktreesService;
 }) {
-  const { authMiddleware, sessions, idempotency, suggestions, git, worktrees } = options;
+  const { authMiddleware, sessions, reads, handover, idempotency, suggestions, git, worktrees } = options;
   const router = express.Router();
 
   /** Runs a call that changes a session under the idempotency key of its body, and sends the answer it first gave. */
@@ -198,7 +201,7 @@ export function createForemanRouter(options: {
   router.get('/sessions', (request, response) => {
     const limit = readIntegerQuery(request.query.limit, 'limit', 1, 100);
     const projectPath = typeof request.query.projectPath === 'string' ? request.query.projectPath.trim() : undefined;
-    response.json(createApiSuccessResponse({ sessions: sessions.listSessions({ limit, projectPath: projectPath || undefined }) }));
+    response.json(createApiSuccessResponse({ sessions: reads.listSessions({ limit, projectPath: projectPath || undefined }) }));
   });
 
   router.post('/sessions', asyncHandler(async (request, response) => {
@@ -230,23 +233,23 @@ export function createForemanRouter(options: {
     const sessionId = readSessionId(request.params.id);
     const body = readBody(request);
     const taskId = readTaskId(body.taskId);
-    await once(response, { body, operation: 'adopt', scope: sessionId, status: 200 }, () => sessions.adopt(sessionId, { taskId }));
+    await once(response, { body, operation: 'adopt', scope: sessionId, status: 200 }, () => handover.adopt(sessionId, { taskId }));
   }));
 
   router.post('/sessions/:id/release', asyncHandler(async (request, response) => {
     const sessionId = readSessionId(request.params.id);
-    await once(response, { body: readBody(request), operation: 'release', scope: sessionId, status: 200 }, () => sessions.release(sessionId));
+    await once(response, { body: readBody(request), operation: 'release', scope: sessionId, status: 200 }, () => handover.release(sessionId));
   }));
 
   router.get('/sessions/:id/state', (request, response) => {
-    response.json(createApiSuccessResponse(sessions.getState(readSessionId(request.params.id))));
+    response.json(createApiSuccessResponse(reads.getState(readSessionId(request.params.id))));
   });
 
   // The events above `after`, for Foreman to fill a gap or to catch up after its own restart; `hasMore` says to ask again from the last sequence.
   router.get('/sessions/:id/events', (request, response) => {
     const afterSequence = readIntegerQuery(request.query.after, 'after', 0, 2_000_000_000) ?? 0;
     const limit = readIntegerQuery(request.query.limit, 'limit', 1, MAX_EVENTS_PAGE) ?? MAX_EVENTS_PAGE;
-    response.json(createApiSuccessResponse(sessions.eventsSince(readSessionId(request.params.id), afterSequence, limit)));
+    response.json(createApiSuccessResponse(reads.eventsSince(readSessionId(request.params.id), afterSequence, limit)));
   });
 
   // Read-only git facts (status, diff stat, diff) of a known project or a path inside one.
@@ -304,11 +307,11 @@ export function createForemanRouter(options: {
   router.get('/sessions/:id/digest', asyncHandler(async (request, response) => {
     const sessionId = readSessionId(request.params.id);
     const turns = readIntegerQuery(request.query.turns, 'turns', 1, MAX_DIGEST_TURNS) ?? 1;
-    response.json(createApiSuccessResponse(await sessions.getDigest(sessionId, turns)));
+    response.json(createApiSuccessResponse(await reads.getDigest(sessionId, turns)));
   }));
 
   router.get('/sessions/:id/context', asyncHandler(async (request, response) => {
-    response.json(createApiSuccessResponse(await sessions.getContext(readSessionId(request.params.id))));
+    response.json(createApiSuccessResponse(await reads.getContext(readSessionId(request.params.id))));
   }));
 
   router.post('/sessions/:id/message', asyncHandler(async (request, response) => {

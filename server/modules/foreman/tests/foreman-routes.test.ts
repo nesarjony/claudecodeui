@@ -11,10 +11,10 @@ import express from 'express';
 
 import { createBridgeAuthMiddleware } from '@/modules/foreman/foreman-auth.service.js';
 import { createForemanIdempotency } from '@/modules/foreman/foreman-idempotency.service.js';
-import { createForemanSessionsService, resolveContextWindow, type LiveContextUsage } from '@/modules/foreman/foreman-sessions.service.js';
+import { resolveContextWindow, type LiveContextUsage } from '@/modules/foreman/foreman-session-reads.service.js';
 import { createForemanRouter } from '@/modules/foreman/foreman.routes.js';
 
-import { createMemoryIdempotencyStorage, createWorld, row, startBody, TOKEN, withBridge } from './foreman-routes-support.js';
+import { createBridgeServices, createMemoryIdempotencyStorage, createWorld, row, startBody, TOKEN, withBridge } from './foreman-routes-support.js';
 
 // ---------------------------------------------------------------------------------------------
 // Auth on the routes
@@ -392,7 +392,7 @@ test('GET /projects/git answers 503 when no git service is wired', async () => {
   const app = express();
   app.use('/api/foreman', createForemanRouter({
     authMiddleware: createBridgeAuthMiddleware({ tokenFile }),
-    sessions: createForemanSessionsService(deps),
+    ...createBridgeServices(deps),
     idempotency: createForemanIdempotency({ storage: createMemoryIdempotencyStorage() }),
   }));
   const server = app.listen(0, '127.0.0.1');

@@ -20,7 +20,7 @@ const toEvent = (row: ForemanEventRow): ForemanBridgeEvent =>
  * and stays until the end of time, so Foreman can ask for what it missed. Which events still have to be pushed is tracked beside
  * the log (`oldestUnackedPerSession`, `markAcked`), not by deleting from it.
  */
-// Consumed by foreman.module.ts, which gives it to the recorder (writes), the pusher (acknowledgements) and the sessions service (reads).
+// Consumed by foreman.module.ts, which gives it to the recorder (writes), the pusher (acknowledgements), and the reads and hand-over services (sequences and event pages).
 export function createForemanEventStore(dependencies: { storage: ForemanEventStorage; now?: () => Date }) {
   const { storage } = dependencies;
   const now = dependencies.now ?? (() => new Date());

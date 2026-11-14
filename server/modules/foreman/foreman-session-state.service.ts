@@ -92,7 +92,8 @@ const deriveStatus: DeriveStatus = (event, current, pending) => {
  * goes through an in-memory copy first, so a failing database never breaks a run (it is logged and the bridge carries
  * on with what it has until the next restart).
  */
-// Consumed by foreman.module.ts (runtime events, boot recovery) and foreman-sessions.service.ts (start, resume, listing).
+// Consumed by foreman.module.ts (runtime events, boot recovery), foreman-sessions.service.ts (start, resume, the permission mode),
+// foreman-session-reads.service.ts (listings and the `error` status, which this service alone tracks) and foreman-handover.service.ts (adopt, release).
 export function createForemanSessionStateService(dependencies: {
   store: ForemanSessionStateStore;
   now?: () => Date;

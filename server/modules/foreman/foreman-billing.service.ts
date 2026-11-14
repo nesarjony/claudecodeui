@@ -15,7 +15,8 @@ const CAP_MODEL_MARKER = '@cap';
  * API key, one carrying `@cap` runs through claude-cap's worker profile; anything else (including no model) runs on the
  * subscription. If a value carries more than one marker, the outermost (last) one decides and all of them are removed.
  */
-// Consumed by foreman-sessions.service.ts for listings and for the billing checks of a send and a model switch.
+// Consumed by foreman-session-reads.service.ts (listings), foreman-sessions.service.ts (a send or model switch checks the session's billing)
+// and foreman-handover.service.ts (the billing recorded at adoption).
 export function splitModelBilling(model: string | null | undefined): { model: string | null; billing: ForemanBilling } {
   let plain = typeof model === 'string' ? model.trim() : '';
   if (!plain) {

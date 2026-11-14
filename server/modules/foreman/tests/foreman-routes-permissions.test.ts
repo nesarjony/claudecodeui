@@ -2,10 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { createForemanSessionStateService } from '@/modules/foreman/foreman-session-state.service.js';
-import { createForemanSessionsService } from '@/modules/foreman/foreman-sessions.service.js';
 import { createTaskIdStore } from '@/modules/foreman/foreman-task-ids.service.js';
 
-import { row, startBody, tick, withBridge } from './foreman-routes-support.js';
+import { createBridgeServices, row, startBody, tick, withBridge } from './foreman-routes-support.js';
 import { samplePolicy } from './foreman-sandbox-support.js';
 
 
@@ -168,19 +167,19 @@ test('after a restart a resumed Foreman session keeps its permission mode, its s
 
     // "Restart": a brand-new bridge over the same store, with the in-memory pieces of the old process gone.
     const restartedState = createForemanSessionStateService({ store: world.stateStore });
-    const restarted = createForemanSessionsService({
+    const restarted = createBridgeServices({
       ...deps,
       state: restartedState,
       taskIds: createTaskIdStore({ get: () => null, set: () => undefined }),
     });
-    const [summary] = restarted.listSessions().filter((entry) => entry.id === sessionId);
+    const [summary] = restarted.reads.listSessions().filter((entry) => entry.id === sessionId);
     assert.equal(summary.status, 'idle', 'the run died with the process');
     assert.equal(summary.permissionMode, 'plan');
     assert.equal(summary.sandboxed, true);
     assert.equal(summary.supervision, 'started');
     assert.equal(summary.taskId, 'task-9', 'the task link is also read back from the stored state');
 
-    await restarted.sendMessage(sessionId, { text: 'Carry on', interrupt: false });
+    await restarted.sessions.sendMessage(sessionId, { text: 'Carry on', interrupt: false });
     const resumed = world.startedTurns.at(-1);
     assert.equal(resumed?.sessionId, sessionId);
     assert.equal(resumed?.options.permissionMode, 'plan');
@@ -200,9 +199,9 @@ test('a message that names a permission mode changes the remembered one, and a r
     assert.equal(tracked?.permissionMode, 'acceptEdits');
     assert.equal(tracked?.sandboxJson, null, 'a session without a sandbox stays without one');
 
-    const restarted = createForemanSessionsService({ ...deps, state: createForemanSessionStateService({ store: world.stateStore }) });
+    const restarted = createBridgeServices({ ...deps, state: createForemanSessionStateService({ store: world.stateStore }) });
     await tick();
-    await restarted.sendMessage('ui', { text: 'second', interrupt: false });
+    await restarted.sessions.sendMessage('ui', { text: 'second', interrupt: false });
     assert.equal(world.startedTurns.at(-1)?.options.permissionMode, 'acceptEdits');
   });
 });

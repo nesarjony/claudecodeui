@@ -10,22 +10,40 @@ import type { ForemanIdempotencyRow } from '@/modules/database/index.js';
 import { createBridgeAuthMiddleware } from '@/modules/foreman/foreman-auth.service.js';
 import { createForemanEventStore } from '@/modules/foreman/foreman-event-store.service.js';
 import { createForemanGitService } from '@/modules/foreman/foreman-git.service.js';
+import { createForemanHandoverService, type ForemanHandoverDependencies } from '@/modules/foreman/foreman-handover.service.js';
 import { createForemanIdempotency, type ForemanIdempotencyStorage } from '@/modules/foreman/foreman-idempotency.service.js';
-import { createForemanSessionStateService, type ForemanSessionStateStore } from '@/modules/foreman/foreman-session-state.service.js';
 import {
-  createForemanSessionsService,
-  type ForemanBridgeDependencies,
+  createForemanSessionReadsService,
+  type ForemanSessionReadsDependencies,
   type LiveContextUsage,
-} from '@/modules/foreman/foreman-sessions.service.js';
+} from '@/modules/foreman/foreman-session-reads.service.js';
+import { createForemanSessionStateService, type ForemanSessionStateStore } from '@/modules/foreman/foreman-session-state.service.js';
+import { createForemanSessionsService, type ForemanSessionsDependencies } from '@/modules/foreman/foreman-sessions.service.js';
 import { createTaskIdStore } from '@/modules/foreman/foreman-task-ids.service.js';
 import { createForemanRouter } from '@/modules/foreman/foreman.routes.js';
 
 import { createMemoryEventStorage } from './foreman-pipeline-support.js';
 import { samplePolicy } from './foreman-sandbox-support.js';
 
-export type SessionRow = NonNullable<ReturnType<ForemanBridgeDependencies['sessionsDb']['getSessionById']>>;
-export type StartTurnInput = Parameters<ForemanBridgeDependencies['startTurn']>[0];
-type ProjectRow = NonNullable<ReturnType<ForemanBridgeDependencies['projectsDb']['getProjectPath']>>;
+/**
+ * Everything the three session services need from cloudcli, in one bag: the reads, the sessions service and the hand-over each take
+ * the slice they ask for (`reads` is the one they share, built by `createBridgeServices`).
+ */
+export type BridgeDependencies = ForemanSessionReadsDependencies & Omit<ForemanSessionsDependencies, 'reads'> & Omit<ForemanHandoverDependencies, 'reads'>;
+
+/** The reads, the sessions service and the hand-over over one set of dependencies, wired as `foreman.module.ts` wires them. */
+export function createBridgeServices(deps: BridgeDependencies) {
+  const reads = createForemanSessionReadsService(deps);
+  return {
+    reads,
+    sessions: createForemanSessionsService({ ...deps, reads }),
+    handover: createForemanHandoverService({ ...deps, reads }),
+  };
+}
+
+export type SessionRow = NonNullable<ReturnType<BridgeDependencies['sessionsDb']['getSessionById']>>;
+export type StartTurnInput = Parameters<BridgeDependencies['startTurn']>[0];
+type ProjectRow = NonNullable<ReturnType<BridgeDependencies['projectsDb']['getProjectPath']>>;
 
 export const TOKEN = 'route-test-token';
 /** What the fake `headOf` answers: the commit every project is "at". */
@@ -162,7 +180,7 @@ export function createWorld() {
     nextId: 1,
   };
 
-  const deps: ForemanBridgeDependencies = {
+  const deps: BridgeDependencies = {
     sessionsDb: {
       getSessionById: (id) => rows.get(id) ?? null,
       getRecentSessionsPage: (limit, offset) => ({
@@ -283,7 +301,7 @@ export async function withBridge(
     call: Call;
     /** A real directory registered as the known project `<projectDir>`; `deps` for building a second ("restarted") service. */
     projectDir: string;
-    deps: ForemanBridgeDependencies;
+    deps: BridgeDependencies;
   }) => Promise<void>,
 ): Promise<void> {
   const directory = await realpath(await mkdtemp(path.join(os.tmpdir(), 'foreman-routes-')));
@@ -300,7 +318,7 @@ export async function withBridge(
   app.use(express.json({ limit: '5mb' }));
   app.use('/api/foreman', createForemanRouter({
     authMiddleware: createBridgeAuthMiddleware({ tokenFile }),
-    sessions: createForemanSessionsService(deps),
+    ...createBridgeServices(deps),
     idempotency: createForemanIdempotency({ storage: world.idempotencyStorage }),
     git: createForemanGitService({
       projectsDb: {

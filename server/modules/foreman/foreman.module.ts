@@ -13,12 +13,18 @@ import { createForemanEventPusher } from '@/modules/foreman/foreman-event-push.s
 import { createForemanEventRecorder } from '@/modules/foreman/foreman-event-recorder.service.js';
 import { createForemanEventStore } from '@/modules/foreman/foreman-event-store.service.js';
 import { createForemanGitService } from '@/modules/foreman/foreman-git.service.js';
+import { createForemanHandoverService } from '@/modules/foreman/foreman-handover.service.js';
 import { createForemanIdempotency } from '@/modules/foreman/foreman-idempotency.service.js';
 import { createManagedSessionStore } from '@/modules/foreman/foreman-managed-sessions.service.js';
 import { createForemanRuntimeHooks } from '@/modules/foreman/foreman-runtime-hooks.service.js';
 import { buildSandboxAdditions } from '@/modules/foreman/foreman-sandbox.service.js';
+import {
+  createForemanSessionReadsService,
+  type ForemanSessionReadsDependencies,
+  type LiveContextUsage,
+} from '@/modules/foreman/foreman-session-reads.service.js';
 import { createForemanSessionStateService, type ForemanSessionStateService } from '@/modules/foreman/foreman-session-state.service.js';
-import { createForemanSessionsService, type LiveContextUsage } from '@/modules/foreman/foreman-sessions.service.js';
+import { createForemanSessionsService, type ForemanSessionsDependencies } from '@/modules/foreman/foreman-sessions.service.js';
 import {
   createForemanSuggestionsClient,
   createSuggestionBroadcaster,
@@ -156,7 +162,30 @@ export function createForemanModule() {
     recorder.handle(event);
   });
 
+  // The cloudcli pieces the session services share: the chat run registry and the Claude runtime, seen through the narrow shapes each service asks for.
+  const runs: ForemanSessionReadsDependencies['runs'] & ForemanSessionsDependencies['runs'] = {
+    isProcessing: (sessionId) => chatRunRegistry.isProcessing(sessionId),
+    listRunningSessionIds: () => chatRunRegistry.listRunningRuns().map((run) => run.sessionId),
+    completeRun: (sessionId, options) => chatRunRegistry.completeRun(sessionId, options),
+  };
+  const runtime: ForemanSessionReadsDependencies['runtime'] & ForemanSessionsDependencies['runtime'] = {
+    abort: (sessionId) => providerRuntimeService.abort('claude', sessionId),
+    isLive: (sessionId) => Boolean(isClaudeSDKSessionActive(sessionId)),
+    liveSessionIds: () => getActiveClaudeSDKSessions(),
+    pendingApprovals: (sessionId) => providerRuntimeService.getPendingApprovalsForSession(sessionId),
+    // The same resolver the chat UI's `chat.permission-response` reaches: first answer wins.
+    resolvePermission: (requestId, decision) => providerRuntimeService.resolveToolApproval(requestId, decision),
+    backgroundTasks: (sessionId) => getLiveBackgroundTasks(sessionId),
+    setModel: (sessionId, model) => setClaudeSessionModel(sessionId, model),
+    contextUsage: async (sessionId) => readLiveContextUsage(await getClaudeSessionContextUsage(sessionId)),
+    hasApiKey: () => hasClaudeApiKey(),
+  };
+  const headOf = (projectPath: string) => commits.headOf(projectPath);
+
+  // What a session is: listing, status, events, digest and context. The other two services look sessions up through it.
+  const reads = createForemanSessionReadsService({ sessionsDb, runs, runtime, state: sessionState, events, taskIds });
   const sessions = createForemanSessionsService({
+    reads,
     sessionsDb,
     projectsDb,
     createAppSession: (projectPath, initialMessage) =>
@@ -173,38 +202,32 @@ export function createForemanModule() {
         },
         { runtime: providerRuntimeService },
       ),
-    runs: {
-      isProcessing: (sessionId) => chatRunRegistry.isProcessing(sessionId),
-      listRunningSessionIds: () => chatRunRegistry.listRunningRuns().map((run) => run.sessionId),
-      completeRun: (sessionId, options) => chatRunRegistry.completeRun(sessionId, options),
-    },
-    runtime: {
-      abort: (sessionId) => providerRuntimeService.abort('claude', sessionId),
-      isLive: (sessionId) => Boolean(isClaudeSDKSessionActive(sessionId)),
-      liveSessionIds: () => getActiveClaudeSDKSessions(),
-      pendingApprovals: (sessionId) => providerRuntimeService.getPendingApprovalsForSession(sessionId),
-      // The same resolver the chat UI's `chat.permission-response` reaches: first answer wins.
-      resolvePermission: (requestId, decision) => providerRuntimeService.resolveToolApproval(requestId, decision),
-      backgroundTasks: (sessionId) => getLiveBackgroundTasks(sessionId),
-      setModel: (sessionId, model) => setClaudeSessionModel(sessionId, model),
-      contextUsage: async (sessionId) => readLiveContextUsage(await getClaudeSessionContextUsage(sessionId)),
-      hasApiKey: () => hasClaudeApiKey(),
-    },
+    runs,
+    runtime,
     setSessionModel: (sessionId, model) => {
       providerModelsService.setSessionModel('claude', sessionId, model);
     },
     state: sessionState,
-    events,
-    headOf: (projectPath) => commits.headOf(projectPath),
-    settleEvents: () => recorder.whenIdle(),
+    headOf,
     taskIds,
     managed,
     announceSession: (sessionId) => broadcastSessionUpserted(sessionId),
+  });
+  // The owner hands a session to Foreman and takes it back.
+  const handover = createForemanHandoverService({
+    reads,
+    state: sessionState,
+    events,
+    headOf,
+    settleEvents: () => recorder.whenIdle(),
+    taskIds,
   });
 
   const router = createForemanRouter({
     authMiddleware: createBridgeAuthMiddleware({ tokenFile }),
     sessions,
+    reads,
+    handover,
     idempotency: createForemanIdempotency({ storage: foremanIdempotencyDb }),
     git: createForemanGitService({ projectsDb }),
     // A worktree is registered as a project the way the Worktrees module registers one it opens (the add-project path).
