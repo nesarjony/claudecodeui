@@ -1,5 +1,5 @@
 import type { IsoTime } from '@/modules/foreman-next/api/contract';
-import { useNow } from '@/modules/foreman-next/hooks/useNow';
+import { useNow } from '@/shared/hooks/useNow';
 import { formatAgo } from '@/modules/foreman-next/utils/foremanFormat';
 
 const MINUTE_MS = 60_000;

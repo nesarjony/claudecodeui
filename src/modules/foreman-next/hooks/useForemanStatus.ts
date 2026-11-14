@@ -10,10 +10,3 @@ export function useForemanStatus(): Resource<ForemanStatus> {
   if (!status) throw new Error('useForemanStatus needs the ForemanShell');
   return status;
 }
-
-const NOTHING = (): Promise<void> => Promise.resolve();
-
-/** Used by the actions that change a count in the status strip (answer, veto, pause) to refresh it at once instead of at the next poll. */
-export function useRefreshStatus(): () => Promise<void> {
-  return useContext(ForemanStatusContext)?.refresh ?? NOTHING;
-}
