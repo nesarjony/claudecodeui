@@ -1363,6 +1363,16 @@ export type SandboxCommandService = {
 export type ForemanBilling = 'api-key' | 'subscription' | 'cap';
 
 /**
+ * Where a session Foreman starts works, as cloudcli resolved it at the start: the project the session runs in and the git directory that
+ * project's worktrees share (`git rev-parse --git-common-dir`; null when the project is no repository). A sandbox policy may make writable
+ * only these and its own scratch directory. Stored with the policy, so every run of the session checks the policy against the same scope.
+ *
+ * Used by the Foreman bridge: the sessions service resolves it at a start, the sandbox services check a policy against it and the session
+ * state stores it next to the policy.
+ */
+export type ForemanSandboxScope = { projectPath: string; gitCommonDir: string | null };
+
+/**
  * What a Foreman-driven session did, in the form Foreman's inbox stores (the contract in `docs/foreman-bridge.md`).
  *
  * `kind` and `payload` are what the bridge derives from one runtime observation. Only the kinds cloudcli emits are listed:

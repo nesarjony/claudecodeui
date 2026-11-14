@@ -1,8 +1,9 @@
 import type { ForemanSessionStateRow } from '@/modules/database/index.js';
 import type { ForemanSandboxPolicy } from '@/modules/foreman/foreman-sandbox.service.js';
 import { createSessionSandboxReader, isSandboxedSession } from '@/modules/foreman/foreman-session-sandbox.service.js';
-import type { ClaudeRuntimeEvent, ForemanBilling } from '@/shared/types.js';
-import { isErrorTurnResult, isSandboxedPermissionMode } from '@/shared/utils.js';
+import { deriveSessionStatus } from '@/modules/foreman/foreman-session-status.service.js';
+import type { ClaudeRuntimeEvent, ForemanBilling, ForemanSandboxScope } from '@/shared/types.js';
+import { isSandboxedPermissionMode } from '@/shared/utils.js';
 
 export type ForemanSessionStatus = ForemanSessionStateRow['status'];
 
@@ -22,6 +23,8 @@ export type ForemanSessionState = {
   billing: ForemanBilling | null;
   /** The sandbox policy Foreman sent, as stored; null for a session without one (a person's own). Read through `sandboxOf`. */
   sandboxJson: string | null;
+  /** Where the session works (`ForemanSandboxScope`), as stored with the policy it was checked against; null without a sandbox. */
+  sandboxScopeJson: string | null;
   supervision: ForemanSupervision;
   /** The project's HEAD when supervision began; null when it has no commit or is no repository. */
   baseHead: string | null;
@@ -40,8 +43,8 @@ export type ForemanSessionStateStore = {
 };
 
 /**
- * Fields `track` and `trackStrict` may set. `undefined` leaves a field as it is; `null` clears it. Only `trackStrict` records a sandbox, and
- * nothing clears one: a session that has a sandbox keeps it.
+ * Fields `track` and `trackStrict` may set. `undefined` leaves a field as it is; `null` clears it. Only `trackStrict` records a sandbox (the
+ * policy with the scope it was checked against), and nothing clears one: a session that has a sandbox keeps it.
  */
 // Consumed by foreman-session-sandbox.service.ts, which records a starting session's sandbox with it.
 export type ForemanSessionStatePatch = {
@@ -49,44 +52,10 @@ export type ForemanSessionStatePatch = {
   status?: ForemanSessionStatus;
   permissionMode?: string | null;
   billing?: ForemanBilling | null;
-  sandbox?: ForemanSandboxPolicy;
+  sandbox?: { policy: ForemanSandboxPolicy; scope: ForemanSandboxScope };
   supervision?: ForemanSupervision;
   baseHead?: string | null;
   baseSequence?: number;
-};
-
-type DeriveStatus = (event: ClaudeRuntimeEvent, current: ForemanSessionStatus, pending: Set<string>) => ForemanSessionStatus | null;
-
-/**
- * The status a runtime event leaves a session in, or null when it does not change it.
- * `pending` holds the ids of the session's unanswered permission prompts and is updated here.
- */
-const deriveStatus: DeriveStatus = (event, current, pending) => {
-  switch (event.kind) {
-    case 'run_started':
-      pending.clear();
-      return 'running';
-    case 'permission_request':
-      pending.add(event.requestId);
-      return 'waiting_permission';
-    case 'permission_resolved':
-      // Whoever answers (the chat UI, the bridge, a timeout or an abort), the session leaves
-      // `waiting_permission` only when its last prompt is gone, and never once the run has already ended.
-      pending.delete(event.requestId);
-      return current === 'waiting_permission' && pending.size === 0 ? 'running' : null;
-    case 'turn_result':
-      return isErrorTurnResult(event.message) ? 'error' : 'idle';
-    case 'run_error':
-      return 'error';
-    case 'run_ended':
-      pending.clear();
-      if (event.reason === 'error') {
-        return 'error';
-      }
-      return current === 'running' || current === 'waiting_permission' ? 'idle' : null;
-    default:
-      return null;
-  }
 };
 
 /**
@@ -126,6 +95,7 @@ export function createForemanSessionStateService(dependencies: {
       permissionMode: sandboxed && row.permission_mode !== null && !isSandboxedPermissionMode(row.permission_mode) ? null : row.permission_mode,
       billing: row.billing === 'api-key' || row.billing === 'subscription' || row.billing === 'cap' ? row.billing : null,
       sandboxJson: row.sandbox_json,
+      sandboxScopeJson: row.sandbox_scope_json,
       supervision: row.supervision,
       baseHead: row.base_head,
       baseSequence: row.base_sequence,
@@ -141,6 +111,7 @@ export function createForemanSessionStateService(dependencies: {
       permission_mode: state.permissionMode,
       billing: state.billing,
       sandbox_json: state.sandboxJson,
+      sandbox_scope_json: state.sandboxScopeJson,
       supervision: state.supervision,
       base_head: state.baseHead,
       base_sequence: state.baseSequence,
@@ -218,7 +189,8 @@ export function createForemanSessionStateService(dependencies: {
       status: patch.status ?? current?.status ?? 'idle',
       permissionMode: patch.permissionMode === undefined ? current?.permissionMode ?? null : patch.permissionMode,
       billing: patch.billing === undefined ? current?.billing ?? null : patch.billing,
-      sandboxJson: patch.sandbox === undefined ? current?.sandboxJson ?? null : JSON.stringify(patch.sandbox),
+      sandboxJson: patch.sandbox === undefined ? current?.sandboxJson ?? null : JSON.stringify(patch.sandbox.policy),
+      sandboxScopeJson: patch.sandbox === undefined ? current?.sandboxScopeJson ?? null : JSON.stringify(patch.sandbox.scope),
       supervision: patch.supervision ?? current?.supervision ?? 'started',
       baseHead: patch.baseHead === undefined ? current?.baseHead ?? null : patch.baseHead,
       baseSequence: patch.baseSequence ?? current?.baseSequence ?? 0,
@@ -257,7 +229,7 @@ export function createForemanSessionStateService(dependencies: {
       store.upsert(toRow(next));
       cache.set(sessionId, next);
       if (patch.sandbox) {
-        sandboxes.remember(sessionId, patch.sandbox);
+        sandboxes.remember(sessionId, patch.sandbox.policy);
       }
       return next;
     },
@@ -291,7 +263,7 @@ export function createForemanSessionStateService(dependencies: {
           pending = new Set<string>();
           pendingPrompts.set(event.sessionId, pending);
         }
-        const next = deriveStatus(event, current.status, pending);
+        const next = deriveSessionStatus(event, current.status, pending);
         if (next) {
           setStatus(event.sessionId, next);
         }

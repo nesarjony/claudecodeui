@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, realpath, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -84,5 +84,20 @@ test('what git cannot say is null: no base, a base the repository does not have,
   await withProject({ repository: false }, async ({ project, commits }) => {
     assert.deepEqual(await commits.standing(project, 'a'.repeat(40)), { head: null, commitsSinceBase: null });
     assert.equal(await commits.headOf(project), null);
+  });
+});
+
+test('the git directory a project shares is absolute: the checkout\'s own .git, the main repository\'s for a linked worktree, none without a repository', async () => {
+  await withProject({ repository: true }, async ({ project, commits }) => {
+    commit(project, 'base');
+    assert.equal(await commits.gitCommonDirOf(project), path.join(project, '.git'));
+    const nested = path.join(project, 'packages');
+    git(project, ['worktree', 'add', '-q', '-b', 'task-1', path.join(project, 'linked')]);
+    await mkdir(nested);
+    assert.equal(await commits.gitCommonDirOf(nested), path.join(project, '.git'), 'from a directory inside the checkout');
+    assert.equal(await commits.gitCommonDirOf(path.join(project, 'linked')), path.join(project, '.git'), 'a linked worktree shares the main repository\'s');
+  });
+  await withProject({ repository: false }, async ({ project, commits }) => {
+    assert.equal(await commits.gitCommonDirOf(project), null);
   });
 });

@@ -310,7 +310,7 @@ test('a bridge-started run hands the CLI Foreman\'s subagents (bashAllow stays b
 });
 
 test('the sandbox sent with the start reaches the CLI: the SDK sandbox option, the permission rules, the denied tools and the scratch environment', async () => {
-  const policy = sandboxPolicy({ permissions: { allow: ['Bash', 'Edit(//mnt/dev/repo/**)'], deny: ['Read(~/.ssh/**)'] }, disallowedTools: ['AskUserQuestion', 'WebFetch'] });
+  const policy = sandboxPolicy({ permissions: { allow: ['Bash', `Edit(/${projectDir}/**)`], deny: ['Read(~/.ssh/**)'] }, disallowedTools: ['AskUserQuestion', 'WebFetch'] });
   const { sessionId, mark } = await run('hello', policy);
   const spawn = await spawnOf(mark);
   const settings = settingsOf(spawn.argv);

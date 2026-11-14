@@ -44,6 +44,26 @@ test('a start whose sandbox is written but reads back as something else fails to
   });
 });
 
+test('a start may write only its project, its scratch directory and its git directory, and the scope is stored with the policy', async () => {
+  await withBridge(async ({ call, world }) => {
+    world.gitCommonDir = '/mnt/dev/main/.git';
+    const writing = (allowWrite: string[]) => samplePolicy({ filesystem: { ...samplePolicy().filesystem, allowWrite } });
+    for (const outside of ['/mnt/dev/other', '/home/worker/.gitconfig', '/mnt/dev/known-other']) {
+      const refused = await call('POST', '/sessions', startBody({ sandbox: writing([outside]) }));
+      assert.deepEqual([refused.status, refused.body.error.code], [400, 'SANDBOX_INVALID'], outside);
+      assert.match(refused.body.error.message, /outside the project, scratchDir and the git directory|home directory/, outside);
+    }
+    assert.equal(world.created.length, 0, 'nothing was allocated');
+
+    const sandbox = writing(['/mnt/dev/known/src', '/mnt/dev/main/.git', '/mnt/dev/scratch/batch-1']);
+    const started = await call('POST', '/sessions', startBody({ sandbox }));
+    assert.equal(started.status, 201, JSON.stringify(started.body));
+    const stored = world.stateRows.get(started.body.data.sessionId as string);
+    assert.deepEqual(JSON.parse(stored?.sandbox_scope_json ?? 'null'), { projectPath: '/mnt/dev/known', gitCommonDir: '/mnt/dev/main/.git' });
+    assert.deepEqual(world.state.sandboxOf(started.body.data.sessionId as string), { policy: sandbox });
+  });
+});
+
 test('every turn of a session Foreman started is marked as sandboxed; a turn of a session handed over is not', async () => {
   await withBridge(async ({ call, world, handOver }) => {
     const started = await call('POST', '/sessions', startBody());

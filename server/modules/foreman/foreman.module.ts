@@ -225,6 +225,7 @@ export function createForemanModule() {
     },
     state: sessionState,
     headOf,
+    gitCommonDirOf: (projectPath) => commits.gitCommonDirOf(projectPath),
     taskIds,
     managed,
     announceSession: (sessionId) => broadcastSessionUpserted(sessionId),

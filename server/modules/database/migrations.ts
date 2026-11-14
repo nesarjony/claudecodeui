@@ -434,8 +434,9 @@ const addSupersededTranscriptPathColumn = (db: Database): void => {
 
 /**
  * Brings a `foreman_session_state` table that predates sandboxes and hand-over up to date: `guard_json` held the old risky-action
- * guard, which no longer exists, so the column becomes `sandbox_json` and starts empty; `base_head`, `base_sequence` and `supervision` are
- * added. The rows that exist were driven by the old Foreman, which is gone, so none of them is supervised any more.
+ * guard, which no longer exists, so the column becomes `sandbox_json` and starts empty; `base_head`, `base_sequence`, `supervision` and
+ * `sandbox_scope_json` are added. The rows that exist were driven by the old Foreman, which is gone, so none of them is supervised any more.
+ * A policy stored before its scope was recorded keeps a NULL scope, and its session's runs are refused: it cannot be checked.
  */
 const migrateForemanSessionStateColumns = (db: Database): void => {
   const columnNames = getTableInfo(db, 'foreman_session_state').map((column) => column.name);
@@ -449,6 +450,7 @@ const migrateForemanSessionStateColumns = (db: Database): void => {
     addColumnToTableIfNotExists(db, 'foreman_session_state', columnNames, 'supervision', "TEXT NOT NULL DEFAULT 'started'");
     db.exec("UPDATE foreman_session_state SET supervision = 'released'");
   }
+  addColumnToTableIfNotExists(db, 'foreman_session_state', columnNames, 'sandbox_scope_json', 'TEXT');
 };
 
 const addForkedFromSessionIdColumn = (db: Database): void => {

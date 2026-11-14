@@ -11,7 +11,7 @@ import {
 } from '@/modules/foreman/foreman-session-state.service.js';
 import type { ClaudeRuntimeEvent } from '@/shared/types.js';
 
-import { samplePolicy } from './foreman-sandbox-support.js';
+import { SAMPLE_SCOPE, samplePolicy } from './foreman-sandbox-support.js';
 
 async function withIsolatedDatabase(runTest: () => void | Promise<void>): Promise<void> {
   const previousDatabasePath = process.env.DATABASE_PATH;
@@ -35,6 +35,7 @@ async function withIsolatedDatabase(runTest: () => void | Promise<void>): Promis
 }
 
 const SANDBOX = samplePolicy();
+const RECORDED = { policy: SANDBOX, scope: SAMPLE_SCOPE };
 
 const base = { sessionId: 's1', projectPath: '/mnt/dev/repo' };
 const started = (sessionId = 's1'): ClaudeRuntimeEvent => ({ ...base, sessionId, kind: 'run_started', resumed: false, model: null, permissionMode: 'default' });
@@ -52,7 +53,7 @@ function newService(log: string[] = []) {
 test('the foreman_session_state table is created with the database', async () => {
   await withIsolatedDatabase(() => {
     const columns = (getConnection().prepare('PRAGMA table_info(foreman_session_state)').all() as Array<{ name: string; pk: number }>);
-    assert.deepEqual(columns.map((column) => column.name), ['session_id', 'task_id', 'status', 'permission_mode', 'billing', 'sandbox_json', 'supervision', 'base_head', 'base_sequence', 'updated_at']);
+    assert.deepEqual(columns.map((column) => column.name), ['session_id', 'task_id', 'status', 'permission_mode', 'billing', 'sandbox_json', 'supervision', 'base_head', 'base_sequence', 'updated_at', 'sandbox_scope_json']);
     assert.equal(columns.find((column) => column.name === 'session_id')?.pk, 1);
   });
 });
@@ -62,10 +63,13 @@ test('track stores task, billing, permission mode, sandbox and where supervision
     const state = newService();
     assert.equal(state.get('s1'), null);
 
-    state.trackStrict('s1', { taskId: 'task-1', billing: 'api-key', permissionMode: 'default', sandbox: SANDBOX, baseHead: 'abc', baseSequence: 4 });
+    state.trackStrict('s1', { taskId: 'task-1', billing: 'api-key', permissionMode: 'default', sandbox: RECORDED, baseHead: 'abc', baseSequence: 4 });
     assert.deepEqual(
       { ...state.get('s1'), updatedAt: undefined },
-      { sessionId: 's1', taskId: 'task-1', status: 'idle', permissionMode: 'default', billing: 'api-key', sandboxJson: JSON.stringify(SANDBOX), supervision: 'started', baseHead: 'abc', baseSequence: 4, updatedAt: undefined },
+      {
+        sessionId: 's1', taskId: 'task-1', status: 'idle', permissionMode: 'default', billing: 'api-key', sandboxJson: JSON.stringify(SANDBOX),
+        sandboxScopeJson: JSON.stringify(SAMPLE_SCOPE), supervision: 'started', baseHead: 'abc', baseSequence: 4, updatedAt: undefined,
+      },
     );
 
     state.track('s1', { permissionMode: 'plan' });
@@ -99,7 +103,7 @@ test('cap billing is stored and read back, and survives a restart', async () => 
 test('after a restart a new service reads the same state: mode, sandbox and task survive, running becomes idle', async () => {
   await withIsolatedDatabase(() => {
     const before = newService();
-    before.trackStrict('running-one', { taskId: 'task-7', billing: 'subscription', permissionMode: 'plan', sandbox: SANDBOX });
+    before.trackStrict('running-one', { taskId: 'task-7', billing: 'subscription', permissionMode: 'plan', sandbox: RECORDED });
     before.setStatus('running-one', 'running');
     before.track('waiting-one', { permissionMode: 'default' });
     before.setStatus('waiting-one', 'waiting_permission');
@@ -302,7 +306,10 @@ test('a failing database is logged and the bridge carries on with what it has', 
 });
 
 function storedRow(sandboxJson: string | null, supervision: 'started' | 'adopted' | 'released' = 'started') {
-  return { session_id: 'stored', task_id: null, status: 'idle' as const, permission_mode: 'default', billing: null, sandbox_json: sandboxJson, supervision, base_head: null, base_sequence: 0, updated_at: new Date().toISOString() };
+  return {
+    session_id: 'stored', task_id: null, status: 'idle' as const, permission_mode: 'default', billing: null, sandbox_json: sandboxJson, supervision,
+    base_head: null, base_sequence: 0, updated_at: new Date().toISOString(), sandbox_scope_json: sandboxJson ? JSON.stringify(SAMPLE_SCOPE) : null,
+  };
 }
 
 test('sandboxOf answers null for a session without a sandbox, the policy for one that has it, and refuses when it cannot be read', async () => {
@@ -322,11 +329,12 @@ test('sandboxOf answers null for a session without a sandbox, the policy for one
 
 test('a row written without a sandbox never erases the one recorded for the session', async () => {
   await withIsolatedDatabase(() => {
-    newService().trackStrict('stored', { sandbox: SANDBOX });
+    newService().trackStrict('stored', { sandbox: RECORDED });
     // A writer that could not read the row first (its read failed) writes the whole row without the sandbox.
     foremanSessionStateDb.upsert(storedRow(null, 'adopted'));
     assert.equal(foremanSessionStateDb.get('stored')?.supervision, 'adopted');
     assert.equal(foremanSessionStateDb.get('stored')?.sandbox_json, JSON.stringify(SANDBOX));
+    assert.equal(foremanSessionStateDb.get('stored')?.sandbox_scope_json, JSON.stringify(SAMPLE_SCOPE), 'nor the scope recorded with it');
     assert.deepEqual(newService().sandboxOf('stored'), { policy: SANDBOX });
   });
 });

@@ -189,6 +189,8 @@ export function createWorld() {
     /** The commit every project is at; null for a project without one. */
     head: HEAD as string | null,
     headCalls: [] as string[],
+    /** The git directory every project's worktrees share; null for no repository. */
+    gitCommonDir: null as string | null,
     /** How many times the bridge waited for the stored events to settle, and what runs while it waits (tests hook in to see the order). */
     settleCalls: 0,
     onSettle: async (): Promise<void> => undefined,
@@ -283,6 +285,7 @@ export function createWorld() {
       world.headCalls.push(projectPath);
       return world.head;
     },
+    gitCommonDirOf: async () => world.gitCommonDir,
     settleEvents: async () => {
       world.settleCalls += 1;
       await world.onSettle();

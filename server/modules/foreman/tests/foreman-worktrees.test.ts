@@ -127,6 +127,7 @@ function sessionsOver(projects: ReturnType<typeof fakeProjects>) {
     state: createForemanSessionStateService({ store: stateStore }),
     events: createForemanEventStore({ storage: createMemoryEventStorage() }),
     headOf: async (projectPath) => `head-of:${projectPath}`,
+    gitCommonDirOf: async () => null,
     settleEvents: async () => undefined,
     taskIds: createTaskIdStore({ get: () => null, set: () => undefined }),
     // No hand-over here: nothing is granted and no session has a mode to adopt.

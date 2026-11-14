@@ -2,6 +2,7 @@ import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 
 import { sandboxScopeProblem } from '@/modules/foreman/foreman-sandbox-scope.service.js';
+import type { ForemanSandboxScope } from '@/shared/types.js';
 import { AppError } from '@/shared/utils.js';
 
 /**
@@ -118,12 +119,13 @@ function readApprovalTimeout(value: unknown): number | null {
 }
 
 /**
- * Validates a sandbox policy. Absent or `null` is refused too (`SANDBOX_REQUIRED`): a session the bridge starts is always sandboxed.
- * Every part is checked for shape and size; the parts that open something up are also checked for what they open (`sandboxScopeProblem`).
- * What the lists that only close things (denials) say is Foreman's Charter to decide.
+ * Validates a sandbox policy for a session that works in `scope`. Absent or `null` is refused too (`SANDBOX_REQUIRED`): a session the bridge
+ * starts is always sandboxed. Every part is checked for shape and size; the parts that open something up are also checked for what they open
+ * (`sandboxScopeProblem`), the writable ones against the session's project and git directory. What the lists that only close things
+ * (denials) say is Foreman's Charter to decide.
  */
-// Consumed by foreman.routes.ts (session start) and by the session state service (a stored policy is read through the same check).
-export function parseSandboxPolicy(raw: unknown): ForemanSandboxPolicy {
+// Consumed by foreman.routes.ts (session start) and by foreman-session-sandbox.service.ts (a stored policy is read through the same check, against the stored scope).
+export function parseSandboxPolicy(raw: unknown, scope: ForemanSandboxScope): ForemanSandboxPolicy {
   if (raw === undefined || raw === null) {
     throw new AppError('sandbox is required: a session started through the bridge always runs sandboxed.', {
       code: 'SANDBOX_REQUIRED',
@@ -160,7 +162,7 @@ export function parseSandboxPolicy(raw: unknown): ForemanSandboxPolicy {
     disallowedTools: readList(body, 'disallowedTools', ''),
     env: readEnvironment(readObject(body, 'env', '')),
   };
-  const problem = sandboxScopeProblem(policy);
+  const problem = sandboxScopeProblem(policy, scope);
   if (problem) {
     throw new AppError(`sandbox would widen the session: ${problem}`, { code: 'SANDBOX_INVALID', statusCode: 400 });
   }

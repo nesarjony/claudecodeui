@@ -207,8 +207,10 @@ export function createForemanRouter(options: {
 
   router.post('/sessions', asyncHandler(async (request, response) => {
     const body = readBody(request);
-    // Checked before anything else: a session that cannot be sandboxed must not start at all.
-    const sandbox = parseSandboxPolicy(body.sandbox);
+    // Checked before anything else: a session that cannot be sandboxed must not start at all. What it may write depends on where it works
+    // (its project and that project's git directory), which the sessions service resolves.
+    const sandboxScope = await sessions.sandboxScopeOf(typeof body.projectPath === 'string' ? body.projectPath.trim() : '');
+    const sandbox = parseSandboxPolicy(body.sandbox, sandboxScope);
     const projectPath = readRequiredText(body, 'projectPath', MAX_PATH_LENGTH).trim();
     if (!projectPath.startsWith('/')) {
       throw invalid('projectPath must be an absolute path of a known cloudcli project.');
@@ -225,6 +227,7 @@ export function createForemanRouter(options: {
       title: readOptionalText(body, 'title', MAX_TITLE_LENGTH),
       taskId: readTaskId(body.taskId),
       sandbox,
+      sandboxScope,
     };
     await once(response, { body, operation: 'start', scope: projectPath, status: 201 }, () => sessions.startSession(input));
   }));

@@ -301,7 +301,9 @@ CREATE TABLE IF NOT EXISTS foreman_session_state (
     -- The project's HEAD and the session's last event sequence when supervision began: what the session commits and reports counts from there.
     base_head TEXT,
     base_sequence INTEGER NOT NULL DEFAULT 0,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    -- Where the session works (project path and shared git directory), as JSON: the scope its sandbox policy was checked against.
+    sandbox_scope_json TEXT
 );
 `;
 

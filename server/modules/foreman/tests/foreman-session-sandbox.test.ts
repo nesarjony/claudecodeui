@@ -3,7 +3,7 @@ import test from 'node:test';
 
 import { createForemanSessionStateService, type ForemanSessionStateStore } from '@/modules/foreman/foreman-session-state.service.js';
 
-import { samplePolicy } from './foreman-sandbox-support.js';
+import { SAMPLE_SCOPE, samplePolicy, sampleSandbox } from './foreman-sandbox-support.js';
 
 type StateRow = Parameters<ForemanSessionStateStore['upsert']>[0];
 
@@ -31,12 +31,12 @@ test('trackStrict throws when the write fails and leaves nothing behind, in memo
   const { rows, faults, store } = memoryStore();
   const state = createForemanSessionStateService({ store });
   faults.write = new Error('disk I/O error');
-  assert.throws(() => state.trackStrict('s1', { permissionMode: 'default', sandbox: samplePolicy() }), /disk I\/O error/);
+  assert.throws(() => state.trackStrict('s1', { permissionMode: 'default', sandbox: sampleSandbox() }), /disk I\/O error/);
   assert.equal(state.get('s1'), null, 'memory did not move ahead of the store');
   assert.equal(rows.size, 0);
 
   faults.write = null;
-  state.trackStrict('s1', { permissionMode: 'default', sandbox: samplePolicy() });
+  state.trackStrict('s1', { permissionMode: 'default', sandbox: sampleSandbox() });
   assert.equal(rows.get('s1')?.sandbox_json, JSON.stringify(samplePolicy()));
   assert.deepEqual(state.sandboxOf('s1'), { policy: samplePolicy() });
 });
@@ -44,7 +44,7 @@ test('trackStrict throws when the write fails and leaves nothing behind, in memo
 test('a later lenient track keeps the sandbox a strict one recorded', () => {
   const { rows, store } = memoryStore();
   const state = createForemanSessionStateService({ store });
-  state.trackStrict('s1', { sandbox: samplePolicy() });
+  state.trackStrict('s1', { sandbox: sampleSandbox() });
   state.track('s1', { permissionMode: 'plan' });
   assert.equal(rows.get('s1')?.sandbox_json, JSON.stringify(samplePolicy()));
   assert.equal(rows.get('s1')?.permission_mode, 'plan');
@@ -59,6 +59,7 @@ const UNMARKED = { required: false };
 const storedRow = (sessionId: string, sandboxJson: string | null): StateRow => ({
   session_id: sessionId, task_id: null, status: 'idle', permission_mode: null, billing: null, sandbox_json: sandboxJson,
   supervision: sandboxJson ? 'started' : 'adopted', base_head: null, base_sequence: 0, updated_at: '2026-11-14T08:00:00.000Z',
+  sandbox_scope_json: sandboxJson ? JSON.stringify(SAMPLE_SCOPE) : null,
 });
 const refuses = (answer: unknown, pattern: RegExp) => assert.match((answer as { refuse: string }).refuse, pattern);
 
@@ -88,7 +89,7 @@ test('the read fails: a policy read or written earlier in this process applies t
   const state = createForemanSessionStateService({ store, log: (message) => log.push(message) });
   assert.deepEqual(state.sandboxOf('read-before'), { policy: samplePolicy() });
   const written = samplePolicy({ scratchDir: '/mnt/dev/scratch/written' });
-  state.trackStrict('written-before', { sandbox: written });
+  state.trackStrict('written-before', { sandbox: { policy: written, scope: SAMPLE_SCOPE } });
 
   faults.read = new Error('database disk image is malformed');
   for (const run of [MARKED, UNMARKED]) {
@@ -112,12 +113,26 @@ test('the read fails and nothing is remembered: a marked run is refused, the own
 test('a stored policy that is malformed or no longer allowed refuses every run, even with a good one remembered', () => {
   const { rows, store } = memoryStore();
   const state = createForemanSessionStateService({ store });
-  state.trackStrict('worker', { sandbox: samplePolicy() });
+  state.trackStrict('worker', { sandbox: sampleSandbox() });
   const tooWide = { ...samplePolicy(), env: { NODE_OPTIONS: '--inspect' } };
   for (const broken of ['{not json', JSON.stringify({ scratchDir: '/x' }), JSON.stringify(tooWide)]) {
     rows.set('worker', storedRow('worker', broken));
     for (const run of [MARKED, UNMARKED]) {
       refuses(state.sandboxOf('worker', run), /malformed or no longer allowed, so it does not run/);
     }
+  }
+});
+
+test('a stored policy is checked against the scope stored with it: without one, or writing outside it, it refuses every run', () => {
+  const { rows, store } = memoryStore();
+  const state = createForemanSessionStateService({ store });
+  rows.set('unscoped', { ...storedRow('unscoped', JSON.stringify(samplePolicy())), sandbox_scope_json: null });
+  const outside = samplePolicy({ filesystem: { ...samplePolicy().filesystem, allowWrite: ['/mnt/dev/other-project'] } });
+  rows.set('outside', storedRow('outside', JSON.stringify(outside)));
+  rows.set('inside', storedRow('inside', JSON.stringify(samplePolicy({ filesystem: { ...samplePolicy().filesystem, allowWrite: ['/mnt/dev/repo/src'] } }))));
+  for (const run of [MARKED, UNMARKED]) {
+    refuses(state.sandboxOf('unscoped', run), /malformed or no longer allowed/);
+    refuses(state.sandboxOf('outside', run), /malformed or no longer allowed/);
+    assert.ok('policy' in (state.sandboxOf('inside', run) ?? {}), 'a write inside the stored project is allowed');
   }
 });

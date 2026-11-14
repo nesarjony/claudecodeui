@@ -3,6 +3,7 @@ import { isDeepStrictEqual } from 'node:util';
 import type { ForemanSessionStateRow } from '@/modules/database/index.js';
 import { parseSandboxPolicy, type ForemanSandboxPolicy } from '@/modules/foreman/foreman-sandbox.service.js';
 import type { ForemanSessionStatePatch, ForemanSessionStateService, ForemanSupervision } from '@/modules/foreman/foreman-session-state.service.js';
+import type { ForemanSandboxScope } from '@/shared/types.js';
 import { AppError, isSandboxedPermissionMode, SANDBOXED_PERMISSION_MODES } from '@/shared/utils.js';
 
 /**
@@ -32,15 +33,15 @@ export function requireSandboxedMode(permissionMode: string | undefined): void {
 }
 
 /**
- * Records a session the bridge starts, with its sandbox, before its first run: with a write that throws when it fails, then read back the
- * way every run of the session reads it. Anything but exactly the policy that was sent stops the start, because the session's runs would not
- * find their sandbox.
+ * Records a session the bridge starts, with its sandbox and the scope it was checked against, before its first run: with a write that throws
+ * when it fails, then read back the way every run of the session reads it. Anything but exactly the policy that was sent stops the start,
+ * because the session's runs would not find their sandbox.
  */
 // Consumed by foreman-sessions.service.ts when it starts a session.
 export function recordSandboxedStart(
   state: Pick<ForemanSessionStateService, 'trackStrict' | 'sandboxOf'>,
   sessionId: string,
-  patch: ForemanSessionStatePatch & { sandbox: ForemanSandboxPolicy },
+  patch: ForemanSessionStatePatch & { sandbox: NonNullable<ForemanSessionStatePatch['sandbox']> },
 ): void {
   const notRecorded = (reason: string) =>
     new AppError(`The sandbox of the session was not recorded (${reason}), so nothing was run.`, { code: 'SANDBOX_NOT_RECORDED', statusCode: 500 });
@@ -50,11 +51,20 @@ export function recordSandboxedStart(
     throw notRecorded(`the write failed: ${error instanceof Error ? error.message : String(error)}`);
   }
   const readBack = state.sandboxOf(sessionId, { required: true });
-  if (!readBack || !('policy' in readBack) || !isDeepStrictEqual(readBack.policy, patch.sandbox)) {
+  if (!readBack || !('policy' in readBack) || !isDeepStrictEqual(readBack.policy, patch.sandbox.policy)) {
     throw notRecorded('what is stored does not read back as the policy that was sent');
   }
 }
 
+/** The scope stored with a policy. A policy stored without one (before scopes were recorded) cannot be checked, so it is refused like a malformed one. */
+function readSandboxScope(json: string | null): ForemanSandboxScope {
+  const scope = JSON.parse(json ?? 'null') as { projectPath?: unknown; gitCommonDir?: unknown } | null;
+  const gitCommonDir = scope?.gitCommonDir;
+  if (typeof scope?.projectPath !== 'string' || (gitCommonDir !== null && typeof gitCommonDir !== 'string')) {
+    throw new Error('no scope is stored with the sandbox');
+  }
+  return { projectPath: scope.projectPath, gitCommonDir };
+}
 
 /** What a run of a session is to do about its sandbox: apply this policy, not run at all (and why), or run without one (`null`). */
 type SandboxAnswer = { policy: ForemanSandboxPolicy } | { refuse: string } | null;
@@ -69,7 +79,7 @@ type SandboxAnswer = { policy: ForemanSandboxPolicy } | { refuse: string } | nul
  * - the read fails: the policy last read or written in this process applies; without one a marked run is refused and any other runs as
  *   before, so an unreadable table never stops the owner's own sessions. Left open: a person typing into a worker's session in the UI while
  *   the table cannot be read and nothing is remembered runs that turn without the sandbox.
- * - a stored policy that is malformed, or that today's checks refuse, refuses every run.
+ * - a stored policy that is malformed, has no stored scope, or that today's checks refuse (against the scope stored with it) refuses every run.
  */
 // Consumed by foreman-session-state.service.ts, which records policies through `remember` and answers the runtime's sandbox provider with `sandboxOf`.
 export function createSessionSandboxReader(dependencies: {
@@ -101,7 +111,7 @@ export function createSessionSandboxReader(dependencies: {
         return run.required ? { refuse: 'This run was started for a sandboxed session, but no sandbox is stored for it, so it does not run.' } : null;
       }
       try {
-        const policy = parseSandboxPolicy(JSON.parse(row.sandbox_json));
+        const policy = parseSandboxPolicy(JSON.parse(row.sandbox_json), readSandboxScope(row.sandbox_scope_json));
         known.set(sessionId, policy);
         return { policy };
       } catch {

@@ -5,7 +5,7 @@ import type { ForemanSessionReadsService } from '@/modules/foreman/foreman-sessi
 import { isSandboxedSession, recordSandboxedStart, requireSandboxedMode } from '@/modules/foreman/foreman-session-sandbox.service.js';
 import type { ForemanSessionState, ForemanSessionStateService } from '@/modules/foreman/foreman-session-state.service.js';
 import { awaitTurnAdmission } from '@/modules/foreman/foreman-turn-admission.service.js';
-import type { ForemanBilling } from '@/shared/types.js';
+import type { ForemanBilling, ForemanSandboxScope } from '@/shared/types.js';
 import { AppError, clipText, summarizeToolInput } from '@/shared/utils.js';
 
 /** The options of a turn the bridge dispatches: the settings the UI sends with every turn, and the mark of a sandboxed session's run. */
@@ -60,6 +60,8 @@ export type ForemanSessionsDependencies = {
   state: Pick<ForemanSessionStateService, 'get' | 'track' | 'trackStrict' | 'sandboxOf'>;
   /** The commit a project is at (`git rev-parse HEAD`), or null when it has none or is no repository. */
   headOf(projectPath: string): Promise<string | null>;
+  /** The git directory a project's worktrees share (`git rev-parse --git-common-dir`), or null when it is no repository. */
+  gitCommonDirOf(projectPath: string): Promise<string | null>;
   /** Remembers which Foreman task a session belongs to. */
   taskIds: { set(sessionId: string, taskId: string): void };
   /** Marks sessions started through the bridge, so the runtime gives them the worker autocompact threshold. */
@@ -160,6 +162,18 @@ export function createForemanSessionsService(deps: ForemanSessionsDependencies) 
 
   return {
     /**
+     * Where a session started in `projectPath` would work, for checking its sandbox policy: the known project and its shared git directory.
+     * Git is asked only about a known project; for any other path the start is refused anyway (UNKNOWN_PROJECT).
+     */
+    async sandboxScopeOf(projectPath: string): Promise<ForemanSandboxScope> {
+      const project = deps.projectsDb.getProjectPath(projectPath);
+      if (!project || project.isArchived) {
+        return { projectPath, gitCommonDir: null };
+      }
+      return { projectPath: project.project_path, gitCommonDir: await deps.gitCommonDirOf(project.project_path) };
+    },
+
+    /**
      * Starts a new Claude session in a known project and sends its first prompt, through the same
      * path as the UI. The session id is allocated immediately; the run continues in the background.
      */
@@ -173,12 +187,17 @@ export function createForemanSessionsService(deps: ForemanSessionsDependencies) 
       title?: string;
       taskId?: string;
       sandbox: ForemanSandboxPolicy;
+      /** What `sandbox` was checked against (`sandboxScopeOf` of the same project); stored with it. */
+      sandboxScope: ForemanSandboxScope;
     }) {
       // Before anything is made: every session started here is sandboxed.
       requireSandboxedMode(input.permissionMode);
       const project = deps.projectsDb.getProjectPath(input.projectPath);
       if (!project || project.isArchived) {
         throw new AppError('projectPath is not a known cloudcli project.', { code: 'UNKNOWN_PROJECT', statusCode: 422 });
+      }
+      if (input.sandboxScope.projectPath !== project.project_path) {
+        throw new AppError('sandbox was checked against another project than the one the session starts in.', { code: 'SANDBOX_INVALID', statusCode: 400 });
       }
       // Only the API-key billing needs the key file: a `cap` session starts with a placeholder key and no real credential.
       if (input.billing === 'api-key' && !deps.runtime.hasApiKey()) {
@@ -201,7 +220,7 @@ export function createForemanSessionsService(deps: ForemanSessionsDependencies) 
         taskId: input.taskId ?? null,
         billing: input.billing,
         permissionMode: input.permissionMode,
-        sandbox: input.sandbox,
+        sandbox: { policy: input.sandbox, scope: input.sandboxScope },
         baseHead: await deps.headOf(project.project_path),
       });
       if (input.taskId) {

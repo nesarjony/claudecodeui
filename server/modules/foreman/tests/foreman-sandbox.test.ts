@@ -4,13 +4,13 @@ import test from 'node:test';
 import { buildSandboxAdditions, DEFAULT_SANDBOX_APPROVAL_TIMEOUT_MS, parseSandboxPolicy } from '@/modules/foreman/foreman-sandbox.service.js';
 import { AppError } from '@/shared/utils.js';
 
-import { samplePolicy } from './foreman-sandbox-support.js';
+import { SAMPLE_SCOPE, samplePolicy } from './foreman-sandbox-support.js';
 
 const refuses = (value: unknown, code: string, message?: RegExp) =>
-  assert.throws(() => parseSandboxPolicy(value), (error: unknown) => error instanceof AppError && error.code === code && error.statusCode === 400 && (!message || message.test(error.message)));
+  assert.throws(() => parseSandboxPolicy(value, SAMPLE_SCOPE), (error: unknown) => error instanceof AppError && error.code === code && error.statusCode === 400 && (!message || message.test(error.message)));
 
 test('a well formed policy is read back unchanged', () => {
-  assert.deepEqual(parseSandboxPolicy(JSON.parse(JSON.stringify(samplePolicy()))), samplePolicy());
+  assert.deepEqual(parseSandboxPolicy(JSON.parse(JSON.stringify(samplePolicy())), SAMPLE_SCOPE), samplePolicy());
 });
 
 test('a session start without a sandbox, or with a null one, does not start: the sandbox is required', () => {
@@ -41,7 +41,7 @@ test('a malformed policy is refused whatever is wrong with it', () => {
 
 test('the run gets the policy with the switches that make it a sandbox forced on, whatever the policy says', () => {
   const made: string[] = [];
-  const hostile = parseSandboxPolicy({ ...samplePolicy(), enabled: false, failIfUnavailable: false, allowUnsandboxedCommands: true, network: { allowedDomains: [], allowAllUnixSockets: false, strictAllowlist: false } });
+  const hostile = parseSandboxPolicy({ ...samplePolicy(), enabled: false, failIfUnavailable: false, allowUnsandboxedCommands: true, network: { allowedDomains: [], allowAllUnixSockets: false, strictAllowlist: false } }, SAMPLE_SCOPE);
   const additions = buildSandboxAdditions(hostile, (directory) => made.push(directory));
   assert.deepEqual(additions.sandbox, {
     enabled: true,
