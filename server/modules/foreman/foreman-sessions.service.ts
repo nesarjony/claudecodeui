@@ -8,15 +8,9 @@ import {
   type SessionDigestBody,
 } from '@/modules/foreman/foreman-digest.service.js';
 import { applyModelBilling, splitModelBilling } from '@/modules/foreman/foreman-events.service.js';
-import {
-  assertGuardCompatiblePermissionMode,
-  compileGuard,
-  ensureAllowWriteDirs,
-  guardRunOptions,
-  type ForemanGuardConfig,
-} from '@/modules/foreman/foreman-guard.service.js';
-import type { ForemanSessionStatus, ForemanSessionStateService } from '@/modules/foreman/foreman-session-state.service.js';
-import type { ForemanBilling } from '@/shared/types.js';
+import type { ForemanSandboxPolicy } from '@/modules/foreman/foreman-sandbox.service.js';
+import type { ForemanSessionState, ForemanSessionStatus, ForemanSessionStateService, ForemanSupervision } from '@/modules/foreman/foreman-session-state.service.js';
+import type { ForemanBilling, ForemanBridgeEvent, ForemanBridgeSessionStatus } from '@/shared/types.js';
 import { AppError, clipText, normalizeProjectPath, summarizeToolInput } from '@/shared/utils.js';
 
 type SessionRow = NonNullable<ReturnType<typeof sessionsDb.getSessionById>>;
@@ -35,8 +29,10 @@ export type ForemanSessionSummary = {
   status: ForemanSessionStatus;
   /** The permission mode Foreman chose for the session (kept across restarts); null when it never chose one. */
   permissionMode: string | null;
-  /** True when the session runs under a risky-action guard (Foreman-started with `guard.enabled`). */
-  guarded: boolean;
+  /** True when the session runs in a sandbox (every session the bridge starts does, a session handed over keeps the owner's settings). */
+  sandboxed: boolean;
+  /** Whether Foreman started the session, the owner handed it over, or Foreman no longer supervises it; null when it never did. */
+  supervision: ForemanSupervision | null;
   /** True when a Claude process or an active run exists for the session right now. */
   live: boolean;
   lastActivity: string | null;
@@ -112,8 +108,17 @@ export type ForemanBridgeDependencies = {
   };
   /** Records the model a session runs with (so resumed runs keep it). */
   setSessionModel(sessionId: string, model: string): void;
-  /** Status, permission mode and guard of the sessions the bridge starts or drives; survives restarts. */
+  /** Status, permission mode and sandbox of the sessions the bridge starts or drives; survives restarts. */
   state: Pick<ForemanSessionStateService, 'get' | 'track'>;
+  /** The event log of the sessions Foreman supervises. */
+  events: {
+    since(sessionId: string, afterSequence: number, limit: number): ForemanBridgeEvent[];
+    last(sessionId: string): ForemanBridgeEvent | null;
+  };
+  /** The commit a project is at (`git rev-parse HEAD`), or null when it has none or is no repository. */
+  headOf(projectPath: string): Promise<string | null>;
+  /** Resolves when the runtime events seen so far are stored, so a release leaves no event of the supervised time behind. */
+  settleEvents(): Promise<void>;
   /** Remembers/reads which Foreman task a session belongs to. */
   taskIds: { get(sessionId: string): string | null; set(sessionId: string, taskId: string): void };
   /** Marks sessions started through the bridge, so the runtime gives them the worker autocompact threshold. */
@@ -178,6 +183,18 @@ export function createForemanSessionsService(deps: ForemanBridgeDependencies) {
     return session;
   }
 
+  /** The state of a session Foreman supervises; any other session (never adopted, or released) is not Foreman's to drive. */
+  function requireSupervised(sessionId: string): ForemanSessionState {
+    const state = deps.state.get(sessionId);
+    if (!state || state.supervision === 'released') {
+      throw new AppError('Foreman does not supervise this session: start it through the bridge or adopt it first.', {
+        code: 'NOT_SUPERVISED',
+        statusCode: 409,
+      });
+    }
+    return state;
+  }
+
   type PendingApproval = { requestId: string; toolName: string; input: unknown; askedAt: string | null };
 
   /** The session's unanswered permission prompts, read defensively from the runtime's loosely typed records. */
@@ -226,7 +243,8 @@ export function createForemanSessionsService(deps: ForemanBridgeDependencies) {
       billing,
       status: statusOf(session.session_id),
       permissionMode: state?.permissionMode ?? null,
-      guarded: state?.guard?.enabled === true,
+      sandboxed: state?.sandboxJson != null,
+      supervision: state?.supervision ?? null,
       live: deps.runs.isProcessing(session.session_id) || deps.runtime.isLive(session.session_id),
       lastActivity: session.updated_at ?? session.created_at ?? null,
       backgroundTasks: tasks.filter((task) => !task.ambient).length,
@@ -283,6 +301,13 @@ export function createForemanSessionsService(deps: ForemanBridgeDependencies) {
     options: { interrupt: boolean; permissionMode?: string },
   ): Promise<{ interrupted: boolean }> {
     const session = requireClaudeSession(sessionId);
+    // First of all: nothing about a session Foreman does not supervise (not even whether it is running) is answered to the bridge.
+    // A resumed run (after a restart too) keeps the permission mode Foreman chose; its sandbox is read from the stored state when the run starts.
+    // A session handed over keeps the owner's permission mode: Foreman cannot widen it.
+    const state = requireSupervised(sessionId);
+    if (state.supervision === 'adopted' && options.permissionMode) {
+      throw new AppError('A session handed over keeps its owner\'s permission mode: permissionMode cannot be set.', { code: 'PERMISSION_MODE_LOCKED', statusCode: 400 });
+    }
     const processing = deps.runs.isProcessing(sessionId);
     if (processing && !options.interrupt) {
       throw new AppError(
@@ -297,18 +322,9 @@ export function createForemanSessionsService(deps: ForemanBridgeDependencies) {
       });
     }
 
-    // A resumed run (after a restart too) keeps the permission mode Foreman chose and the guard it started with.
-    const state = deps.state.get(sessionId);
-    const guard = state?.guard?.enabled ? state.guard : null;
-    const permissionMode = options.permissionMode ?? state?.permissionMode ?? undefined;
-    if (guard) {
-      assertGuardCompatiblePermissionMode(permissionMode);
-    }
-    if (!state || (options.permissionMode && options.permissionMode !== state.permissionMode)) {
-      deps.state.track(sessionId, {
-        billing: splitModelBilling(session.model).billing,
-        ...(options.permissionMode ? { permissionMode: options.permissionMode } : {}),
-      });
+    const permissionMode = options.permissionMode ?? state.permissionMode ?? undefined;
+    if (options.permissionMode && options.permissionMode !== state.permissionMode) {
+      deps.state.track(sessionId, { permissionMode: options.permissionMode });
     }
     const interrupted = processing && options.interrupt;
     await dispatchTurn({
@@ -321,10 +337,23 @@ export function createForemanSessionsService(deps: ForemanBridgeDependencies) {
         effort: session.effort ?? undefined,
         permissionMode,
         sessionSummary: clipText(text, MAX_SUMMARY_LENGTH),
-        ...(guard ? guardRunOptions(compileGuard(guard, session.project_path)) : {}),
       },
     });
     return { interrupted };
+  }
+
+  /** What Foreman's `sessionState` call reports: where the session stands and how many events cloudcli has emitted for it. */
+  function getState(sessionId: string): { sessionId: string; status: ForemanBridgeSessionStatus; lastSequence: number; supervision: ForemanSupervision | null } {
+    requireClaudeSession(sessionId);
+    const status = statusOf(sessionId);
+    const running = status === 'running' || status === 'waiting_permission';
+    const last = deps.events.last(sessionId);
+    return {
+      sessionId,
+      status: running ? 'running' : last?.kind === 'session_end' ? 'ended' : 'idle',
+      lastSequence: last?.sequence ?? 0,
+      supervision: deps.state.get(sessionId)?.supervision ?? null,
+    };
   }
 
   return {
@@ -351,6 +380,51 @@ export function createForemanSessionsService(deps: ForemanBridgeDependencies) {
         .filter((row) => !wantedPath || (row.project_path !== null && normalizeProjectPath(row.project_path) === wantedPath))
         .map(summarize)
         .sort((a, b) => Number(b.live) - Number(a.live) || (b.lastActivity ?? '').localeCompare(a.lastActivity ?? ''));
+    },
+
+    /**
+     * The session the owner hands over joins Foreman's supervision as it is: its model, routing and permission mode are not touched and no
+     * sandbox is added. From here its events are stored and pushed like a worker's, counting commits from where the project is now, and
+     * messages, interrupts and permission answers work for it.
+     */
+    async adopt(sessionId: string, input: { taskId?: string }) {
+      const session = requireClaudeSession(sessionId);
+      const supervision = deps.state.get(sessionId)?.supervision;
+      if (supervision === 'started' || supervision === 'adopted') {
+        throw new AppError('Foreman already supervises this session.', { code: 'ALREADY_SUPERVISED', statusCode: 409 });
+      }
+      deps.state.track(sessionId, {
+        supervision: 'adopted',
+        taskId: input.taskId ?? null,
+        billing: splitModelBilling(session.model).billing,
+        baseHead: session.project_path ? await deps.headOf(session.project_path) : null,
+        baseSequence: deps.events.last(sessionId)?.sequence ?? 0,
+      });
+      if (input.taskId) {
+        deps.taskIds.set(sessionId, input.taskId);
+      }
+      const { model, billing } = splitModelBilling(session.model);
+      return { ...getState(sessionId), projectPath: session.project_path, model, billing };
+    },
+
+    /** Ends the hand-over: nothing more is stored or pushed for the session (what is already stored is still pushed), and the session carries on as the owner's own. */
+    async release(sessionId: string) {
+      requireClaudeSession(sessionId);
+      if (deps.state.get(sessionId)?.supervision !== 'adopted') {
+        throw new AppError('Only a session that was handed over can be released.', { code: 'NOT_ADOPTED', statusCode: 409 });
+      }
+      await deps.settleEvents();
+      deps.state.track(sessionId, { supervision: 'released' });
+      return getState(sessionId);
+    },
+
+    getState,
+
+    /** The session's events above `afterSequence`, oldest first, at most `limit` of them (the reconciliation call). */
+    eventsSince(sessionId: string, afterSequence: number, limit: number) {
+      requireClaudeSession(sessionId);
+      const events = deps.events.since(sessionId, afterSequence, limit + 1);
+      return { sessionId, events: events.slice(0, limit), hasMore: events.length > limit };
     },
 
     /** Condensed view of the last `turns` turns of a session, read from its transcript. */
@@ -457,19 +531,11 @@ export function createForemanSessionsService(deps: ForemanBridgeDependencies) {
       effort?: string;
       title?: string;
       taskId?: string;
-      guard?: ForemanGuardConfig;
+      sandbox: ForemanSandboxPolicy;
     }) {
       const project = deps.projectsDb.getProjectPath(input.projectPath);
       if (!project || project.isArchived) {
         throw new AppError('projectPath is not a known cloudcli project.', { code: 'UNKNOWN_PROJECT', statusCode: 422 });
-      }
-      const guard = input.guard?.enabled ? input.guard : undefined;
-      if (guard) {
-        assertGuardCompatiblePermissionMode(input.permissionMode);
-      }
-      const compiledGuard = guard ? compileGuard(guard, project.project_path) : null;
-      if (compiledGuard) {
-        ensureAllowWriteDirs(compiledGuard);
       }
       // Only the API-key billing needs the key file: a `cap` session starts with a placeholder key and no real credential.
       if (input.billing === 'api-key' && !deps.runtime.hasApiKey()) {
@@ -486,13 +552,14 @@ export function createForemanSessionsService(deps: ForemanBridgeDependencies) {
       }
       // Marked before the run starts, so the run that this call starts already gets the threshold.
       deps.managed?.mark(created.sessionId);
-      // Recorded before the run starts so even its first event (session_started) carries the task, and a run
-      // that is resumed after a restart still has the permission mode and guard it started with.
+      // Recorded before the run starts, so the run that this call starts is already sandboxed and its events are the session's, and a
+      // run that is resumed after a restart still has the permission mode and sandbox it started with.
       deps.state.track(created.sessionId, {
         taskId: input.taskId ?? null,
         billing: input.billing,
         permissionMode: input.permissionMode,
-        guard: guard ?? null,
+        sandbox: input.sandbox,
+        baseHead: await deps.headOf(project.project_path),
       });
       if (input.taskId) {
         deps.taskIds.set(created.sessionId, input.taskId);
@@ -507,7 +574,6 @@ export function createForemanSessionsService(deps: ForemanBridgeDependencies) {
           effort: input.effort,
           permissionMode: input.permissionMode,
           sessionSummary: clipText(input.title ?? input.prompt, MAX_SUMMARY_LENGTH),
-          ...(compiledGuard ? guardRunOptions(compiledGuard) : {}),
         },
       });
 
@@ -520,9 +586,7 @@ export function createForemanSessionsService(deps: ForemanBridgeDependencies) {
         permissionMode: input.permissionMode,
         taskId: input.taskId ?? null,
         status: 'running' as const,
-        guarded: compiledGuard !== null,
-        // Patterns that are not valid regular expressions are not enforced; say so rather than hide it.
-        ...(compiledGuard ? { guard: { skippedPatterns: compiledGuard.skippedPatterns, approvalTimeoutMs: compiledGuard.approvalTimeoutMs } } : {}),
+        sandboxed: true as const,
       };
     },
 
@@ -551,6 +615,7 @@ export function createForemanSessionsService(deps: ForemanBridgeDependencies) {
      */
     answerPermission(sessionId: string, input: { requestId: string; decision: 'allow' | 'deny'; reason?: string }) {
       requireClaudeSession(sessionId);
+      requireSupervised(sessionId);
       if (!pendingApprovals(sessionId).some((pending) => pending.requestId === input.requestId)) {
         throw new AppError('That permission request is not pending for this session (already answered, unknown, or the run is gone).', {
           code: 'NO_PENDING_PERMISSION',
@@ -569,6 +634,7 @@ export function createForemanSessionsService(deps: ForemanBridgeDependencies) {
     /** Stops the session's run the way the UI's Stop button does (the live process is ended too). */
     async interrupt(sessionId: string) {
       requireClaudeSession(sessionId);
+      requireSupervised(sessionId);
       const wasRunning = deps.runs.isProcessing(sessionId);
       const hadLiveProcess = deps.runtime.isLive(sessionId);
       if (!wasRunning && !hadLiveProcess) {
@@ -587,6 +653,9 @@ export function createForemanSessionsService(deps: ForemanBridgeDependencies) {
      */
     async setModel(sessionId: string, model: string) {
       const session = requireClaudeSession(sessionId);
+      if (requireSupervised(sessionId).supervision === 'adopted') {
+        throw new AppError('A session handed over keeps its owner\'s model.', { code: 'MODEL_LOCKED', statusCode: 409 });
+      }
       const { billing } = splitModelBilling(session.model);
       const plain = splitModelBilling(model).model;
       if (!plain) {

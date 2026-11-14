@@ -101,9 +101,9 @@ const agentRoutes = createAgentModule({
     queryCodex,
     queryOpenCode,
 });
-// Foreman bridge: token-protected control API plus the event push to the Foreman service.
-const foremanRoutes = createForemanModule();
-const foremanUiRoutes = createForemanUiModule();
+// Foreman bridge: token-protected control API, the event log of the sessions it drives and its push to the Foreman service.
+const foremanBridge = createForemanModule();
+const foremanUiRoutes = createForemanUiModule(foremanBridge.state);
 const foremanTabRoutes = createForemanTabModule();
 
 // Single WebSocket server that handles chat, shell, and plugin proxy paths.
@@ -198,7 +198,7 @@ app.use('/api/plugins', authenticateToken, pluginsRoutes);
 app.use('/api/browser-use-mcp', browserUseMcpRoutes);
 
 // Foreman bridge API (bridge-token protected; deliberately not behind the user login)
-app.use('/api/foreman', foremanRoutes);
+app.use('/api/foreman', foremanBridge.router);
 // Foreman suggestion card: the logged-in user's view of the bridge (pending suggestion, feedback)
 app.use('/api/foreman-suggestions', authenticateToken, foremanUiRoutes);
 // Foreman tab: the logged-in user's allowlisted view of Foreman (overview, decisions, spend, settings, tasks, inbox, lessons)
@@ -346,6 +346,7 @@ async function startServer() {
     try {
         // Initialize authentication database
         await initializeDatabase();
+        foremanBridge.resumeEventPush();
 
         // Configure Web Push (VAPID keys)
         configureWebPush();

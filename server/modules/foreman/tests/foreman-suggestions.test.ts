@@ -9,6 +9,7 @@ import test from 'node:test';
 import express from 'express';
 
 import { createBridgeAuthMiddleware } from '@/modules/foreman/foreman-auth.service.js';
+import { createForemanIdempotency } from '@/modules/foreman/foreman-idempotency.service.js';
 import {
   createForemanSuggestionsClient,
   createSuggestionBroadcaster,
@@ -19,6 +20,8 @@ import { createForemanUiRouter } from '@/modules/foreman/foreman-ui.routes.js';
 import { createForemanRouter } from '@/modules/foreman/foreman.routes.js';
 import type { createForemanSessionsService } from '@/modules/foreman/foreman-sessions.service.js';
 import type { RealtimeClientConnection } from '@/shared/types.js';
+
+import { createMemoryIdempotencyStorage, createWorld } from './foreman-routes-support.js';
 
 const TOKEN = 'suggestion-test-token';
 const OPEN = 1;
@@ -121,6 +124,7 @@ async function withBridgeRouter(
   app.use('/api/foreman', createForemanRouter({
     authMiddleware: createBridgeAuthMiddleware({ tokenFile }),
     sessions: {} as ReturnType<typeof createForemanSessionsService>,
+    idempotency: createForemanIdempotency({ storage: createMemoryIdempotencyStorage() }),
     suggestions,
   }));
   const server = app.listen(0, '127.0.0.1');
@@ -194,6 +198,7 @@ type ForemanCall = { method: string; url: string; authorization: string | undefi
 async function withUiRouter(
   respond: (call: ForemanCall) => { status: number; json: unknown } | 'down',
   run: (ctx: { call: (method: string, pathname: string, body?: unknown) => Promise<{ status: number; body: any }>; foremanCalls: ForemanCall[]; tokenFile: string }) => Promise<void>,
+  options: { state?: Parameters<typeof createForemanUiRouter>[0]['state'] } = {},
 ): Promise<void> {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'foreman-ui-'));
   const tokenFile = path.join(directory, 'bridge-token');
@@ -218,6 +223,7 @@ async function withUiRouter(
   app.use(express.json());
   app.use('/api/foreman-suggestions', createForemanUiRouter({
     client: createForemanSuggestionsClient({ tokenFile, baseUrl: 'http://foreman.test:4111', fetchImpl }),
+    state: options.state ?? { listSupervised: () => [] },
   }));
   const server = app.listen(0, '127.0.0.1');
   await once(server, 'listening');
@@ -407,4 +413,45 @@ test('GET /notes answers null when there are none, and validates the session id'
     assert.equal(traversal.body.error.code, 'INVALID_SESSION_ID');
     assert.equal(foremanCalls.length, 1);
   });
+});
+
+// ---------------------------------------------------------------------------------------------
+// GET /supervised: which sessions Foreman supervises, for the sidebar
+// ---------------------------------------------------------------------------------------------
+
+test('GET /supervised lists the sessions Foreman started or was handed, and leaves out released ones and the owner\'s own', async () => {
+  // The real state service over an in-memory store, as the module wires it over the database.
+  const { world } = createWorld();
+  world.state.track('worker', { supervision: 'started', taskId: 'task-1' });
+  world.state.track('handed-over', { supervision: 'adopted', taskId: null });
+  world.state.track('given-back', { supervision: 'adopted' });
+  world.state.track('given-back', { supervision: 'released' });
+  world.addOwnerSession('owner');
+
+  await withUiRouter(() => ({ status: 200, json: {} }), async ({ call, foremanCalls }) => {
+    const response = await call('GET', '/supervised');
+    assert.equal(response.status, 200);
+    assert.equal(response.body.success, true);
+    const sessions = (response.body.data.sessions as Array<{ sessionId: string }>).sort((a, b) => a.sessionId.localeCompare(b.sessionId));
+    assert.deepEqual(sessions, [
+      { sessionId: 'handed-over', supervision: 'adopted', taskId: null },
+      { sessionId: 'worker', supervision: 'started', taskId: 'task-1' },
+    ]);
+    assert.equal(foremanCalls.length, 0, 'it is answered from cloudcli\'s own state, Foreman is not asked');
+
+    // A session leaves the list the moment it is released, and joins it again when handed over again.
+    world.state.track('handed-over', { supervision: 'released' });
+    assert.deepEqual((await call('GET', '/supervised')).body.data.sessions.map((entry: { sessionId: string }) => entry.sessionId), ['worker']);
+    world.state.track('given-back', { supervision: 'adopted' });
+    assert.deepEqual(
+      (await call('GET', '/supervised')).body.data.sessions.map((entry: { sessionId: string }) => entry.sessionId).sort(),
+      ['given-back', 'worker'],
+    );
+  }, { state: world.state });
+});
+
+test('GET /supervised is an empty list when Foreman supervises nothing', async () => {
+  await withUiRouter(() => ({ status: 200, json: {} }), async ({ call }) => {
+    assert.deepEqual((await call('GET', '/supervised')).body, { success: true, data: { sessions: [] } });
+  }, { state: createWorld().world.state });
 });

@@ -1,6 +1,7 @@
 import express, { type NextFunction, type Request, type Response } from 'express';
 
 import type { ForemanSuggestionsClient } from '@/modules/foreman/foreman-suggestions.service.js';
+import type { ForemanSessionStateService } from '@/modules/foreman/foreman-session-state.service.js';
 import { AppError, asyncHandler, createApiSuccessResponse } from '@/shared/utils.js';
 
 /**
@@ -13,10 +14,12 @@ import { AppError, asyncHandler, createApiSuccessResponse } from '@/shared/utils
  * - `POST /:id/execute`         has Foreman carry out a `write_notes` or `handoff` suggestion; answers what it did
  *                               (`result.newSessionId` for a handoff, `result.version` for notes)
  * - `GET  /notes?sessionId=`    the latest task notes for a session, `{ notes: { content, version, turn, createdAt } | null }`
+ * - `GET  /supervised`         the sessions Foreman supervises now, `{ sessions: [{ sessionId, supervision: 'started' | 'adopted', taskId }] }`,
+ *                               so the sidebar can mark the ones the owner handed over
  */
 // Consumed by foreman.module.ts, which mounts it on the server entrypoint, and by the route tests.
-export function createForemanUiRouter(options: { client: ForemanSuggestionsClient }) {
-  const { client } = options;
+export function createForemanUiRouter(options: { client: ForemanSuggestionsClient; state: Pick<ForemanSessionStateService, 'listSupervised'> }) {
+  const { client, state } = options;
   const router = express.Router();
 
   router.use((_request: Request, response: Response, next: NextFunction) => {
@@ -31,6 +34,10 @@ export function createForemanUiRouter(options: { client: ForemanSuggestionsClien
     }
     response.json(createApiSuccessResponse({ suggestion: await client.getPending(sessionId) }));
   }));
+
+  router.get('/supervised', (_request, response) => {
+    response.json(createApiSuccessResponse({ sessions: state.listSupervised() }));
+  });
 
   router.get('/notes', asyncHandler(async (request, response) => {
     const sessionId = request.query.sessionId;

@@ -48,10 +48,10 @@ test('a value that is not a URL / a header-safe profile name is reported and rep
 test('the cap env names the proxy on every URL variable, the profile header, the placeholder key and Claude model names', () => {
   const env = capSessionEnv({ url: 'http://127.0.0.1:34817', profile: 'foreman-worker' });
   assert.deepEqual(env, {
-    ANTHROPIC_BASE_URL: 'http://127.0.0.1:34817',
-    ANTHROPIC_API_BASE_URL: 'http://127.0.0.1:34817',
-    CLAUDE_AGENT_API_BASE_URL: 'http://127.0.0.1:34817',
-    ANTHROPIC_LLM_HOST: 'http://127.0.0.1:34817',
+    ANTHROPIC_BASE_URL: 'http://127.0.0.1:34817/profile/foreman-worker',
+    ANTHROPIC_API_BASE_URL: 'http://127.0.0.1:34817/profile/foreman-worker',
+    CLAUDE_AGENT_API_BASE_URL: 'http://127.0.0.1:34817/profile/foreman-worker',
+    ANTHROPIC_LLM_HOST: 'http://127.0.0.1:34817/profile/foreman-worker',
     ANTHROPIC_API_KEY: CAP_DUMMY_API_KEY,
     ANTHROPIC_CUSTOM_HEADERS: 'x-claude-cap-profile: foreman-worker',
     ANTHROPIC_DEFAULT_OPUS_MODEL: 'claude-opus-5-5',
@@ -101,7 +101,8 @@ test('applying cap billing removes every credential and provider switch from the
   assert.equal(env.CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS, '1000');
   // The key is the placeholder, never the one that was there.
   assert.equal(env.ANTHROPIC_API_KEY, CAP_DUMMY_API_KEY);
-  assert.equal(env.ANTHROPIC_BASE_URL, CAP_DEFAULT_URL);
+  assert.equal(env.ANTHROPIC_BASE_URL, `${CAP_DEFAULT_URL}/profile/foreman-worker`);
+  assert.equal(env.ANTHROPIC_LLM_HOST, `${CAP_DEFAULT_URL}/profile/foreman-worker`);
   assert.equal(env.ANTHROPIC_CUSTOM_HEADERS, 'x-claude-cap-profile: foreman-worker');
   assert.equal(JSON.stringify(options).includes('sk-ant-real-key'), false);
   assert.equal(JSON.stringify(options).includes('proxy-token'), false);
@@ -117,8 +118,8 @@ test('the flag-level settings carry the same values plus an empty token, and kee
   assert.equal(settings.ultracode, true);
   assert.equal(settings.enableWorkflows, true);
   assert.equal(settings.env.SOMETHING_ELSE, 'kept');
-  assert.equal(settings.env.ANTHROPIC_BASE_URL, 'http://127.0.0.1:5555');
-  assert.equal(settings.env.ANTHROPIC_LLM_HOST, 'http://127.0.0.1:5555');
+  assert.equal(settings.env.ANTHROPIC_BASE_URL, 'http://127.0.0.1:5555/profile/p1');
+  assert.equal(settings.env.ANTHROPIC_LLM_HOST, 'http://127.0.0.1:5555/profile/p1');
   assert.equal(settings.env.ANTHROPIC_CUSTOM_HEADERS, 'x-claude-cap-profile: p1');
   assert.equal(settings.env.ANTHROPIC_API_KEY, CAP_DUMMY_API_KEY);
   assert.equal(settings.env.ANTHROPIC_AUTH_TOKEN, '');

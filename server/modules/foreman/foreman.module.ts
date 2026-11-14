@@ -1,14 +1,24 @@
-import { appConfigDb, foremanSessionStateDb, projectsDb, sessionsDb, userDb } from '@/modules/database/index.js';
-import { createBridgeAuthMiddleware, resolveBridgeTokenFile } from '@/modules/foreman/foreman-auth.service.js';
 import {
-  createForemanEventPusher,
-  createRuntimeOutcomeTracker,
-  splitModelBilling,
-} from '@/modules/foreman/foreman-events.service.js';
+  appConfigDb,
+  foremanEventsDb,
+  foremanIdempotencyDb,
+  foremanSessionStateDb,
+  projectsDb,
+  sessionsDb,
+  userDb,
+} from '@/modules/database/index.js';
+import { createBridgeAuthMiddleware, resolveBridgeTokenFile, resolveEventsTokenFile } from '@/modules/foreman/foreman-auth.service.js';
+import { createForemanCommits } from '@/modules/foreman/foreman-commits.service.js';
+import { createForemanEventPusher } from '@/modules/foreman/foreman-event-push.service.js';
+import { createForemanEventRecorder } from '@/modules/foreman/foreman-event-recorder.service.js';
+import { createForemanEventStore } from '@/modules/foreman/foreman-event-store.service.js';
+import { createRuntimeOutcomeTracker } from '@/modules/foreman/foreman-events.service.js';
 import { createForemanGitService } from '@/modules/foreman/foreman-git.service.js';
+import { createForemanIdempotency } from '@/modules/foreman/foreman-idempotency.service.js';
 import { createManagedSessionStore } from '@/modules/foreman/foreman-managed-sessions.service.js';
 import { createForemanRuntimeHooks } from '@/modules/foreman/foreman-runtime-hooks.service.js';
-import { createForemanSessionStateService } from '@/modules/foreman/foreman-session-state.service.js';
+import { buildSandboxAdditions } from '@/modules/foreman/foreman-sandbox.service.js';
+import { createForemanSessionStateService, type ForemanSessionStateService } from '@/modules/foreman/foreman-session-state.service.js';
 import { createForemanSessionsService, type LiveContextUsage } from '@/modules/foreman/foreman-sessions.service.js';
 import {
   createForemanSuggestionsClient,
@@ -29,6 +39,7 @@ import {
   providerRuntimeService,
   sessionsService,
   setClaudeRuntimeAdditionsProvider,
+  setClaudeRuntimeSandboxProvider,
   setClaudeSessionModel,
   subscribeClaudeRuntimeEvents,
 } from '@/modules/providers/index.js';
@@ -61,13 +72,13 @@ function readLiveContextUsage(raw: unknown): LiveContextUsage | null {
 }
 
 /**
- * Assembles the Foreman bridge: the token-protected `/api/foreman` router plus the event push
- * that reports Claude session events to the Foreman service.
+ * Assembles the Foreman bridge: the token-protected `/api/foreman` router, the event log of the sessions it drives with the push that
+ * reports those events to the Foreman service, and the sandbox every one of those sessions runs in.
  *
- * Subscribing here (rather than from the runtime) keeps the dependency one-way: the Claude
- * runtime publishes generic lifecycle events and knows nothing about Foreman.
+ * Subscribing here (rather than from the runtime) keeps the dependency one-way: the Claude runtime publishes generic lifecycle events
+ * and knows nothing about Foreman.
  */
-// Consumed by the server entrypoint, which mounts the returned router at /api/foreman.
+// Consumed by the server entrypoint: it mounts `router` at /api/foreman and calls `resumeEventPush` once the database is ready.
 export function createForemanModule() {
   const tokenFile = resolveBridgeTokenFile();
   const outcomes = createRuntimeOutcomeTracker();
@@ -103,36 +114,49 @@ export function createForemanModule() {
     },
   });
   setClaudeRuntimeAdditionsProvider((session) => runtimeHooks.forSession(session));
-  const pusher = createForemanEventPusher({
-    tokenFile,
-    describeSession: (sessionId) => {
-      const row = sessionsDb.getSessionById(sessionId);
-      return {
-        billing: row ? splitModelBilling(row.model).billing : null,
-        title: row?.custom_name ?? null,
-        taskId: taskIds.get(sessionId) ?? undefined,
-      };
-    },
-    debug: (message) => {
-      if (debugEnabled) {
-        console.debug(`[Foreman bridge] ${message}`);
-      }
-    },
-  });
 
-  // Status, permission mode and guard of the sessions the bridge starts or drives, kept in cloudcli's database so they
+  // Status, permission mode and sandbox of the sessions the bridge starts or drives, kept in cloudcli's database so they
   // survive a restart. The module is built before the database is initialised: the state service settles the previous
   // process's leftovers (running -> idle, with a log line) the first time anything reads or writes it.
   const sessionState = createForemanSessionStateService({
     store: foremanSessionStateDb,
     log: (message) => console.log(`[Foreman bridge] ${message}`),
   });
+  // A session that has a sandbox runs in it or not at all: the runtime asks for it before every run and refuses on `refuse`.
+  setClaudeRuntimeSandboxProvider((sessionId) => {
+    const sandbox = sessionState.sandboxOf(sessionId);
+    return sandbox && ('refuse' in sandbox ? sandbox : buildSandboxAdditions(sandbox.policy));
+  });
+
+  const events = createForemanEventStore({ storage: foremanEventsDb });
+  const commits = createForemanCommits();
+  const log = (message: string) => console.warn(`[Foreman bridge] ${message}`);
+  const pusher = createForemanEventPusher({
+    store: events,
+    eventsUrl: process.env.FOREMAN_EVENTS_URL?.trim() || undefined,
+    tokenFile: resolveEventsTokenFile(tokenFile),
+    log: (message) => {
+      if (debugEnabled) {
+        console.debug(`[Foreman bridge] ${message}`);
+      }
+    },
+  });
+  const recorder = createForemanEventRecorder({
+    store: events,
+    commits,
+    startOf: (sessionId) => {
+      const state = sessionState.get(sessionId);
+      return state && state.supervision !== 'released' ? { baseHead: state.baseHead, baseSequence: state.baseSequence } : null;
+    },
+    onStored: () => void pusher.kick(),
+    log,
+  });
 
   // Runs synchronously inside the runtime loop: every call only records/queues and never throws.
   subscribeClaudeRuntimeEvents((event) => {
     outcomes.observe(event);
     sessionState.observe(event);
-    pusher.handle(event);
+    recorder.handle(event);
   });
 
   const sessions = createForemanSessionsService({
@@ -173,15 +197,19 @@ export function createForemanModule() {
       providerModelsService.setSessionModel('claude', sessionId, model);
     },
     state: sessionState,
+    events,
+    headOf: (projectPath) => commits.headOf(projectPath),
+    settleEvents: () => recorder.whenIdle(),
     taskIds,
     managed,
     announceSession: (sessionId) => broadcastSessionUpserted(sessionId),
     hasFailed: (sessionId) => outcomes.hasFailed(sessionId),
   });
 
-  return createForemanRouter({
+  const router = createForemanRouter({
     authMiddleware: createBridgeAuthMiddleware({ tokenFile }),
     sessions,
+    idempotency: createForemanIdempotency({ storage: foremanIdempotencyDb }),
     git: createForemanGitService({ projectsDb }),
     // A worktree is registered as a project the way the Worktrees module registers one it opens (the add-project path).
     worktrees: createForemanWorktreesService({
@@ -206,16 +234,25 @@ export function createForemanModule() {
     // Foreman's suggestions go to every open chat socket; each chat keeps the ones for its own session.
     suggestions: createSuggestionBroadcaster({ clients: () => connectedClients, openState: WS_OPEN_STATE }),
   });
+
+  return {
+    router,
+    /** The sessions Foreman supervises, for the logged-in UI. */
+    state: sessionState,
+    /** Pushes the events a previous process stored and never saw acknowledged. Called once the database is initialised. */
+    resumeEventPush: () => void pusher.kick(),
+  };
 }
 
 /**
  * The user-facing half of the suggestion card: the pending suggestion for a session and the user's feedback,
- * proxied to Foreman with the bridge token (kept server-side). Mounted at `/api/foreman-suggestions` behind the
+ * proxied to Foreman with the bridge token (kept server-side), and which sessions Foreman supervises. Mounted at `/api/foreman-suggestions` behind the
  * normal cloudcli login, unlike the bridge router.
  */
 // Consumed by the server entrypoint, which mounts the returned router.
-export function createForemanUiModule() {
+export function createForemanUiModule(state: ForemanSessionStateService) {
   return createForemanUiRouter({
     client: createForemanSuggestionsClient({ tokenFile: resolveBridgeTokenFile() }),
+    state,
   });
 }

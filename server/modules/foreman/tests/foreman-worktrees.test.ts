@@ -10,6 +10,8 @@ import test from 'node:test';
 import express from 'express';
 
 import { createBridgeAuthMiddleware } from '@/modules/foreman/foreman-auth.service.js';
+import { createForemanEventStore } from '@/modules/foreman/foreman-event-store.service.js';
+import { createForemanIdempotency } from '@/modules/foreman/foreman-idempotency.service.js';
 import { createForemanSessionStateService, type ForemanSessionStateStore } from '@/modules/foreman/foreman-session-state.service.js';
 import { createForemanSessionsService, type ForemanBridgeDependencies } from '@/modules/foreman/foreman-sessions.service.js';
 import { createTaskIdStore } from '@/modules/foreman/foreman-task-ids.service.js';
@@ -21,6 +23,10 @@ import {
 import { createForemanRouter } from '@/modules/foreman/foreman.routes.js';
 import type { ProjectRepositoryRow } from '@/shared/types.js';
 import { AppError } from '@/shared/utils.js';
+
+import { createMemoryEventStorage } from './foreman-pipeline-support.js';
+import { createMemoryIdempotencyStorage } from './foreman-routes-support.js';
+import { samplePolicy } from './foreman-sandbox-support.js';
 
 /**
  * The worktree endpoints against real git repositories in a temp folder. Only the project registry is a stand-in (cloudcli's
@@ -91,6 +97,7 @@ function sessionsOver(projects: ReturnType<typeof fakeProjects>) {
     upsert: (row) => void stateRows.set(row.session_id, { ...row }),
     updateStatus: () => false,
     settleAfterRestart: () => ({ reset: 0, waitingPermission: 0 }),
+    listSupervised: () => [],
   };
   const deps: ForemanBridgeDependencies = {
     sessionsDb: {
@@ -118,12 +125,15 @@ function sessionsOver(projects: ReturnType<typeof fakeProjects>) {
     },
     setSessionModel: () => undefined,
     state: createForemanSessionStateService({ store: stateStore }),
+    events: createForemanEventStore({ storage: createMemoryEventStorage() }),
+    headOf: async (projectPath) => `head-of:${projectPath}`,
+    settleEvents: async () => undefined,
     taskIds: createTaskIdStore({ get: () => null, set: () => undefined }),
     announceSession: async () => undefined,
     hasFailed: () => false,
     admissionWindowMs: 5,
   };
-  return { service: createForemanSessionsService(deps), started };
+  return { service: createForemanSessionsService(deps), started, stateRows };
 }
 
 type Call = (method: string, pathname: string, body?: unknown, token?: string | null) => Promise<{ status: number; body: any }>;
@@ -137,6 +147,8 @@ async function withWorktrees(
     projects: ReturnType<typeof fakeProjects>;
     store: Map<string, string>;
     started: string[];
+    /** What the bridge remembers about the sessions it started. */
+    stateRows: ReturnType<typeof sessionsOver>['stateRows'];
   }) => Promise<void>,
   options: { worktreesDir?: string; wired?: boolean } = {},
 ): Promise<void> {
@@ -165,6 +177,7 @@ async function withWorktrees(
   app.use('/api/foreman', createForemanRouter({
     authMiddleware: createBridgeAuthMiddleware({ tokenFile }),
     sessions: sessions.service,
+    idempotency: createForemanIdempotency({ storage: createMemoryIdempotencyStorage() }),
     ...(options.wired === false ? {} : {
       worktrees: createForemanWorktreesService({ projects: projects.gateway, registry, worktreesDir: options.worktreesDir, now: () => new Date(NOW) }),
     }),
@@ -182,7 +195,7 @@ async function withWorktrees(
   };
 
   try {
-    await run({ call, directory, repo, worktreesDir: path.join(directory, '.foreman-worktrees'), projects, store, started: sessions.started });
+    await run({ call, directory, repo, worktreesDir: path.join(directory, '.foreman-worktrees'), projects, store, started: sessions.started, stateRows: sessions.stateRows });
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await rm(directory, { recursive: true, force: true });
@@ -346,17 +359,34 @@ test('FOREMAN_WORKTREES_DIR puts the worktrees elsewhere, and only an absolute o
 });
 
 test('a session can start in a registered worktree (POST /sessions accepts it as projectPath), and not before', async () => {
-  await withWorktrees(async ({ call, repo, worktreesDir, started }) => {
+  await withWorktrees(async ({ call, repo, worktreesDir, started, stateRows }) => {
     const worktree = path.join(worktreesDir, 'desk-foreman-task-9');
-    const before = await call('POST', '/sessions', { projectPath: worktree, prompt: 'work on task 9', billing: 'subscription' });
+    // A start always carries its sandbox and the key of the call; the sandbox is scratch space beside the worktree.
+    const start = (idempotencyKey: string) => ({
+      projectPath: worktree,
+      prompt: 'work on task 9',
+      billing: 'subscription',
+      sandbox: samplePolicy({ scratchDir: path.join(worktreesDir, '.scratch', 'task-9') }),
+      idempotencyKey,
+    });
+    const before = await call('POST', '/sessions', start('start:task-9:1'));
     assert.equal(before.status, 422);
     assert.equal(before.body.error.code, 'UNKNOWN_PROJECT');
+    assert.deepEqual(started, [], 'nothing was allocated for a project the bridge does not know');
 
     assert.equal((await create(call, { projectPath: repo, branch: 'foreman/task-9' })).status, 201);
-    const after = await call('POST', '/sessions', { projectPath: worktree, prompt: 'work on task 9', billing: 'subscription' });
+    // The first try was refused, so its key is free: the same call now runs.
+    const after = await call('POST', '/sessions', start('start:task-9:1'));
     assert.equal(after.status, 201, JSON.stringify(after.body));
     assert.equal(after.body.data.projectPath, worktree);
+    assert.equal(after.body.data.sandboxed, true);
     assert.deepEqual(started, [worktree]);
+
+    // Its commits are counted from the worktree's own head, under the sandbox that was sent.
+    const stored = stateRows.get(after.body.data.sessionId);
+    assert.equal(stored?.base_head, `head-of:${worktree}`);
+    assert.equal(stored?.supervision, 'started');
+    assert.deepEqual(JSON.parse(stored?.sandbox_json ?? 'null'), start('x').sandbox);
   });
 });
 

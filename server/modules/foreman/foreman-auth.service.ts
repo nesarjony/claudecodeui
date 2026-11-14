@@ -12,7 +12,7 @@ import { AppError } from '@/shared/utils.js';
  *
  * `FOREMAN_BRIDGE_TOKEN_FILE` overrides it (tests, non-standard installs); otherwise the
  * file Foreman provisions at `~/.config/foreman/bridge-token` is used. The same file
- * authenticates inbound calls from Foreman and outbound event pushes to it.
+ * authenticates inbound calls from Foreman; outbound event pushes use `resolveEventsTokenFile`.
  */
 // Consumed by foreman.module.ts, which hands the path to both the auth middleware and the event pusher.
 export function resolveBridgeTokenFile(
@@ -24,13 +24,24 @@ export function resolveBridgeTokenFile(
 }
 
 /**
+ * Location of the token cloudcli presents to Foreman's intake with every event it pushes.
+ *
+ * `FOREMAN_EVENTS_TOKEN_FILE` names it; without one the bridge token file is used. A separate file keeps the two directions apart: a
+ * leaked intake token cannot start or stop sessions.
+ */
+// Consumed by foreman.module.ts, which hands the path to the event pusher.
+export function resolveEventsTokenFile(bridgeTokenFile: string, environment: NodeJS.ProcessEnv = process.env): string {
+  return environment.FOREMAN_EVENTS_TOKEN_FILE?.trim() || bridgeTokenFile;
+}
+
+/**
  * Reads the bridge token fresh from disk. Returns `null` when the file is missing,
  * unreadable, or blank — the bridge is then disabled.
  *
  * It is deliberately re-read on every call (the file is a few dozen bytes) so rotating the
  * token never needs a cloudcli restart. The value is never logged.
  */
-// Consumed by the auth middleware here and by the event pusher in foreman-events.service.ts.
+// Consumed by the auth middleware here and by the event pusher in foreman-event-push.service.ts (which reads its own token file).
 export async function readBridgeToken(tokenFile: string): Promise<string | null> {
   try {
     const token = (await readFile(tokenFile, 'utf8')).trim();

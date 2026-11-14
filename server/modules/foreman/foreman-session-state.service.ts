@@ -1,8 +1,11 @@
 import type { ForemanSessionStateRow } from '@/modules/database/index.js';
-import { parseGuardConfig, type ForemanGuardConfig } from '@/modules/foreman/foreman-guard.service.js';
+import { parseSandboxPolicy, type ForemanSandboxPolicy } from '@/modules/foreman/foreman-sandbox.service.js';
 import type { ClaudeRuntimeEvent, ForemanBilling } from '@/shared/types.js';
 
 export type ForemanSessionStatus = ForemanSessionStateRow['status'];
+
+/** Who the session belongs to as far as Foreman is concerned: one it started, one the owner handed over, or one it no longer supervises. */
+export type ForemanSupervision = ForemanSessionStateRow['supervision'];
 
 /** What the bridge remembers about a session it started or drives; survives a cloudcli restart. */
 export type ForemanSessionState = {
@@ -12,17 +15,23 @@ export type ForemanSessionState = {
   /** The permission mode Foreman last chose for the session; a resumed run keeps it. */
   permissionMode: string | null;
   billing: ForemanBilling | null;
-  /** The risky-action guard the session runs under; null for a session without one. */
-  guard: ForemanGuardConfig | null;
+  /** The sandbox policy Foreman sent, as stored; null for a session without one (a person's own). Read through `sandboxOf`. */
+  sandboxJson: string | null;
+  supervision: ForemanSupervision;
+  /** The project's HEAD when supervision began; null when it has no commit or is no repository. */
+  baseHead: string | null;
+  /** The session's last event sequence when supervision began (0 for a session Foreman started). */
+  baseSequence: number;
   updatedAt: string;
 };
 
-/** The storage the service needs; `foremanSessionStateDb` in production, anything with these four calls in tests. */
+/** The storage the service needs; `foremanSessionStateDb` in production, anything with these calls in tests. */
 export type ForemanSessionStateStore = {
   get(sessionId: string): ForemanSessionStateRow | null;
   upsert(row: ForemanSessionStateRow): void;
   updateStatus(sessionId: string, status: ForemanSessionStatus, updatedAt: string): boolean;
   settleAfterRestart(updatedAt: string): { reset: number; waitingPermission: number };
+  listSupervised(): Array<{ session_id: string; supervision: 'started' | 'adopted'; task_id: string | null }>;
 };
 
 /** Fields `track` may set. `undefined` leaves a field as it is; `null` clears it. */
@@ -31,18 +40,10 @@ export type ForemanSessionStatePatch = {
   status?: ForemanSessionStatus;
   permissionMode?: string | null;
   billing?: ForemanBilling | null;
-  guard?: ForemanGuardConfig | null;
-};
-
-/**
- * Stand-in for a stored guard that can no longer be read. A guard that cannot be read must not wave calls through, so
- * this one asks about every shell command and every call that names a path (the two things the classifier looks at).
- */
-const ASK_ABOUT_EVERYTHING_GUARD: ForemanGuardConfig = {
-  enabled: true,
-  riskyPatterns: ['[\\s\\S]'],
-  secretPatterns: ['[\\s\\S]'],
-  writeOutsideRepo: true,
+  sandbox?: ForemanSandboxPolicy | null;
+  supervision?: ForemanSupervision;
+  baseHead?: string | null;
+  baseSequence?: number;
 };
 
 type DeriveStatus = (event: ClaudeRuntimeEvent, current: ForemanSessionStatus, pending: Set<string>) => ForemanSessionStatus | null;
@@ -85,7 +86,7 @@ const deriveStatus: DeriveStatus = (event, current, pending) => {
 
 /**
  * Remembers, across cloudcli restarts, what the Foreman bridge needs to keep driving a session: its status, the
- * permission mode and guard it was started with, its billing mode and task.
+ * permission mode and sandbox it was started with, its billing mode, task and starting commit.
  *
  * Only sessions the bridge has `track`ed are recorded; runtime events of any other session are ignored. Every write
  * goes through an in-memory copy first, so a failing database never breaks a run (it is logged and the bridge carries
@@ -106,22 +107,16 @@ export function createForemanSessionStateService(dependencies: {
   const pendingPrompts = new Map<string, Set<string>>();
 
   function fromRow(row: ForemanSessionStateRow): ForemanSessionState {
-    let guard: ForemanGuardConfig | null = null;
-    if (row.guard_json) {
-      try {
-        guard = parseGuardConfig(JSON.parse(row.guard_json)) ?? null;
-      } catch {
-        log(`stored guard of session ${row.session_id} is unreadable; it will ask about every shell command and path`);
-        guard = ASK_ABOUT_EVERYTHING_GUARD;
-      }
-    }
     return {
       sessionId: row.session_id,
       taskId: row.task_id,
       status: row.status,
       permissionMode: row.permission_mode,
       billing: row.billing === 'api-key' || row.billing === 'subscription' || row.billing === 'cap' ? row.billing : null,
-      guard,
+      sandboxJson: row.sandbox_json,
+      supervision: row.supervision,
+      baseHead: row.base_head,
+      baseSequence: row.base_sequence,
       updatedAt: row.updated_at,
     };
   }
@@ -133,7 +128,10 @@ export function createForemanSessionStateService(dependencies: {
       status: state.status,
       permission_mode: state.permissionMode,
       billing: state.billing,
-      guard_json: state.guard ? JSON.stringify(state.guard) : null,
+      sandbox_json: state.sandboxJson,
+      supervision: state.supervision,
+      base_head: state.baseHead,
+      base_sequence: state.baseSequence,
       updated_at: state.updatedAt,
     };
   }
@@ -222,7 +220,10 @@ export function createForemanSessionStateService(dependencies: {
         status: patch.status ?? current?.status ?? 'idle',
         permissionMode: patch.permissionMode === undefined ? current?.permissionMode ?? null : patch.permissionMode,
         billing: patch.billing === undefined ? current?.billing ?? null : patch.billing,
-        guard: patch.guard === undefined ? current?.guard ?? null : patch.guard,
+        sandboxJson: patch.sandbox === undefined ? current?.sandboxJson ?? null : patch.sandbox && JSON.stringify(patch.sandbox),
+        supervision: patch.supervision ?? current?.supervision ?? 'started',
+        baseHead: patch.baseHead === undefined ? current?.baseHead ?? null : patch.baseHead,
+        baseSequence: patch.baseSequence ?? current?.baseSequence ?? 0,
         updatedAt: now().toISOString(),
       };
       cache.set(sessionId, next);
@@ -234,6 +235,30 @@ export function createForemanSessionStateService(dependencies: {
     setStatus,
 
     recoverAfterRestart,
+
+    /** The sessions Foreman supervises right now (started by it or handed over, not released), newest first. */
+    listSupervised: () => store.listSupervised().map((row) => ({ sessionId: row.session_id, supervision: row.supervision, taskId: row.task_id })),
+
+    /**
+     * The sandbox a run of the session must apply, `null` for a session that has none, or why the run must not start. Read from the
+     * database every time and never from the cache, and a failed or unreadable read refuses: this is the one answer that fails closed.
+     */
+    sandboxOf(sessionId: string): { policy: ForemanSandboxPolicy } | { refuse: string } | null {
+      let row: ForemanSessionStateRow | null;
+      try {
+        row = store.get(sessionId);
+      } catch (error) {
+        return { refuse: `The sandbox of this session could not be read (${error instanceof Error ? error.message : String(error)}), so it does not run.` };
+      }
+      if (!row?.sandbox_json) {
+        return null;
+      }
+      try {
+        return { policy: parseSandboxPolicy(JSON.parse(row.sandbox_json)) };
+      } catch {
+        return { refuse: 'The stored sandbox of this session is malformed, so it does not run: a sandboxed session never runs without isolation.' };
+      }
+    },
 
     /** Feeds one runtime event; moves a tracked session's status. Never throws (it runs inside the runtime loop). */
     observe(event: ClaudeRuntimeEvent): void {

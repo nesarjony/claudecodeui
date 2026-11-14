@@ -2,7 +2,8 @@ import express, { type NextFunction, type Request, type RequestHandler, type Res
 
 import { declaredModelBilling } from '@/modules/foreman/foreman-events.service.js';
 import type { ForemanGitService } from '@/modules/foreman/foreman-git.service.js';
-import { parseGuardConfig } from '@/modules/foreman/foreman-guard.service.js';
+import { fingerprintOf, type ForemanIdempotency } from '@/modules/foreman/foreman-idempotency.service.js';
+import { parseSandboxPolicy } from '@/modules/foreman/foreman-sandbox.service.js';
 import type { createForemanSessionsService } from '@/modules/foreman/foreman-sessions.service.js';
 import {
   parseForemanSuggestion,
@@ -26,6 +27,9 @@ const PERMISSION_MODES = ['default', 'auto', 'acceptEdits', 'bypassPermissions',
 const REQUEST_ID_PATTERN = /^[A-Za-z0-9._:-]{1,200}$/;
 const PERMISSION_DECISIONS = ['allow', 'deny'] as const;
 const BILLING_MODES: readonly ForemanBilling[] = ['api-key', 'subscription', 'cap'];
+// The key Foreman makes up for each call that changes a session (the slice's own naming: `start:<run>:<attempt>`).
+const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
+const MAX_EVENTS_PAGE = 500;
 
 const MAX_PATH_LENGTH = 4096;
 const MAX_PROMPT_LENGTH = 200_000;
@@ -128,6 +132,14 @@ function readBilling(value: unknown): ForemanBilling | undefined {
   return value as ForemanBilling;
 }
 
+function readIdempotencyKey(body: Record<string, unknown>): string {
+  const key = body.idempotencyKey;
+  if (typeof key !== 'string' || !IDEMPOTENCY_KEY_PATTERN.test(key)) {
+    throw invalid('idempotencyKey is required: 1-200 characters, letters, digits, ".", "_", ":" or "-".', 'IDEMPOTENCY_KEY_REQUIRED');
+  }
+  return key;
+}
+
 function readIntegerQuery(value: unknown, field: string, min: number, max: number): number | undefined {
   if (value === undefined) {
     return undefined;
@@ -151,6 +163,8 @@ function readIntegerQuery(value: unknown, field: string, min: number, max: numbe
 export function createForemanRouter(options: {
   authMiddleware: RequestHandler;
   sessions: ForemanSessionsService;
+  /** Makes each call that changes a session apply its idempotency key at most once. */
+  idempotency: ForemanIdempotency;
   /** Pushes suggestions to open chats; without it `POST /suggestions` answers 503. */
   suggestions?: ForemanSuggestionBroadcaster;
   /** Read-only git facts about a project; without it `GET /projects/git` answers 503. */
@@ -158,8 +172,18 @@ export function createForemanRouter(options: {
   /** Task worktrees; without it `POST` and `DELETE /projects/worktree` answer 503. */
   worktrees?: ForemanWorktreesService;
 }) {
-  const { authMiddleware, sessions, suggestions, git, worktrees } = options;
+  const { authMiddleware, sessions, idempotency, suggestions, git, worktrees } = options;
   const router = express.Router();
+
+  /** Runs a call that changes a session under the idempotency key of its body, and sends the answer it first gave. */
+  async function once(response: Response, call: { body: Record<string, unknown>; operation: string; scope: string; status: number }, run: () => Promise<unknown>): Promise<void> {
+    const answer = await idempotency.once(
+      // The key is left out of the fingerprint: the same call asked again under the same key must match itself.
+      { key: readIdempotencyKey(call.body), operation: call.operation, fingerprint: fingerprintOf({ scope: call.scope, asked: { ...call.body, idempotencyKey: undefined } }) },
+      async () => ({ status: call.status, body: createApiSuccessResponse(await run()) }),
+    );
+    response.status(answer.status).json(answer.body);
+  }
 
   router.use(authMiddleware);
   router.use((_request: Request, response: Response, next: NextFunction) => {
@@ -179,25 +203,51 @@ export function createForemanRouter(options: {
 
   router.post('/sessions', asyncHandler(async (request, response) => {
     const body = readBody(request);
+    // Checked before anything else: a session that cannot be sandboxed must not start at all.
+    const sandbox = parseSandboxPolicy(body.sandbox);
     const projectPath = readRequiredText(body, 'projectPath', MAX_PATH_LENGTH).trim();
     if (!projectPath.startsWith('/')) {
       throw invalid('projectPath must be an absolute path of a known cloudcli project.');
     }
     const model = readModel(body.model) ?? 'default';
-    const result = await sessions.startSession({
+    const input = {
       projectPath,
       prompt: readRequiredText(body, 'prompt', MAX_PROMPT_LENGTH),
       model,
-      // An explicit billing wins; without one a marked model keeps its marker's billing (`@cap` must not turn into the API key).
-      billing: readBilling(body.billing) ?? declaredModelBilling(model) ?? 'api-key',
+      // An explicit billing wins; without one a marked model keeps its marker's billing. A worker goes through claude-cap unless Foreman says otherwise.
+      billing: readBilling(body.billing) ?? declaredModelBilling(model) ?? 'cap',
       permissionMode: readPermissionMode(body.permissionMode) ?? 'default',
       effort: readEffort(body.effort),
       title: readOptionalText(body, 'title', MAX_TITLE_LENGTH),
       taskId: readTaskId(body.taskId),
-      guard: parseGuardConfig(body.guard),
-    });
-    response.status(201).json(createApiSuccessResponse(result));
+      sandbox,
+    };
+    await once(response, { body, operation: 'start', scope: projectPath, status: 201 }, () => sessions.startSession(input));
   }));
+
+  // The owner hands one of their own sessions to Foreman, and later takes it back. Neither changes the session's model, routing or permissions.
+  router.post('/sessions/:id/adopt', asyncHandler(async (request, response) => {
+    const sessionId = readSessionId(request.params.id);
+    const body = readBody(request);
+    const taskId = readTaskId(body.taskId);
+    await once(response, { body, operation: 'adopt', scope: sessionId, status: 200 }, () => sessions.adopt(sessionId, { taskId }));
+  }));
+
+  router.post('/sessions/:id/release', asyncHandler(async (request, response) => {
+    const sessionId = readSessionId(request.params.id);
+    await once(response, { body: readBody(request), operation: 'release', scope: sessionId, status: 200 }, () => sessions.release(sessionId));
+  }));
+
+  router.get('/sessions/:id/state', (request, response) => {
+    response.json(createApiSuccessResponse(sessions.getState(readSessionId(request.params.id))));
+  });
+
+  // The events above `after`, for Foreman to fill a gap or to catch up after its own restart; `hasMore` says to ask again from the last sequence.
+  router.get('/sessions/:id/events', (request, response) => {
+    const afterSequence = readIntegerQuery(request.query.after, 'after', 0, 2_000_000_000) ?? 0;
+    const limit = readIntegerQuery(request.query.limit, 'limit', 1, MAX_EVENTS_PAGE) ?? MAX_EVENTS_PAGE;
+    response.json(createApiSuccessResponse(sessions.eventsSince(readSessionId(request.params.id), afterSequence, limit)));
+  });
 
   // Read-only git facts (status, diff stat, diff) of a known project or a path inside one.
   router.get('/projects/git', asyncHandler(async (request, response) => {
@@ -267,19 +317,19 @@ export function createForemanRouter(options: {
     if (body.interrupt !== undefined && typeof body.interrupt !== 'boolean') {
       throw invalid('interrupt must be a boolean.');
     }
-    const result = await sessions.sendMessage(sessionId, {
+    const input = {
       text: readRequiredText(body, 'text', MAX_PROMPT_LENGTH),
       interrupt: body.interrupt === true,
       permissionMode: readPermissionMode(body.permissionMode),
-    });
-    response.status(202).json(createApiSuccessResponse(result));
+    };
+    await once(response, { body, operation: 'message', scope: sessionId, status: 202 }, () => sessions.sendMessage(sessionId, input));
   }));
 
   router.get('/sessions/:id/permissions', (request, response) => {
     response.json(createApiSuccessResponse(sessions.listPermissions(readSessionId(request.params.id))));
   });
 
-  router.post('/sessions/:id/permission', (request, response) => {
+  router.post('/sessions/:id/permission', asyncHandler(async (request, response) => {
     const sessionId = readSessionId(request.params.id);
     const body = readBody(request);
     const requestId = body.requestId;
@@ -290,33 +340,31 @@ export function createForemanRouter(options: {
     if (typeof decision !== 'string' || !(PERMISSION_DECISIONS as readonly string[]).includes(decision)) {
       throw invalid(`decision must be one of: ${PERMISSION_DECISIONS.join(', ')}.`);
     }
-    response.json(createApiSuccessResponse(sessions.answerPermission(sessionId, {
-      requestId,
-      decision: decision as (typeof PERMISSION_DECISIONS)[number],
-      reason: readOptionalText(body, 'reason', MAX_REASON_LENGTH),
-    })));
-  });
+    const input = { requestId, decision: decision as (typeof PERMISSION_DECISIONS)[number], reason: readOptionalText(body, 'reason', MAX_REASON_LENGTH) };
+    await once(response, { body, operation: 'permission', scope: sessionId, status: 200 }, async () => sessions.answerPermission(sessionId, input));
+  }));
 
   router.post('/sessions/:id/interrupt', asyncHandler(async (request, response) => {
-    response.json(createApiSuccessResponse(await sessions.interrupt(readSessionId(request.params.id))));
+    const sessionId = readSessionId(request.params.id);
+    await once(response, { body: readBody(request), operation: 'interrupt', scope: sessionId, status: 200 }, () => sessions.interrupt(sessionId));
   }));
 
   router.post('/sessions/:id/model', asyncHandler(async (request, response) => {
     const sessionId = readSessionId(request.params.id);
-    const model = readModel(readBody(request).model);
+    const body = readBody(request);
+    const model = readModel(body.model);
     if (!model) {
       throw invalid('model is required.');
     }
-    response.json(createApiSuccessResponse(await sessions.setModel(sessionId, model)));
+    await once(response, { body, operation: 'model', scope: sessionId, status: 200 }, () => sessions.setModel(sessionId, model));
   }));
 
   router.post('/sessions/:id/compact', asyncHandler(async (request, response) => {
     const sessionId = readSessionId(request.params.id);
     const body = readBody(request);
-    const result = await sessions.compact(sessionId, readOptionalText(body, 'instructions', MAX_INSTRUCTIONS_LENGTH), {
-      permissionMode: readPermissionMode(body.permissionMode),
-    });
-    response.status(202).json(createApiSuccessResponse(result));
+    const instructions = readOptionalText(body, 'instructions', MAX_INSTRUCTIONS_LENGTH);
+    const permissionMode = readPermissionMode(body.permissionMode);
+    await once(response, { body, operation: 'compact', scope: sessionId, status: 202 }, () => sessions.compact(sessionId, instructions, { permissionMode }));
   }));
 
   // Foreman pushes each new or updated suggestion here; cloudcli broadcasts it to the open chats over the existing WebSocket.

@@ -1,0 +1,186 @@
+import { mkdirSync } from 'node:fs';
+import path from 'node:path';
+
+import { AppError } from '@/shared/utils.js';
+
+/**
+ * The sandbox of the sessions Foreman starts: isolation instead of inspection.
+ *
+ * Foreman owns the policy and sends it, already filled in for the task, with every session start. This file checks that it is
+ * well formed and turns it into the options Claude Code understands: the SDK `sandbox` option (bubblewrap around every Bash call),
+ * permission rules for the file tools (which are not sandboxed), denied tools and the CLI's environment. It reads no command and
+ * judges no tool call. The switches that make a sandbox a sandbox are forced on here whatever the policy says: a corrupt or hostile
+ * policy can narrow a session, never widen it. A policy that is missing or malformed means the session does not start.
+ */
+
+/** What Foreman sends as `sandbox` of a session start, and what the session stores and applies on every run. */
+export type ForemanSandboxPolicy = {
+  /** Writable scratch space of the task; the CLI's temp directories live under it. */
+  scratchDir: string;
+  /** How long a prompt that still reaches Foreman waits before it is denied; null for the default. */
+  approvalTimeoutMs: number | null;
+  network: { allowedDomains: string[]; allowAllUnixSockets: boolean };
+  filesystem: { denyRead: string[]; allowRead: string[]; allowWrite: string[]; denyWrite: string[] };
+  credentials: { envVars: Array<{ name: string; mode: 'deny' }> };
+  permissions: { allow: string[]; deny: string[] };
+  disallowedTools: string[];
+  /** Environment of the CLI process (not only of its commands). */
+  env: Record<string, string>;
+};
+
+/** What a sandboxed run adds to its SDK options. */
+export type ForemanSandboxAdditions = {
+  sandbox: Record<string, unknown>;
+  permissions: { allow: string[]; deny: string[] };
+  disallowedTools: string[];
+  env: Record<string, string>;
+  approvalTimeoutMs: number;
+};
+
+export const DEFAULT_SANDBOX_APPROVAL_TIMEOUT_MS = 30 * 60 * 1000;
+
+const MAX_ENTRIES = 400;
+const MAX_ENTRY_LENGTH = 1000;
+const MAX_PATH_LENGTH = 4096;
+// The CLI's network bridge makes a unix socket `<scratchDir>/tmp/claude-http-<16 hex>.sock`, and a unix socket path may be 107 bytes at most. A longer
+// scratch directory does not fail the session start: every Bash call then dies with "Failed to create bridge sockets". Refuse it up front.
+const MAX_SCRATCH_DIR_LENGTH = 64;
+const MIN_APPROVAL_TIMEOUT_MS = 1000;
+const MAX_APPROVAL_TIMEOUT_MS = 24 * 60 * 60 * 1000;
+const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+const asRecord = (value: unknown): Record<string, unknown> | null =>
+  value !== null && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+
+function invalid(message: string): AppError {
+  return new AppError(`sandbox is malformed: ${message}`, { code: 'SANDBOX_INVALID', statusCode: 400 });
+}
+
+function readList(parent: Record<string, unknown>, field: string, where: string): string[] {
+  const value = parent[field];
+  if (!Array.isArray(value) || value.length > MAX_ENTRIES) {
+    throw invalid(`${where}.${field} must be an array of at most ${MAX_ENTRIES} strings.`);
+  }
+  for (const entry of value) {
+    if (typeof entry !== 'string' || entry.length === 0 || entry.length > MAX_ENTRY_LENGTH) {
+      throw invalid(`${where}.${field} must hold non-empty strings of at most ${MAX_ENTRY_LENGTH} characters.`);
+    }
+  }
+  return [...new Set(value as string[])];
+}
+
+function readObject(parent: Record<string, unknown>, field: string, where: string): Record<string, unknown> {
+  const value = asRecord(parent[field]);
+  if (!value) {
+    throw invalid(`${where}${where ? '.' : ''}${field} must be an object.`);
+  }
+  return value;
+}
+
+function readEnvVars(parent: Record<string, unknown>): Array<{ name: string; mode: 'deny' }> {
+  const list = parent.envVars;
+  if (!Array.isArray(list) || list.length > MAX_ENTRIES) {
+    throw invalid('credentials.envVars must be an array.');
+  }
+  return list.map((entry) => {
+    const item = asRecord(entry);
+    if (!item || typeof item.name !== 'string' || !ENV_NAME_PATTERN.test(item.name) || item.mode !== 'deny') {
+      throw invalid('credentials.envVars entries must be { name, mode: "deny" }.');
+    }
+    return { name: item.name, mode: 'deny' as const };
+  });
+}
+
+function readEnvironment(raw: Record<string, unknown>): Record<string, string> {
+  const environment: Record<string, string> = {};
+  for (const [name, value] of Object.entries(raw)) {
+    if (!ENV_NAME_PATTERN.test(name) || typeof value !== 'string') {
+      throw invalid('env must map variable names to strings.');
+    }
+    environment[name] = value;
+  }
+  return environment;
+}
+
+function readApprovalTimeout(value: unknown): number | null {
+  if (value === undefined || value === null) {
+    return null;
+  }
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < MIN_APPROVAL_TIMEOUT_MS || value > MAX_APPROVAL_TIMEOUT_MS) {
+    throw invalid(`approvalTimeoutMs must be an integer between ${MIN_APPROVAL_TIMEOUT_MS} and ${MAX_APPROVAL_TIMEOUT_MS} (milliseconds).`);
+  }
+  return value;
+}
+
+/**
+ * Validates a sandbox policy. Absent or `null` is refused too (`SANDBOX_REQUIRED`): a session the bridge starts is always sandboxed.
+ * Every list is checked for shape and size only; what the entries say is Foreman's Charter to decide.
+ */
+// Consumed by foreman.routes.ts (session start) and by the session state service (a stored policy is read through the same check).
+export function parseSandboxPolicy(raw: unknown): ForemanSandboxPolicy {
+  if (raw === undefined || raw === null) {
+    throw new AppError('sandbox is required: a session started through the bridge always runs sandboxed.', {
+      code: 'SANDBOX_REQUIRED',
+      statusCode: 400,
+    });
+  }
+  const body = asRecord(raw);
+  if (!body) {
+    throw invalid('it must be an object.');
+  }
+  const { scratchDir } = body;
+  if (typeof scratchDir !== 'string' || scratchDir.length > MAX_PATH_LENGTH || !path.isAbsolute(scratchDir) || path.resolve(scratchDir) === path.sep || scratchDir.includes('\0')) {
+    throw invalid('scratchDir must be an absolute path other than "/".');
+  }
+  if (scratchDir.length > MAX_SCRATCH_DIR_LENGTH) {
+    throw invalid(`scratchDir is ${scratchDir.length} characters; at most ${MAX_SCRATCH_DIR_LENGTH}, because the CLI's network bridge socket lives under it and a unix socket path is limited to 107 bytes.`);
+  }
+  const network = readObject(body, 'network', '');
+  const filesystem = readObject(body, 'filesystem', '');
+  const credentials = readObject(body, 'credentials', '');
+  const permissions = readObject(body, 'permissions', '');
+  return {
+    scratchDir,
+    approvalTimeoutMs: readApprovalTimeout(body.approvalTimeoutMs),
+    network: { allowedDomains: readList(network, 'allowedDomains', 'network'), allowAllUnixSockets: network.allowAllUnixSockets === true },
+    filesystem: {
+      denyRead: readList(filesystem, 'denyRead', 'filesystem'),
+      allowRead: readList(filesystem, 'allowRead', 'filesystem'),
+      allowWrite: readList(filesystem, 'allowWrite', 'filesystem'),
+      denyWrite: readList(filesystem, 'denyWrite', 'filesystem'),
+    },
+    credentials: { envVars: readEnvVars(credentials) },
+    permissions: { allow: readList(permissions, 'allow', 'permissions'), deny: readList(permissions, 'deny', 'permissions') },
+    disallowedTools: readList(body, 'disallowedTools', ''),
+    env: readEnvironment(readObject(body, 'env', '')),
+  };
+}
+
+/**
+ * What a run of a sandboxed session adds to its SDK options: the policy with the load-bearing switches forced on. Creates the scratch
+ * directories first, because the CLI makes `<TMPDIR>/claude-<uid>` itself but not its parents, and needs them before its first command.
+ */
+// Consumed by foreman.module.ts, which hands it to the Claude runtime for every run of a sandboxed session.
+export function buildSandboxAdditions(
+  policy: ForemanSandboxPolicy,
+  makeDirectory: (directory: string) => void = (directory) => mkdirSync(directory, { recursive: true, mode: 0o700 }),
+): ForemanSandboxAdditions {
+  for (const directory of [policy.scratchDir, `${policy.scratchDir}/tmp`, `${policy.scratchDir}/cc`]) {
+    makeDirectory(directory);
+  }
+  return {
+    sandbox: {
+      enabled: true,
+      failIfUnavailable: true,
+      autoAllowBashIfSandboxed: true,
+      allowUnsandboxedCommands: false,
+      network: { ...policy.network, strictAllowlist: true },
+      filesystem: policy.filesystem,
+      credentials: policy.credentials,
+    },
+    permissions: policy.permissions,
+    disallowedTools: policy.disallowedTools,
+    env: policy.env,
+    approvalTimeoutMs: policy.approvalTimeoutMs ?? DEFAULT_SANDBOX_APPROVAL_TIMEOUT_MS,
+  };
+}
