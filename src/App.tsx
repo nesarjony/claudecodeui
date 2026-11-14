@@ -7,7 +7,7 @@ import { AuthProvider, ProtectedRoute } from '@/modules/auth';
 import { TaskMasterProvider,TasksSettingsProvider } from '@/modules/task-master';
 import { WebSocketProvider } from '@/shared/context/WebSocketContext';
 import { PluginsProvider } from '@/modules/plugins';
-import { FOREMAN_NEXT_ENABLED, ForemanNextRoutes } from '@/modules/foreman-next';
+import { FOREMAN_NEXT_ENABLED, ForemanNextRoute } from '@/modules/foreman-next';
 import { ProjectWorkspaceRoute } from '@/modules/project-workspace';
 import { i18n } from '@/modules/i18n';
 
@@ -124,7 +124,7 @@ export default function App() {
                     <Routes>
                       <Route path="/" element={<ProjectWorkspaceRoute />} />
                       <Route path="/session/:sessionId" element={<ProjectWorkspaceRoute />} />
-                      {FOREMAN_NEXT_ENABLED && <Route path="/foreman/*" element={<ForemanNextRoutes />} />}
+                      {FOREMAN_NEXT_ENABLED && <Route path="/foreman/*" element={<ForemanNextRoute />} />}
                     </Routes>
                   </Router>
                 </ProtectedRoute>
