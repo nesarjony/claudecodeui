@@ -100,11 +100,13 @@ export function createForemanModule() {
   const taskIds = createTaskIdStore({
     get: (key) => appConfigDb.get(key),
     set: (key, value) => appConfigDb.set(key, value),
+    delete: (key) => appConfigDb.delete(key),
   });
   // Sessions started through the bridge are marked the same way, so they keep the worker autocompact threshold on resume.
   const managed = createManagedSessionStore({
     get: (key) => appConfigDb.get(key),
     set: (key, value) => appConfigDb.set(key, value),
+    delete: (key) => appConfigDb.delete(key),
   });
   // The worktrees the bridge created for tasks, also kept in app_config so they survive restarts.
   const worktreeRegistry = createForemanWorktreeRegistry({
@@ -206,6 +208,10 @@ export function createForemanModule() {
     projectsDb,
     createAppSession: (projectPath, initialMessage) =>
       sessionsService.createAppSession('claude', projectPath, initialMessage),
+    // The row only: a session that never ran has no transcript, and one that did keeps it (archived, as the UI's delete without force).
+    removeSession: async (sessionId, how) => {
+      await sessionsService.deleteOrArchiveSessionById(sessionId, { force: how === 'delete' });
+    },
     startTurn: (input) =>
       runDetachedChatTurn(
         {
@@ -229,6 +235,7 @@ export function createForemanModule() {
     taskIds,
     managed,
     announceSession: (sessionId) => broadcastSessionUpserted(sessionId),
+    log,
   });
   // The owner hands a session to Foreman and takes it back.
   const handover = createForemanHandoverService({

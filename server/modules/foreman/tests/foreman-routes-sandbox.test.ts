@@ -25,7 +25,7 @@ test('a start whose sandbox cannot be written fails with SANDBOX_NOT_RECORDED an
     const response = await call('POST', '/sessions', startBody());
     refusedAsNotRecorded(response, world);
     assert.match(response.body.error.message, /database is locked/);
-    assert.equal(world.state.get('new-1'), null, 'nothing is remembered for the session either');
+    assert.equal(world.state.get('new-1')?.supervision, 'released', 'the session it made is not supervised (see foreman-routes-start-cleanup.test.ts)');
   });
 });
 

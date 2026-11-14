@@ -170,7 +170,7 @@ test('after a restart a resumed Foreman session keeps its permission mode, its s
     const restarted = createBridgeServices({
       ...deps,
       state: restartedState,
-      taskIds: createTaskIdStore({ get: () => null, set: () => undefined }),
+      taskIds: createTaskIdStore({ get: () => null, set: () => undefined, delete: () => undefined }),
     });
     const [summary] = restarted.reads.listSessions().filter((entry) => entry.id === sessionId);
     assert.equal(summary.status, 'idle', 'the run died with the process');

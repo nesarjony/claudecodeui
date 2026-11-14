@@ -1,11 +1,10 @@
 import type { projectsDb, sessionsDb } from '@/modules/database/index.js';
 import { applyModelBilling, splitModelBilling } from '@/modules/foreman/foreman-billing.service.js';
-import type { ForemanSandboxPolicy } from '@/modules/foreman/foreman-sandbox.service.js';
 import type { ForemanSessionReadsService } from '@/modules/foreman/foreman-session-reads.service.js';
-import { isSandboxedSession, recordSandboxedStart, requireSandboxedMode } from '@/modules/foreman/foreman-session-sandbox.service.js';
+import { isSandboxedSession, requireSandboxedMode } from '@/modules/foreman/foreman-session-sandbox.service.js';
+import { createForemanSessionStart } from '@/modules/foreman/foreman-session-start.service.js';
 import type { ForemanSessionState, ForemanSessionStateService } from '@/modules/foreman/foreman-session-state.service.js';
 import { awaitTurnAdmission } from '@/modules/foreman/foreman-turn-admission.service.js';
-import type { ForemanBilling, ForemanSandboxScope } from '@/shared/types.js';
 import { AppError, clipText, summarizeToolInput } from '@/shared/utils.js';
 
 /** The options of a turn the bridge dispatches: the settings the UI sends with every turn, and the mark of a sandboxed session's run. */
@@ -32,14 +31,17 @@ type StartTurnInput = {
  * What the sessions service needs from the rest of cloudcli, injected so it can be tested without a database, a websocket server,
  * or a Claude process. `foreman.module.ts` wires the production implementations.
  */
-// Consumed by foreman.module.ts, which wires the production implementations, and by the route tests' world.
+// Consumed by foreman.module.ts, which wires the production implementations, by foreman-session-start.service.ts (its slice) and by the
+// route tests' world.
 export type ForemanSessionsDependencies = {
   /** The session lookup and the pending permission prompts, shared with the reads and the hand-over. */
   reads: Pick<ForemanSessionReadsService, 'requireClaudeSession' | 'pendingApprovals'>;
-  sessionsDb: Pick<typeof sessionsDb, 'updateSessionCustomName'>;
+  sessionsDb: Pick<typeof sessionsDb, 'updateSessionCustomName' | 'getSessionById'>;
   projectsDb: Pick<typeof projectsDb, 'getProjectPath'>;
   /** Allocates the stable app session id for a brand-new Claude chat (the UI's `POST /api/providers/sessions`). */
   createAppSession(projectPath: string, initialMessage: string): { sessionId: string; sessionName: string };
+  /** Takes a session out of every listing: `delete` drops the row of one that never ran, `archive` hides one that did, as the UI's own delete does. */
+  removeSession(sessionId: string, how: 'delete' | 'archive'): Promise<void>;
   /** Starts a turn exactly like the UI's `chat.send` with no socket attached; settles when the turn's run ends. */
   startTurn(input: StartTurnInput): Promise<{ started: boolean; error: string | null }>;
   runs: {
@@ -62,18 +64,19 @@ export type ForemanSessionsDependencies = {
   headOf(projectPath: string): Promise<string | null>;
   /** The git directory a project's worktrees share (`git rev-parse --git-common-dir`), or null when it is no repository. */
   gitCommonDirOf(projectPath: string): Promise<string | null>;
-  /** Remembers which Foreman task a session belongs to. */
-  taskIds: { set(sessionId: string, taskId: string): void };
-  /** Marks sessions started through the bridge, so the runtime gives them the worker autocompact threshold. */
-  managed?: { mark(sessionId: string): void };
+  /** Remembers which Foreman task a session belongs to; a start that fails forgets it again. */
+  taskIds: { set(sessionId: string, taskId: string): void; forget(sessionId: string): void };
+  /** Marks sessions started through the bridge, so the runtime gives them the worker autocompact threshold; a start that fails unmarks it. */
+  managed?: { mark(sessionId: string): void; unmark(sessionId: string): void };
   /** Tells connected UIs about a session so it appears in the sidebar immediately. */
   announceSession(sessionId: string): Promise<void>;
   /** How long a started turn is watched for an immediate refusal or failure before the call returns. */
   admissionWindowMs?: number;
+  /** Where a step that could not be taken is reported (the clean-up after a failed start); never throws. */
+  log?: (message: string) => void;
 };
 
 const DEFAULT_ADMISSION_WINDOW_MS = 50;
-const MAX_TITLE_LENGTH = 100;
 const MAX_SUMMARY_LENGTH = 80;
 const MAX_PERMISSION_INPUT_LENGTH = 1000;
 
@@ -100,6 +103,7 @@ export function createForemanSessionsService(deps: ForemanSessionsDependencies) 
 
   /** Starts a turn and waits only long enough to report an immediate refusal or startup failure. */
   const dispatchTurn = (input: StartTurnInput): Promise<void> => awaitTurnAdmission(input.sessionId, deps.startTurn(input), admissionWindowMs);
+  const start = createForemanSessionStart(deps, dispatchTurn);
 
   async function sendUserTurn(
     sessionId: string,
@@ -161,97 +165,11 @@ export function createForemanSessionsService(deps: ForemanSessionsDependencies) 
   }
 
   return {
-    /**
-     * Where a session started in `projectPath` would work, for checking its sandbox policy: the known project and its shared git directory.
-     * Git is asked only about a known project; for any other path the start is refused anyway (UNKNOWN_PROJECT).
-     */
-    async sandboxScopeOf(projectPath: string): Promise<ForemanSandboxScope> {
-      const project = deps.projectsDb.getProjectPath(projectPath);
-      if (!project || project.isArchived) {
-        return { projectPath, gitCommonDir: null };
-      }
-      return { projectPath: project.project_path, gitCommonDir: await deps.gitCommonDirOf(project.project_path) };
-    },
+    /** Where a session started in a project would work, for checking its sandbox policy before anything is made. */
+    sandboxScopeOf: start.sandboxScopeOf,
 
-    /**
-     * Starts a new Claude session in a known project and sends its first prompt, through the same
-     * path as the UI. The session id is allocated immediately; the run continues in the background.
-     */
-    async startSession(input: {
-      projectPath: string;
-      prompt: string;
-      model: string;
-      billing: ForemanBilling;
-      permissionMode: string;
-      effort?: string;
-      title?: string;
-      taskId?: string;
-      sandbox: ForemanSandboxPolicy;
-      /** What `sandbox` was checked against (`sandboxScopeOf` of the same project); stored with it. */
-      sandboxScope: ForemanSandboxScope;
-    }) {
-      // Before anything is made: every session started here is sandboxed.
-      requireSandboxedMode(input.permissionMode);
-      const project = deps.projectsDb.getProjectPath(input.projectPath);
-      if (!project || project.isArchived) {
-        throw new AppError('projectPath is not a known cloudcli project.', { code: 'UNKNOWN_PROJECT', statusCode: 422 });
-      }
-      if (input.sandboxScope.projectPath !== project.project_path) {
-        throw new AppError('sandbox was checked against another project than the one the session starts in.', { code: 'SANDBOX_INVALID', statusCode: 400 });
-      }
-      // Only the API-key billing needs the key file: a `cap` session starts with a placeholder key and no real credential.
-      if (input.billing === 'api-key' && !deps.runtime.hasApiKey()) {
-        throw new AppError('API-key billing was requested, but no API key file is available.', {
-          code: 'API_KEY_UNAVAILABLE',
-          statusCode: 503,
-        });
-      }
-
-      const markedModel = applyModelBilling(input.model, input.billing);
-      const created = deps.createAppSession(project.project_path, input.title ?? input.prompt);
-      if (input.title) {
-        deps.sessionsDb.updateSessionCustomName(created.sessionId, clipText(input.title, MAX_TITLE_LENGTH));
-      }
-      // Marked before the run starts, so the run that this call starts already gets the threshold.
-      deps.managed?.mark(created.sessionId);
-      // Recorded before the run starts, so the run that this call starts is already sandboxed and its events are the session's, and a
-      // run that is resumed after a restart still has the permission mode and sandbox it started with.
-      recordSandboxedStart(deps.state, created.sessionId, {
-        taskId: input.taskId ?? null,
-        billing: input.billing,
-        permissionMode: input.permissionMode,
-        sandbox: { policy: input.sandbox, scope: input.sandboxScope },
-        baseHead: await deps.headOf(project.project_path),
-      });
-      if (input.taskId) {
-        deps.taskIds.set(created.sessionId, input.taskId);
-      }
-      void deps.announceSession(created.sessionId).catch(() => undefined);
-
-      await dispatchTurn({
-        sessionId: created.sessionId,
-        content: input.prompt,
-        options: {
-          model: markedModel,
-          effort: input.effort,
-          permissionMode: input.permissionMode,
-          sessionSummary: clipText(input.title ?? input.prompt, MAX_SUMMARY_LENGTH),
-          foremanSandbox: true,
-        },
-      });
-
-      return {
-        sessionId: created.sessionId,
-        projectPath: project.project_path,
-        title: input.title ? clipText(input.title, MAX_TITLE_LENGTH) : created.sessionName,
-        model: input.model,
-        billing: input.billing,
-        permissionMode: input.permissionMode,
-        taskId: input.taskId ?? null,
-        status: 'running' as const,
-        sandboxed: true as const,
-      };
-    },
+    /** Starts a new sandboxed Claude session and its first turn; a start that fails leaves no session behind. */
+    startSession: start.startSession,
 
     /** Sends the next user message: into a held live run, or as a resume run when the session is idle. */
     async sendMessage(sessionId: string, input: { text: string; interrupt: boolean; permissionMode?: string }) {

@@ -22,7 +22,7 @@ export function isSandboxedSession(session: { supervision: ForemanSupervision; s
  * Refuses a permission mode a sandboxed session may not run in. The sandbox isolates Bash only; the file tools are held by the prompts that
  * `bypassPermissions` skips and `auto` hands to a classifier.
  */
-// Consumed by foreman-sessions.service.ts for a start and for every message or compact of a sandboxed session.
+// Consumed by foreman-session-start.service.ts for a start and by foreman-sessions.service.ts for every message or compact of a sandboxed session.
 export function requireSandboxedMode(permissionMode: string | undefined): void {
   if (permissionMode !== undefined && !isSandboxedPermissionMode(permissionMode)) {
     throw new AppError(
@@ -37,7 +37,7 @@ export function requireSandboxedMode(permissionMode: string | undefined): void {
  * when it fails, then read back the way every run of the session reads it. Anything but exactly the policy that was sent stops the start,
  * because the session's runs would not find their sandbox.
  */
-// Consumed by foreman-sessions.service.ts when it starts a session.
+// Consumed by foreman-session-start.service.ts when it starts a session.
 export function recordSandboxedStart(
   state: Pick<ForemanSessionStateService, 'trackStrict' | 'sandboxOf'>,
   sessionId: string,

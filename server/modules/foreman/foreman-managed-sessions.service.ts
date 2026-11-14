@@ -4,6 +4,7 @@ const MANAGED_KEY_PREFIX = 'foreman.managed:';
 export type ManagedSessionBacking = {
   get(key: string): string | null;
   set(key: string, value: string): void;
+  delete(key: string): void;
 };
 
 /**
@@ -24,6 +25,15 @@ export function createManagedSessionStore(backing: ManagedSessionBacking) {
         backing.set(`${MANAGED_KEY_PREFIX}${sessionId}`, '1');
       } catch {
         // Persistence is best effort; the in-memory mark above still serves this process.
+      }
+    },
+    /** Takes the mark off a session whose start failed. */
+    unmark(sessionId: string): void {
+      marked.delete(sessionId);
+      try {
+        backing.delete(`${MANAGED_KEY_PREFIX}${sessionId}`);
+      } catch {
+        // Persistence is best effort, like `mark`.
       }
     },
     has(sessionId: string): boolean {

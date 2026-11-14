@@ -129,7 +129,8 @@ function sessionsOver(projects: ReturnType<typeof fakeProjects>) {
     headOf: async (projectPath) => `head-of:${projectPath}`,
     gitCommonDirOf: async () => null,
     settleEvents: async () => undefined,
-    taskIds: createTaskIdStore({ get: () => null, set: () => undefined }),
+    taskIds: createTaskIdStore({ get: () => null, set: () => undefined, delete: () => undefined }),
+    removeSession: async () => undefined,
     // No hand-over here: nothing is granted and no session has a mode to adopt.
     grants: createMemoryGrants(),
     runModes: { modeOf: () => null },

@@ -109,6 +109,7 @@ export function createWorld() {
   const background = new Map<string, Array<{ ambient?: boolean }>>();
   const taskStore = new Map<string, string>();
   const managedMarks: string[] = [];
+  const removed: Array<{ sessionId: string; how: 'delete' | 'archive' }> = [];
   // The state store is an in-memory map; "restarting" builds a second service over the same map.
   const stateRows = new Map<string, Parameters<ForemanSessionStateStore['upsert']>[0]>();
   const stateStore: ForemanSessionStateStore = {
@@ -181,6 +182,13 @@ export function createWorld() {
     liveModelChanges: [] as Array<{ sessionId: string; model: string }>,
     announced: [] as string[],
     managedMarks,
+    /** The sessions a failed start took out of sight, and how. */
+    removed,
+    /** The task links as stored. */
+    taskStore,
+    /** What removing a session throws; null for a removal that works. */
+    removeError: null as Error | null,
+    logged: [] as string[],
     created: [] as Array<{ projectPath: string; initialMessage: string }>,
     apiKeyAvailable: true,
     claudeProjectsRoot: '',
@@ -203,8 +211,10 @@ export function createWorld() {
   const deps: BridgeDependencies = {
     sessionsDb: {
       getSessionById: (id) => rows.get(id) ?? null,
+      // Like the repository: an archived session is not listed.
       getRecentSessionsPage: (limit, offset) => ({
         sessions: [...rows.values()]
+          .filter((candidate) => !candidate.isArchived)
           .sort((a, b) => b.updated_at.localeCompare(a.updated_at))
           .slice(offset, offset + limit),
         total: rows.size,
@@ -232,6 +242,14 @@ export function createWorld() {
       // Not tracked here: what the bridge records for the session it starts is the service's doing, and is what the tests look at.
       rows.setUntracked(id, row({ session_id: id, provider_session_id: null, project_path: projectPath, custom_name: name }));
       return { sessionId: id, sessionName: name };
+    },
+    // Like the sessions service: a deleted row is gone, an archived one stays but is no longer listed.
+    removeSession: async (sessionId, how) => {
+      if (world.removeError) throw world.removeError;
+      removed.push({ sessionId, how });
+      const target = rows.get(sessionId);
+      if (how === 'delete') rows.delete(sessionId);
+      else if (target) target.isArchived = 1;
     },
     startTurn: async (input) => {
       world.startedTurns.push(input);
@@ -293,8 +311,13 @@ export function createWorld() {
     taskIds: createTaskIdStore({
       get: (key) => taskStore.get(key) ?? null,
       set: (key, value) => void taskStore.set(key, value),
+      delete: (key) => void taskStore.delete(key),
     }),
-    managed: { mark: (sessionId) => void managedMarks.push(sessionId) },
+    managed: {
+      mark: (sessionId) => void managedMarks.push(sessionId),
+      unmark: (sessionId) => void managedMarks.splice(managedMarks.indexOf(sessionId), managedMarks.includes(sessionId) ? 1 : 0),
+    },
+    log: (message) => void world.logged.push(message),
     grants,
     runModes,
     now: () => world.clock,
