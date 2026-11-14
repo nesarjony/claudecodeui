@@ -79,6 +79,22 @@ describe('the chat drawer', () => {
     expect(send).toHaveBeenCalledWith({ subject: { kind: 'run', id: 'run-t2' }, text: 'Pause after this', delivery: 'next-safe-point' });
   });
 
+  it('shows a stop that chat proposes as a button the owner presses, and does it through the owner\'s own confirmation only', async () => {
+    const api = quickApi();
+    const confirm = vi.spyOn(api, 'confirmChatProposal');
+    renderForemanApp('/foreman', api);
+    const drawer = await openDrawer();
+    const field = within(drawer).getByLabelText('Message Foreman...') as HTMLInputElement;
+    fireEvent.change(field, { target: { value: 'Stop the run' } });
+    fireEvent.submit(field.closest('form') as HTMLFormElement);
+    expect(await within(drawer).findByText('Stop run t2-layout of desk · Inbox')).toBeTruthy();
+    expect(confirm).not.toHaveBeenCalled();
+    fireEvent.click(within(drawer).getByRole('button', { name: 'Confirm' }));
+    expect(await within(drawer).findByText('Confirmed')).toBeTruthy();
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(within(drawer).queryByRole('button', { name: 'Confirm' })).toBeNull();
+  });
+
   it('lets the owner pick another goal and shows its conversation', async () => {
     renderForemanApp('/foreman');
     const drawer = await openDrawer();

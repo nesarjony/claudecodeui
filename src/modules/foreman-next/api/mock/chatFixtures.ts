@@ -9,7 +9,7 @@ export const chatGoalsFixture = (): ChatGoal[] => [
 
 /** Used by the mock store as the Inbox goal's conversation (wireframes §8). */
 export const inboxChatFixture = (now: number): ChatMessage[] => [
-  { id: 'm1', role: 'owner', at: at(now, -30 * MINUTE_MS), text: 'Why did t1 need a second judge round?', evidence: [], actions: null, remembered: null },
+  { id: 'm1', role: 'owner', at: at(now, -30 * MINUTE_MS), text: 'Why did t1 need a second judge round?', evidence: [], actions: null, proposals: [], remembered: null },
   {
     id: 'm2',
     role: 'foreman',
@@ -21,9 +21,10 @@ export const inboxChatFixture = (now: number): ChatMessage[] => [
       { label: 'decision card', kind: 'decision', id: 'dec-steer-9' },
     ],
     actions: null,
+    proposals: [],
     remembered: null,
   },
-  { id: 'm3', role: 'owner', at: at(now, -26 * MINUTE_MS), text: 'Pause desk after this batch, resume at 9.', evidence: [], actions: null, remembered: null },
+  { id: 'm3', role: 'owner', at: at(now, -26 * MINUTE_MS), text: 'Pause desk after this batch, resume at 9.', evidence: [], actions: null, proposals: [], remembered: null },
   {
     id: 'm4',
     role: 'foreman',
@@ -31,6 +32,7 @@ export const inboxChatFixture = (now: number): ChatMessage[] => [
     text: 'Done: pause after t2-layout, resume 09:00.',
     evidence: [],
     actions: { id: 'act-pause', count: 2, undone: false },
+    proposals: [],
     remembered: null,
   },
 ];

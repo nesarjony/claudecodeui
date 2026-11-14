@@ -1,14 +1,14 @@
 import assert from 'node:assert/strict';
 import { createServer, type IncomingMessage, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
 import express from 'express';
 
-import { createForemanNextClient } from '@/modules/foreman-next/foreman-next.client.js';
+import { assertLoopback, createForemanNextClient } from '@/modules/foreman-next/foreman-next.client.js';
 import { createForemanNextRouter } from '@/modules/foreman-next/foreman-next.module.js';
 import { FOREMAN_NEXT_ROUTES } from '@/modules/foreman-next/foreman-next.routes.js';
 
@@ -37,7 +37,7 @@ async function fakeForeman(answer: (request: Seen) => { status: number; body: un
 async function proxyOver(foremanUrl: string, token: string | undefined, serviceLogFile?: string) {
   const app = express();
   app.use(express.json());
-  app.use('/api/foreman-next', createForemanNextRouter({ client: createForemanNextClient({ baseUrl: foremanUrl, token }), serviceLogFile }));
+  app.use('/api/foreman-next', createForemanNextRouter({ client: createForemanNextClient({ baseUrl: foremanUrl, token: async () => token ?? null }), serviceLogFile }));
   const server: Server = await new Promise((resolve) => {
     const listening = app.listen(0, '127.0.0.1', () => resolve(listening));
   });
@@ -106,9 +106,32 @@ test('reaches nothing of Foreman\'s outside the contract: no other path, no path
   }
 });
 
-test('lists exactly the contract\'s forty-two endpoints', () => {
-  assert.equal(FOREMAN_NEXT_ROUTES.length, 42);
-  assert.equal(new Set(FOREMAN_NEXT_ROUTES.map((route) => `${route.method} ${route.path}`)).size, 42);
+test('allows exactly the endpoints the UI contract declares, so the allowlist and the contract cannot drift apart', async () => {
+  const declared = (await readFile(path.join(process.cwd(), 'src/modules/foreman-next/api/contract/endpoints.ts'), 'utf8')).matchAll(/method: '(GET|POST|PUT)', path: '([^']+)'/g);
+  // The service log is cloudcli\'s own, read from a file here, and not an endpoint of Foreman\'s.
+  const contract = [...declared].map((match) => `${match[1]} ${match[2]}`).filter((endpoint) => endpoint !== 'GET /service-log').sort();
+  const allowed = FOREMAN_NEXT_ROUTES.map((route) => `${route.method} ${route.path}`).sort();
+  assert.ok(contract.length > 40);
+  assert.deepEqual(allowed, contract);
+  assert.equal(new Set(allowed).size, allowed.length);
+});
+
+test('refuses an id of dots, and a target that is not this machine, since the token goes there', async () => {
+  const foreman = await fakeForeman(() => ({ status: 200, body: {} }));
+  const proxy = await proxyOver(foreman.url, TOKEN);
+  try {
+    for (const probe of ['/decisions/.', '/decisions/..']) {
+      const response = await fetch(`${proxy.base}${probe}`);
+      assert.ok([400, 404].includes(response.status), `${probe} answered ${response.status}`);
+    }
+    assert.deepEqual(foreman.seen, []);
+  } finally {
+    await proxy.close();
+    await foreman.close();
+  }
+  assert.throws(() => assertLoopback('http://foreman.example.com:4211'), /loopback/);
+  assert.throws(() => assertLoopback('http://192.168.1.5:4211'), /loopback/);
+  for (const ok of ['http://127.0.0.1:4211', 'http://localhost:4211', 'http://[::1]:4211']) assert.doesNotThrow(() => assertLoopback(ok));
 });
 
 test('serves the tail of Foreman\'s service log itself, and an empty one when there is no file', async () => {

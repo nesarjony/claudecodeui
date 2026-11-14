@@ -39,6 +39,7 @@ export const ENDPOINTS = {
   replayRun: { method: 'POST', path: '/work/runs/:id/replay/:step' },
   chatThread: { method: 'GET', path: '/chat/thread' },
   sendChat: { method: 'POST', path: '/chat/messages' },
+  confirmChatProposal: { method: 'POST', path: '/chat/proposals/:id/confirm' },
   undoChatActions: { method: 'POST', path: '/chat/actions/:id/undo' },
   rememberChatMessage: { method: 'POST', path: '/chat/messages/:id/remember' },
   sessionSupervision: { method: 'GET', path: '/sessions/:id/supervision' },

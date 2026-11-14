@@ -9,6 +9,10 @@ export type ChatDelivery = (typeof CHAT_DELIVERIES)[number];
 
 export type ChatLink = EntityRef & { label: string };
 export type ChatActions = { id: string; count: number; undone: boolean };
+// What chat may only propose, because it cannot be taken back: the owner confirms it, on a screen or his phone, with the same call his own press makes.
+export const CHAT_PROPOSAL_KINDS = ['stop-run', 'answer-question'] as const;
+export type ChatProposalKind = (typeof CHAT_PROPOSAL_KINDS)[number];
+export type ChatProposal = { id: string; kind: ChatProposalKind; summary: string; state: 'open' | 'confirmed' };
 export const CHAT_ROLES = ['owner', 'foreman'] as const;
 export type ChatMessage = {
   id: string;
@@ -17,6 +21,7 @@ export type ChatMessage = {
   text: string;
   evidence: ChatLink[];
   actions: ChatActions | null;
+  proposals: ChatProposal[];
   remembered: RememberScope | null;
 };
 export type ChatGoal = { id: string; label: string };

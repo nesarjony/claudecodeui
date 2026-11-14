@@ -41,6 +41,7 @@ export type ForemanApi = {
   replayRun: (id: string, fromStep: RunStageId) => Promise<RunDetail>;
   chatThread: (subject: ChatSubjectRef) => Promise<ChatThread>;
   sendChat: (request: ChatSendRequest) => Promise<ChatMessage[]>;
+  confirmChatProposal: (proposalId: string) => Promise<ChatMessage>;
   undoChatActions: (actionsId: string) => Promise<ChatMessage>;
   rememberChatMessage: (messageId: string) => Promise<ChatMessage>;
   sessionSupervision: (sessionId: string) => Promise<SessionSupervision>;

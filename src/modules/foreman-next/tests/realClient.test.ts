@@ -34,6 +34,7 @@ const CASES: Case[] = [
   ['chatThread', (api) => api.chatThread({ kind: 'general', id: null }), 'GET', `${BASE}/chat/thread?kind=general`],
   ['sendChat', (api) => api.sendChat({ subject: { kind: 'run', id: 'run-1' }, text: 'hi', delivery: 'after-batch' }), 'POST', `${BASE}/chat/messages`, { subject: { kind: 'run', id: 'run-1' }, text: 'hi', delivery: 'after-batch' }],
   ['rememberChatMessage', (api) => api.rememberChatMessage('m 1'), 'POST', `${BASE}/chat/messages/m%201/remember`],
+  ['confirmChatProposal', (api) => api.confirmChatProposal('p 1'), 'POST', `${BASE}/chat/proposals/p%201/confirm`],
   ['takeOverRun', (api) => api.takeOverRun('run-1'), 'POST', `${BASE}/work/runs/run-1/take-over`],
   ['sessionSupervision', (api) => api.sessionSupervision('s1'), 'GET', `${BASE}/sessions/s1/supervision`],
   ['handOverSession', (api) => api.handOverSession('s1', 'finish import'), 'POST', `${BASE}/sessions/s1/hand-over`, { goal: 'finish import' }],

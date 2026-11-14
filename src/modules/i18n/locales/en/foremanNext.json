@@ -506,6 +506,8 @@
     "actions_other": "✓ {{count}} actions",
     "undo": "Undo",
     "undone": "Undone",
+    "confirm": "Confirm",
+    "confirmed": "Confirmed",
     "placeholder": "Message Foreman...",
     "send": "Send",
     "deliver": "deliver",

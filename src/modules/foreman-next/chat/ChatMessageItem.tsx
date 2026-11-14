@@ -9,12 +9,12 @@ import { formatClock } from '@/modules/foreman-next/utils/foremanFormat';
 import { entityPath } from '@/modules/foreman-next/utils/foremanPaths';
 import { Button } from '@/shared/ui';
 
-/** Used by the chat drawer for one message: who said it, when, the evidence it links to, the actions Foreman took (with Undo), and Remember to keep an answer as knowledge (BR-5.1). */
+/** Used by the chat drawer for one message: who said it, when, the evidence it links to, the actions Foreman took (with Undo), what it proposes and cannot do itself (with Confirm, the owner's own press), and Remember to keep an answer as knowledge (BR-5.1). */
 export function ChatMessageItem({ message }: { message: ChatMessage }) {
   const { t } = useTranslation('foremanNext');
   const api = useForemanApi();
   const { busy, failed, run } = useAction();
-  const { actions } = message;
+  const { actions, proposals } = message;
 
   return (
     <li className="space-y-1">
@@ -41,6 +41,18 @@ export function ChatMessageItem({ message }: { message: ChatMessage }) {
           )}
         </div>
       ) : null}
+      {proposals.map((proposal) => (
+        <div key={proposal.id} className="flex items-center justify-between gap-2 rounded-md border border-border p-2 text-xs">
+          <span>{proposal.summary}</span>
+          {proposal.state === 'confirmed' ? (
+            <span className="text-muted-foreground">{t('chat.confirmed')}</span>
+          ) : (
+            <Button variant="default" size="sm" className="h-7 px-2 text-xs" disabled={busy} onClick={() => void run(() => api.confirmChatProposal(proposal.id))}>
+              {t('chat.confirm')}
+            </Button>
+          )}
+        </div>
+      ))}
       {message.role === 'foreman' ? (
         message.remembered ? (
           <p className="text-xs text-muted-foreground">{t('chat.remembered')}</p>

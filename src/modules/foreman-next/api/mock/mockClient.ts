@@ -87,6 +87,8 @@ export function createMockApi({ scenario = 'default', latencyMs = 150, studyMs =
         : `Passed on at the next safe point: "${text}". Nothing in the current step is interrupted.`,
     evidence: [],
     actions: null,
+    // A stop cannot be taken back, so chat only proposes it: asking for one puts a button under the reply, and nothing is stopped until it is pressed.
+    proposals: /\bstop\b/i.test(text) ? [{ id: `proposal-${messageCount}`, kind: 'stop-run', summary: 'Stop run t2-layout of desk · Inbox', state: 'open' }] : [],
     remembered: null,
   });
 
@@ -198,10 +200,19 @@ export function createMockApi({ scenario = 'default', latencyMs = 150, studyMs =
     sendChat: ({ subject, text, delivery }) =>
       respond('sendChat', () => {
         const { goalId } = scopeOf(subject);
-        const owner: ChatMessage = { id: `owner-${(messageCount += 1)}`, role: 'owner', at: at(Date.now(), 0), text, evidence: [], actions: null, remembered: null };
+        const owner: ChatMessage = { id: `owner-${(messageCount += 1)}`, role: 'owner', at: at(Date.now(), 0), text, evidence: [], actions: null, proposals: [], remembered: null };
         const reply = replyTo(text, delivery);
         store.threads[goalId ?? ''] = [...threadOf(goalId), owner, reply];
         return [owner, reply];
+      }),
+    confirmChatProposal: (proposalId) =>
+      respond('confirmChatProposal', () => {
+        const message = findMessage((candidate) => candidate.proposals.some((proposal) => proposal.id === proposalId));
+        const proposal = message?.proposals.find((each) => each.id === proposalId);
+        if (!message || !proposal) throw notFound('proposal');
+        if (proposal.state === 'confirmed') throw new ApiRequestError('This was already confirmed', { code: 'conflict', status: 409 });
+        proposal.state = 'confirmed';
+        return message;
       }),
     undoChatActions: (actionsId) =>
       respond('undoChatActions', () => {

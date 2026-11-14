@@ -67,6 +67,7 @@ export function createRealApi(): ForemanApi {
     replayRun: (id, fromStep) => call(ENDPOINTS.replayRun, { params: { id, step: fromStep } }),
     chatThread: (subject) => call(ENDPOINTS.chatThread, { query: { kind: subject.kind, id: subject.id } }),
     sendChat: (request) => call(ENDPOINTS.sendChat, { body: request }),
+    confirmChatProposal: (proposalId) => call(ENDPOINTS.confirmChatProposal, { params: { id: proposalId } }),
     undoChatActions: (actionsId) => call(ENDPOINTS.undoChatActions, { params: { id: actionsId } }),
     rememberChatMessage: (messageId) => call(ENDPOINTS.rememberChatMessage, { params: { id: messageId } }),
     sessionSupervision: (sessionId) => call(ENDPOINTS.sessionSupervision, { params: { id: sessionId } }),
