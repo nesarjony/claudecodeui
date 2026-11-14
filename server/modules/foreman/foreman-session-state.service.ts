@@ -250,7 +250,7 @@ export function createForemanSessionStateService(dependencies: {
       store.upsert(toRow(next));
       cache.set(sessionId, next);
       if (patch.sandbox) {
-        sandboxes.remember(sessionId, patch.sandbox.policy);
+        sandboxes.remember(sessionId, patch.sandbox);
       }
       return next;
     },
@@ -264,8 +264,8 @@ export function createForemanSessionStateService(dependencies: {
     listSupervised: () => store.listSupervised().map((row) => ({ sessionId: row.session_id, supervision: row.supervision, taskId: row.task_id })),
 
     /**
-     * The sandbox a run of the session must apply, `null` for a session that has none, or why the run must not start; `required` for a run
-     * the bridge marked as its own. Fails closed only for Foreman's runs (see foreman-session-sandbox.service.ts).
+     * The sandbox a run of the session must apply (its policy and the scope stored with it), `null` for a session that has none, or why the
+     * run must not start; `required` for a run the bridge marked as its own. Fails closed only for Foreman's runs (see foreman-session-sandbox.service.ts).
      */
     sandboxOf: sandboxes.sandboxOf,
 

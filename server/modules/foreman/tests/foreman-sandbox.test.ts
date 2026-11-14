@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { protectedWritePaths } from '@/modules/foreman/foreman-sandbox-protected.service.js';
 import { buildSandboxAdditions, DEFAULT_SANDBOX_APPROVAL_TIMEOUT_MS, parseSandboxPolicy } from '@/modules/foreman/foreman-sandbox.service.js';
 import { AppError } from '@/shared/utils.js';
 
@@ -42,17 +43,24 @@ test('a malformed policy is refused whatever is wrong with it', () => {
 test('the run gets the policy with the switches that make it a sandbox forced on, whatever the policy says', () => {
   const made: string[] = [];
   const hostile = parseSandboxPolicy({ ...samplePolicy(), enabled: false, failIfUnavailable: false, allowUnsandboxedCommands: true, network: { allowedDomains: [], allowAllUnixSockets: false, strictAllowlist: false } }, SAMPLE_SCOPE);
-  const additions = buildSandboxAdditions(hostile, (directory) => made.push(directory));
+  const additions = buildSandboxAdditions(hostile, SAMPLE_SCOPE, (directory) => made.push(directory));
+  // The read-only paths of git and the CLI join what the policy denies (foreman-sandbox-protected.test.ts checks them on real repositories).
+  const forced = protectedWritePaths(SAMPLE_SCOPE).map((entry) => entry.path);
   assert.deepEqual(additions.sandbox, {
     enabled: true,
     failIfUnavailable: true,
     autoAllowBashIfSandboxed: true,
     allowUnsandboxedCommands: false,
     network: { allowedDomains: [], allowAllUnixSockets: true, strictAllowlist: true },
-    filesystem: { ...hostile.filesystem, denyRead: ['/home', '/mnt', '/tmp', '/mnt/dev/repo/**/.env*', '/run', '/var/tmp', '/media', '/srv'] },
+    filesystem: {
+      ...hostile.filesystem,
+      denyRead: ['/home', '/mnt', '/tmp', '/mnt/dev/repo/**/.env*', '/run', '/var/tmp', '/media', '/srv'],
+      denyWrite: [...new Set([...hostile.filesystem.denyWrite, ...forced])],
+    },
     credentials: hostile.credentials,
   });
-  assert.deepEqual(additions.permissions, hostile.permissions);
+  assert.deepEqual(additions.permissions.allow, hostile.permissions.allow);
+  assert.deepEqual(additions.permissions.deny.slice(0, hostile.permissions.deny.length), hostile.permissions.deny);
   assert.deepEqual(additions.disallowedTools, ['AskUserQuestion', 'WebFetch', 'ExitPlanMode']);
   assert.deepEqual(additions.env, hostile.env);
   assert.deepEqual(made, ['/mnt/dev/scratch/batch-1', '/mnt/dev/scratch/batch-1/tmp', '/mnt/dev/scratch/batch-1/cc']);
@@ -63,7 +71,7 @@ test('every unix socket is allowed and the trees that hold sockets are hidden, w
     network: { allowedDomains: [], allowAllUnixSockets: false },
     filesystem: { ...samplePolicy().filesystem, denyRead: ['/mnt/dev/repo/.env'] },
   });
-  const sandbox = buildSandboxAdditions(narrow, () => undefined).sandbox as { network: Record<string, unknown>; filesystem: Record<string, string[]> };
+  const sandbox = buildSandboxAdditions(narrow, SAMPLE_SCOPE, () => undefined).sandbox as { network: Record<string, unknown>; filesystem: Record<string, string[]> };
   assert.equal(sandbox.network.allowAllUnixSockets, true);
   assert.deepEqual(sandbox.filesystem.denyRead, ['/mnt/dev/repo/.env', '/run', '/tmp', '/var/tmp', '/home', '/mnt', '/media', '/srv']);
   // The rest of the filesystem part is the policy's: what it reads and writes stays reachable over the hidden trees.
@@ -73,13 +81,13 @@ test('every unix socket is allowed and the trees that hold sockets are hidden, w
 });
 
 test('a prompt that nobody answers waits for the policy\'s window, or thirty minutes without one', () => {
-  assert.equal(buildSandboxAdditions(samplePolicy(), () => undefined).approvalTimeoutMs, 120_000);
-  assert.equal(buildSandboxAdditions(samplePolicy({ approvalTimeoutMs: null }), () => undefined).approvalTimeoutMs, DEFAULT_SANDBOX_APPROVAL_TIMEOUT_MS);
+  assert.equal(buildSandboxAdditions(samplePolicy(), SAMPLE_SCOPE, () => undefined).approvalTimeoutMs, 120_000);
+  assert.equal(buildSandboxAdditions(samplePolicy({ approvalTimeoutMs: null }), SAMPLE_SCOPE, () => undefined).approvalTimeoutMs, DEFAULT_SANDBOX_APPROVAL_TIMEOUT_MS);
 });
 
 test('AskUserQuestion and ExitPlanMode are always denied, joined to whatever the policy denies', () => {
   for (const disallowedTools of [[], ['WebSearch'], ['ExitPlanMode', 'AskUserQuestion', 'WebFetch']]) {
-    const denied = buildSandboxAdditions(samplePolicy({ disallowedTools }), () => undefined).disallowedTools;
+    const denied = buildSandboxAdditions(samplePolicy({ disallowedTools }), SAMPLE_SCOPE, () => undefined).disallowedTools;
     assert.deepEqual([...denied].sort(), [...new Set([...disallowedTools, 'AskUserQuestion', 'ExitPlanMode'])].sort());
   }
 });

@@ -60,7 +60,7 @@ test('a start may write only its project, its scratch directory and its git dire
     assert.equal(started.status, 201, JSON.stringify(started.body));
     const stored = world.stateRows.get(started.body.data.sessionId as string);
     assert.deepEqual(JSON.parse(stored?.sandbox_scope_json ?? 'null'), { projectPath: '/mnt/dev/known', gitCommonDir: '/mnt/dev/main/.git' });
-    assert.deepEqual(world.state.sandboxOf(started.body.data.sessionId as string), { policy: sandbox });
+    assert.deepEqual(world.state.sandboxOf(started.body.data.sessionId as string), { policy: sandbox, scope: { projectPath: '/mnt/dev/known', gitCommonDir: '/mnt/dev/main/.git' } });
   });
 });
 

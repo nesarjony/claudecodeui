@@ -141,7 +141,7 @@ export function createForemanModule() {
   // whether it is one the bridge dispatched for a sandboxed session, which is refused when its sandbox cannot be found.
   setClaudeRuntimeSandboxProvider((sessionId, run) => {
     const sandbox = sessionState.sandboxOf(sessionId, run);
-    return sandbox && ('refuse' in sandbox ? sandbox : buildSandboxAdditions(sandbox.policy));
+    return sandbox && ('refuse' in sandbox ? sandbox : buildSandboxAdditions(sandbox.policy, sandbox.scope));
   });
 
   const events = createForemanEventStore({ storage: foremanEventsDb });

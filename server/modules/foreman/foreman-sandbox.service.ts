@@ -1,6 +1,7 @@
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 
+import { protectedWritePaths } from '@/modules/foreman/foreman-sandbox-protected.service.js';
 import { sandboxScopeProblem } from '@/modules/foreman/foreman-sandbox-scope.service.js';
 import type { ForemanSandboxScope } from '@/shared/types.js';
 import { AppError } from '@/shared/utils.js';
@@ -11,7 +12,8 @@ import { AppError } from '@/shared/utils.js';
  * Foreman owns the policy and sends it, already filled in for the task, with every session start. This file checks that it is
  * well formed and turns it into the options Claude Code understands: the SDK `sandbox` option (bubblewrap around every Bash call),
  * permission rules for the file tools (which are not sandboxed), denied tools and the CLI's environment. It reads no command and
- * judges no tool call. The switches that make a sandbox a sandbox, and the denial of the tools only a person can answer, are forced on here
+ * judges no tool call. The switches that make a sandbox a sandbox, the denial of the tools only a person can answer, and the read-only
+ * paths through which git or the CLI would run a worker's code outside the sandbox (foreman-sandbox-protected.service.ts) are forced here
  * whatever the policy says; the parts of a policy that open something up (environment, hosts, paths, allow rules) are checked against what a
  * worker may have (foreman-sandbox-scope.service.ts). A policy that is missing, malformed or too wide means the session does not start.
  */
@@ -51,6 +53,8 @@ const FORCED_ALLOW_ALL_UNIX_SOCKETS = true;
 // it can connect to, so these trees are always denied for reading, whatever the policy denies. The checkout and the scratch directory stay
 // reachable: the sandbox runtime mounts the allowed paths over a denied tree.
 const HIDDEN_TREES = ['/run', '/tmp', '/var/tmp', '/home', '/mnt', '/media', '/srv'];
+// The file tools run outside the sandbox, so a protected path is denied to them by rule as well as to Bash by `denyWrite`.
+const WRITING_FILE_TOOLS = ['Edit', 'Write', 'NotebookEdit'];
 
 const MAX_ENTRIES = 400;
 const MAX_ENTRY_LENGTH = 1000;
@@ -177,18 +181,24 @@ export function parseSandboxPolicy(raw: unknown, scope: ForemanSandboxScope): Fo
 }
 
 /**
- * What a run of a sandboxed session adds to its SDK options: the policy with the load-bearing switches forced on, every unix socket allowed
- * (FORCED_ALLOW_ALL_UNIX_SOCKETS) and the trees that hold sockets hidden (HIDDEN_TREES joined to `denyRead`). Creates the scratch
- * directories first, because the CLI makes `<TMPDIR>/claude-<uid>` itself but not its parents, and needs them before its first command.
+ * What a run of a sandboxed session working in `scope` adds to its SDK options: the policy with the load-bearing switches forced on, every
+ * unix socket allowed (FORCED_ALLOW_ALL_UNIX_SOCKETS), the trees that hold sockets hidden (HIDDEN_TREES joined to `denyRead`), and git's and
+ * the CLI's own files read-only (`protectedWritePaths`, joined to `denyWrite` and to the deny rules of the file tools; what the policy already
+ * carries is not repeated). Creates the scratch directories first, because the CLI makes `<TMPDIR>/claude-<uid>` itself but not its parents,
+ * and needs them before its first command.
  */
 // Consumed by foreman.module.ts, which hands it to the Claude runtime for every run of a sandboxed session.
 export function buildSandboxAdditions(
   policy: ForemanSandboxPolicy,
+  scope: ForemanSandboxScope,
   makeDirectory: (directory: string) => void = (directory) => mkdirSync(directory, { recursive: true, mode: 0o700 }),
 ): ForemanSandboxAdditions {
   for (const directory of [policy.scratchDir, `${policy.scratchDir}/tmp`, `${policy.scratchDir}/cc`]) {
     makeDirectory(directory);
   }
+  const forced = protectedWritePaths(scope);
+  // `//` makes a rule's path absolute; a directory is denied with everything below it.
+  const forcedRules = forced.flatMap((entry) => WRITING_FILE_TOOLS.map((tool) => `${tool}(/${entry.path}${entry.directory ? '/**' : ''})`));
   return {
     sandbox: {
       enabled: true,
@@ -196,10 +206,14 @@ export function buildSandboxAdditions(
       autoAllowBashIfSandboxed: true,
       allowUnsandboxedCommands: false,
       network: { ...policy.network, allowAllUnixSockets: FORCED_ALLOW_ALL_UNIX_SOCKETS, strictAllowlist: true },
-      filesystem: { ...policy.filesystem, denyRead: [...new Set([...policy.filesystem.denyRead, ...HIDDEN_TREES])] },
+      filesystem: {
+        ...policy.filesystem,
+        denyRead: [...new Set([...policy.filesystem.denyRead, ...HIDDEN_TREES])],
+        denyWrite: [...new Set([...policy.filesystem.denyWrite, ...forced.map((entry) => entry.path)])],
+      },
       credentials: policy.credentials,
     },
-    permissions: policy.permissions,
+    permissions: { allow: policy.permissions.allow, deny: [...new Set([...policy.permissions.deny, ...forcedRules])] },
     disallowedTools: [...new Set([...policy.disallowedTools, ...UNATTENDED_DENIED_TOOLS])],
     env: policy.env,
     approvalTimeoutMs: policy.approvalTimeoutMs ?? DEFAULT_SANDBOX_APPROVAL_TIMEOUT_MS,

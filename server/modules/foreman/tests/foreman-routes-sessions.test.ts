@@ -4,6 +4,9 @@ import test from 'node:test';
 import { HEAD, row, startBody, tick, TOKEN, withBridge, type World } from './foreman-routes-support.js';
 import { samplePolicy } from './foreman-sandbox-support.js';
 
+/** Where a session started in the known project works, as its sandbox is stored with it: the world reports no git directory. */
+const KNOWN_SCOPE = { projectPath: '/mnt/dev/known', gitCommonDir: null };
+
 // ---------------------------------------------------------------------------------------------
 // POST /sessions
 // ---------------------------------------------------------------------------------------------
@@ -534,8 +537,8 @@ test('POST /sessions with a good sandbox starts a sandboxed session: the policy 
     assert.equal(response.body.data.sandboxed, true);
     const sessionId = response.body.data.sessionId as string;
     // What the run reads back through the sandbox provider is the policy that was sent, and it was there when the run began.
-    assert.deepEqual(world.state.sandboxOf(sessionId), { policy });
-    assert.deepEqual(storedWhenTheRunStarted, { policy });
+    assert.deepEqual(world.state.sandboxOf(sessionId), { policy, scope: KNOWN_SCOPE });
+    assert.deepEqual(storedWhenTheRunStarted, { policy, scope: KNOWN_SCOPE });
     assert.deepEqual(JSON.parse(world.stateRows.get(sessionId)?.sandbox_json ?? 'null'), policy);
 
     const state = world.state.get(sessionId);
@@ -579,7 +582,7 @@ test('the guard is gone: a body with a guard and no sandbox does not start, and 
     assert.equal('toolHooks' in world.startedTurns[0].options, false);
     assert.equal('guard' in (world.state.get(started.body.data.sessionId) ?? {}), false);
     // The stored sandbox is the one sent, whatever the guard said.
-    assert.deepEqual(world.state.sandboxOf(started.body.data.sessionId), { policy: samplePolicy() });
+    assert.deepEqual(world.state.sandboxOf(started.body.data.sessionId), { policy: samplePolicy(), scope: KNOWN_SCOPE });
   });
 });
 
@@ -593,7 +596,7 @@ test('a message to a sandboxed session can change its permission mode and never 
     assert.equal(response.status, 202);
     assert.equal(world.startedTurns[1].options.permissionMode, 'acceptEdits');
     assert.equal(world.state.get(sessionId)?.permissionMode, 'acceptEdits');
-    assert.deepEqual(world.state.sandboxOf(sessionId), { policy: samplePolicy() });
+    assert.deepEqual(world.state.sandboxOf(sessionId), { policy: samplePolicy(), scope: KNOWN_SCOPE });
     assert.equal('sandbox' in world.startedTurns[1].options, false);
 
     // The next message without a mode resumes in the remembered one.

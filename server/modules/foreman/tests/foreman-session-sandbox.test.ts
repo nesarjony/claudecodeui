@@ -38,7 +38,7 @@ test('trackStrict throws when the write fails and leaves nothing behind, in memo
   faults.write = null;
   state.trackStrict('s1', { permissionMode: 'default', sandbox: sampleSandbox() });
   assert.equal(rows.get('s1')?.sandbox_json, JSON.stringify(samplePolicy()));
-  assert.deepEqual(state.sandboxOf('s1'), { policy: samplePolicy() });
+  assert.deepEqual(state.sandboxOf('s1'), sampleSandbox());
 });
 
 test('a later lenient track keeps the sandbox a strict one recorded', () => {
@@ -67,9 +67,9 @@ test('the read works and a policy is stored: it applies to every run, marked or 
   const { rows, store } = memoryStore();
   rows.set('worker', storedRow('worker', JSON.stringify(samplePolicy())));
   const state = createForemanSessionStateService({ store });
-  assert.deepEqual(state.sandboxOf('worker', MARKED), { policy: samplePolicy() });
-  assert.deepEqual(state.sandboxOf('worker', UNMARKED), { policy: samplePolicy() });
-  assert.deepEqual(state.sandboxOf('worker'), { policy: samplePolicy() }, 'unmarked is the default');
+  assert.deepEqual(state.sandboxOf('worker', MARKED), sampleSandbox());
+  assert.deepEqual(state.sandboxOf('worker', UNMARKED), sampleSandbox());
+  assert.deepEqual(state.sandboxOf('worker'), sampleSandbox(), 'unmarked is the default');
 });
 
 test('the read works and no policy is stored: a marked run is refused, an unmarked one runs as before', () => {
@@ -87,14 +87,14 @@ test('the read fails: a policy read or written earlier in this process applies t
   rows.set('read-before', storedRow('read-before', JSON.stringify(samplePolicy())));
   const log: string[] = [];
   const state = createForemanSessionStateService({ store, log: (message) => log.push(message) });
-  assert.deepEqual(state.sandboxOf('read-before'), { policy: samplePolicy() });
+  assert.deepEqual(state.sandboxOf('read-before'), sampleSandbox());
   const written = samplePolicy({ scratchDir: '/mnt/dev/scratch/written' });
   state.trackStrict('written-before', { sandbox: { policy: written, scope: SAMPLE_SCOPE } });
 
   faults.read = new Error('database disk image is malformed');
   for (const run of [MARKED, UNMARKED]) {
-    assert.deepEqual(state.sandboxOf('read-before', run), { policy: samplePolicy() });
-    assert.deepEqual(state.sandboxOf('written-before', run), { policy: written });
+    assert.deepEqual(state.sandboxOf('read-before', run), sampleSandbox());
+    assert.deepEqual(state.sandboxOf('written-before', run), { policy: written, scope: SAMPLE_SCOPE });
   }
   assert.deepEqual(log, [], 'nothing to report: the remembered policy applied');
 });

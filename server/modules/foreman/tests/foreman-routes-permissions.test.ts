@@ -184,7 +184,7 @@ test('after a restart a resumed Foreman session keeps its permission mode, its s
     assert.equal(resumed?.sessionId, sessionId);
     assert.equal(resumed?.options.permissionMode, 'plan');
     // The resumed run asks the stored state for its sandbox (the request carries none), and the approval window is the one sent.
-    assert.deepEqual(restartedState.sandboxOf(sessionId), { policy });
+    assert.deepEqual(restartedState.sandboxOf(sessionId), { policy, scope: { projectPath: '/mnt/dev/known', gitCommonDir: null } });
     assert.equal('sandbox' in (resumed?.options ?? {}), false);
   });
 });

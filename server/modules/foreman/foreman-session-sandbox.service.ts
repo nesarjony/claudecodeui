@@ -51,8 +51,8 @@ export function recordSandboxedStart(
     throw notRecorded(`the write failed: ${error instanceof Error ? error.message : String(error)}`);
   }
   const readBack = state.sandboxOf(sessionId, { required: true });
-  if (!readBack || !('policy' in readBack) || !isDeepStrictEqual(readBack.policy, patch.sandbox.policy)) {
-    throw notRecorded('what is stored does not read back as the policy that was sent');
+  if (!readBack || !('policy' in readBack) || !isDeepStrictEqual(readBack, patch.sandbox)) {
+    throw notRecorded('what is stored does not read back as the policy that was sent and the scope it was checked against');
   }
 }
 
@@ -66,8 +66,11 @@ function readSandboxScope(json: string | null): ForemanSandboxScope {
   return { projectPath: scope.projectPath, gitCommonDir };
 }
 
-/** What a run of a session is to do about its sandbox: apply this policy, not run at all (and why), or run without one (`null`). */
-type SandboxAnswer = { policy: ForemanSandboxPolicy } | { refuse: string } | null;
+/** A session's sandbox: the policy, and where the session works (what the policy was checked against and what its forced paths are read from). */
+type StoredSandbox = { policy: ForemanSandboxPolicy; scope: ForemanSandboxScope };
+
+/** What a run of a session is to do about its sandbox: apply this one, not run at all (and why), or run without one (`null`). */
+type SandboxAnswer = StoredSandbox | { refuse: string } | null;
 
 /**
  * Reads the sandbox each run of a session must apply, failing closed only for the runs that are Foreman's.
@@ -81,17 +84,17 @@ type SandboxAnswer = { policy: ForemanSandboxPolicy } | { refuse: string } | nul
  *   the table cannot be read and nothing is remembered runs that turn without the sandbox.
  * - a stored policy that is malformed, has no stored scope, or that today's checks refuse (against the scope stored with it) refuses every run.
  */
-// Consumed by foreman-session-state.service.ts, which records policies through `remember` and answers the runtime's sandbox provider with `sandboxOf`.
+// Consumed by foreman-session-state.service.ts, which records sandboxes through `remember` and answers the runtime's sandbox provider with `sandboxOf`.
 export function createSessionSandboxReader(dependencies: {
   store: { get(sessionId: string): ForemanSessionStateRow | null };
   log: (message: string) => void;
 }) {
-  const known = new Map<string, ForemanSandboxPolicy>();
+  const known = new Map<string, StoredSandbox>();
 
   return {
-    /** Remembers a policy that was just written, as the one to apply while the database cannot be read. */
-    remember(sessionId: string, policy: ForemanSandboxPolicy): void {
-      known.set(sessionId, policy);
+    /** Remembers a sandbox that was just written, as the one to apply while the database cannot be read. */
+    remember(sessionId: string, sandbox: StoredSandbox): void {
+      known.set(sessionId, sandbox);
     },
 
     sandboxOf(sessionId: string, run: { required: boolean } = { required: false }): SandboxAnswer {
@@ -101,7 +104,7 @@ export function createSessionSandboxReader(dependencies: {
       } catch (error) {
         const remembered = known.get(sessionId);
         if (remembered) {
-          return { policy: remembered };
+          return remembered;
         }
         const reason = error instanceof Error ? error.message : String(error);
         dependencies.log(`sandbox of session ${sessionId} not read: ${reason}`);
@@ -111,9 +114,10 @@ export function createSessionSandboxReader(dependencies: {
         return run.required ? { refuse: 'This run was started for a sandboxed session, but no sandbox is stored for it, so it does not run.' } : null;
       }
       try {
-        const policy = parseSandboxPolicy(JSON.parse(row.sandbox_json), readSandboxScope(row.sandbox_scope_json));
-        known.set(sessionId, policy);
-        return { policy };
+        const scope = readSandboxScope(row.sandbox_scope_json);
+        const sandbox = { policy: parseSandboxPolicy(JSON.parse(row.sandbox_json), scope), scope };
+        known.set(sessionId, sandbox);
+        return sandbox;
       } catch {
         return { refuse: 'The stored sandbox of this session is malformed or no longer allowed, so it does not run: a sandboxed session never runs without isolation.' };
       }

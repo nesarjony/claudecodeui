@@ -314,6 +314,8 @@ test('the sandbox sent with the start reaches the CLI: the SDK sandbox option, t
   const { sessionId, mark } = await run('hello', policy);
   const spawn = await spawnOf(mark);
   const settings = settingsOf(spawn.argv);
+  // The agent's settings are forced read-only, for Bash and for the file tools (the project is no repository, so no git file is).
+  const forced = ['.claude/settings.json', '.claude/settings.local.json', '.mcp.json'].map((name) => path.join(projectDir, name));
 
   // The switches that make it a sandbox are on, whatever the policy said.
   assert.deepEqual(settings.sandbox, {
@@ -322,11 +324,15 @@ test('the sandbox sent with the start reaches the CLI: the SDK sandbox option, t
     autoAllowBashIfSandboxed: true,
     allowUnsandboxedCommands: false,
     network: { ...policy.network, allowAllUnixSockets: true, strictAllowlist: true },
-    filesystem: { ...policy.filesystem, denyRead: [...new Set([...policy.filesystem.denyRead, '/run', '/tmp', '/var/tmp', '/home', '/mnt', '/media', '/srv'])] },
+    filesystem: {
+      ...policy.filesystem,
+      denyRead: [...new Set([...policy.filesystem.denyRead, '/run', '/tmp', '/var/tmp', '/home', '/mnt', '/media', '/srv'])],
+      denyWrite: [...policy.filesystem.denyWrite, ...forced],
+    },
     credentials: policy.credentials,
   });
   assert.deepEqual(settings.permissions.allow, policy.permissions.allow);
-  assert.deepEqual(settings.permissions.deny, policy.permissions.deny);
+  assert.deepEqual(settings.permissions.deny, [...policy.permissions.deny, ...forced.flatMap((file) => ['Edit', 'Write', 'NotebookEdit'].map((tool) => `${tool}(/${file})`))]);
   assert.deepEqual(spawn.argv[spawn.argv.indexOf('--disallowedTools') + 1].split(/[ ,]+/).sort(), ['AskUserQuestion', 'ExitPlanMode', 'WebFetch']);
   assert.equal(spawn.tmpdir, `${scratchDir}/tmp`);
   assert.equal(spawn.claudeTmpdir, `${scratchDir}/cc`);

@@ -132,7 +132,7 @@ test('after a restart a new service reads the same state: mode, sandbox and task
     assert.equal(after.get('waiting-one')?.permissionMode, 'default');
 
     // The sandbox that comes back is the policy Foreman sent, whole.
-    assert.deepEqual(after.sandboxOf('running-one'), { policy: SANDBOX });
+    assert.deepEqual(after.sandboxOf('running-one'), RECORDED);
     assert.equal(log.length, 1);
     assert.match(log[0], /restart: 2 Foreman session\(s\).*now idle/);
     assert.match(log[0], /1 of them were waiting on a permission prompt.*dropped/);
@@ -319,7 +319,7 @@ test('sandboxOf answers null for a session without a sandbox, the policy for one
     foremanSessionStateDb.upsert(storedRow(null));
     assert.equal(state.sandboxOf('stored'), null, 'a session handed over keeps the owner\'s settings: no sandbox is added');
     foremanSessionStateDb.upsert(storedRow(JSON.stringify(SANDBOX)));
-    assert.deepEqual(state.sandboxOf('stored'), { policy: SANDBOX });
+    assert.deepEqual(state.sandboxOf('stored'), RECORDED);
     for (const broken of ['{not json', JSON.stringify({ scratchDir: '/x' }), JSON.stringify({ ...SANDBOX, scratchDir: 'relative' })]) {
       foremanSessionStateDb.upsert(storedRow(broken));
       assert.match((state.sandboxOf('stored') as { refuse: string }).refuse, /malformed or no longer allowed, so it does not run/);
@@ -335,7 +335,7 @@ test('a row written without a sandbox never erases the one recorded for the sess
     assert.equal(foremanSessionStateDb.get('stored')?.supervision, 'adopted');
     assert.equal(foremanSessionStateDb.get('stored')?.sandbox_json, JSON.stringify(SANDBOX));
     assert.equal(foremanSessionStateDb.get('stored')?.sandbox_scope_json, JSON.stringify(SAMPLE_SCOPE), 'nor the scope recorded with it');
-    assert.deepEqual(newService().sandboxOf('stored'), { policy: SANDBOX });
+    assert.deepEqual(newService().sandboxOf('stored'), RECORDED);
   });
 });
 
