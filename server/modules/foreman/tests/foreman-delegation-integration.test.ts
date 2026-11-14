@@ -313,7 +313,7 @@ test('the sandbox sent with the start reaches the CLI: the SDK sandbox option, t
   });
   assert.deepEqual(settings.permissions.allow, policy.permissions.allow);
   assert.deepEqual(settings.permissions.deny, policy.permissions.deny);
-  assert.deepEqual(spawn.argv[spawn.argv.indexOf('--disallowedTools') + 1].split(/[ ,]+/).sort(), ['AskUserQuestion', 'WebFetch']);
+  assert.deepEqual(spawn.argv[spawn.argv.indexOf('--disallowedTools') + 1].split(/[ ,]+/).sort(), ['AskUserQuestion', 'ExitPlanMode', 'WebFetch']);
   assert.equal(spawn.tmpdir, `${scratchDir}/tmp`);
   assert.equal(spawn.claudeTmpdir, `${scratchDir}/cc`);
   // The CLI makes <TMPDIR>/claude-<uid> itself but not its parents: the bridge made them before the run.

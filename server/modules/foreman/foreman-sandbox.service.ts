@@ -1,6 +1,7 @@
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 
+import { sandboxScopeProblem } from '@/modules/foreman/foreman-sandbox-scope.service.js';
 import { AppError } from '@/shared/utils.js';
 
 /**
@@ -9,8 +10,9 @@ import { AppError } from '@/shared/utils.js';
  * Foreman owns the policy and sends it, already filled in for the task, with every session start. This file checks that it is
  * well formed and turns it into the options Claude Code understands: the SDK `sandbox` option (bubblewrap around every Bash call),
  * permission rules for the file tools (which are not sandboxed), denied tools and the CLI's environment. It reads no command and
- * judges no tool call. The switches that make a sandbox a sandbox are forced on here whatever the policy says: a corrupt or hostile
- * policy can narrow a session, never widen it. A policy that is missing or malformed means the session does not start.
+ * judges no tool call. The switches that make a sandbox a sandbox, and the denial of the tools only a person can answer, are forced on here
+ * whatever the policy says; the parts of a policy that open something up (environment, hosts, paths, allow rules) are checked against what a
+ * worker may have (foreman-sandbox-scope.service.ts). A policy that is missing, malformed or too wide means the session does not start.
  */
 
 /** What Foreman sends as `sandbox` of a session start, and what the session stores and applies on every run. */
@@ -38,6 +40,9 @@ export type ForemanSandboxAdditions = {
 };
 
 export const DEFAULT_SANDBOX_APPROVAL_TIMEOUT_MS = 30 * 60 * 1000;
+
+// Nobody is there to answer a question or approve a plan in an unattended run, and the prompt for either would wait without a timeout.
+const UNATTENDED_DENIED_TOOLS = ['AskUserQuestion', 'ExitPlanMode'];
 
 const MAX_ENTRIES = 400;
 const MAX_ENTRY_LENGTH = 1000;
@@ -114,7 +119,8 @@ function readApprovalTimeout(value: unknown): number | null {
 
 /**
  * Validates a sandbox policy. Absent or `null` is refused too (`SANDBOX_REQUIRED`): a session the bridge starts is always sandboxed.
- * Every list is checked for shape and size only; what the entries say is Foreman's Charter to decide.
+ * Every part is checked for shape and size; the parts that open something up are also checked for what they open (`sandboxScopeProblem`).
+ * What the lists that only close things (denials) say is Foreman's Charter to decide.
  */
 // Consumed by foreman.routes.ts (session start) and by the session state service (a stored policy is read through the same check).
 export function parseSandboxPolicy(raw: unknown): ForemanSandboxPolicy {
@@ -139,7 +145,7 @@ export function parseSandboxPolicy(raw: unknown): ForemanSandboxPolicy {
   const filesystem = readObject(body, 'filesystem', '');
   const credentials = readObject(body, 'credentials', '');
   const permissions = readObject(body, 'permissions', '');
-  return {
+  const policy: ForemanSandboxPolicy = {
     scratchDir,
     approvalTimeoutMs: readApprovalTimeout(body.approvalTimeoutMs),
     network: { allowedDomains: readList(network, 'allowedDomains', 'network'), allowAllUnixSockets: network.allowAllUnixSockets === true },
@@ -154,6 +160,11 @@ export function parseSandboxPolicy(raw: unknown): ForemanSandboxPolicy {
     disallowedTools: readList(body, 'disallowedTools', ''),
     env: readEnvironment(readObject(body, 'env', '')),
   };
+  const problem = sandboxScopeProblem(policy);
+  if (problem) {
+    throw new AppError(`sandbox would widen the session: ${problem}`, { code: 'SANDBOX_INVALID', statusCode: 400 });
+  }
+  return policy;
 }
 
 /**
@@ -179,7 +190,7 @@ export function buildSandboxAdditions(
       credentials: policy.credentials,
     },
     permissions: policy.permissions,
-    disallowedTools: policy.disallowedTools,
+    disallowedTools: [...new Set([...policy.disallowedTools, ...UNATTENDED_DENIED_TOOLS])],
     env: policy.env,
     approvalTimeoutMs: policy.approvalTimeoutMs ?? DEFAULT_SANDBOX_APPROVAL_TIMEOUT_MS,
   };

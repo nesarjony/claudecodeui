@@ -53,7 +53,7 @@ test('the run gets the policy with the switches that make it a sandbox forced on
     credentials: hostile.credentials,
   });
   assert.deepEqual(additions.permissions, hostile.permissions);
-  assert.deepEqual(additions.disallowedTools, hostile.disallowedTools);
+  assert.deepEqual(additions.disallowedTools, ['AskUserQuestion', 'WebFetch', 'ExitPlanMode']);
   assert.deepEqual(additions.env, hostile.env);
   assert.deepEqual(made, ['/mnt/dev/scratch/batch-1', '/mnt/dev/scratch/batch-1/tmp', '/mnt/dev/scratch/batch-1/cc']);
 });
@@ -61,4 +61,11 @@ test('the run gets the policy with the switches that make it a sandbox forced on
 test('a prompt that nobody answers waits for the policy\'s window, or thirty minutes without one', () => {
   assert.equal(buildSandboxAdditions(samplePolicy(), () => undefined).approvalTimeoutMs, 120_000);
   assert.equal(buildSandboxAdditions(samplePolicy({ approvalTimeoutMs: null }), () => undefined).approvalTimeoutMs, DEFAULT_SANDBOX_APPROVAL_TIMEOUT_MS);
+});
+
+test('AskUserQuestion and ExitPlanMode are always denied, joined to whatever the policy denies', () => {
+  for (const disallowedTools of [[], ['WebSearch'], ['ExitPlanMode', 'AskUserQuestion', 'WebFetch']]) {
+    const denied = buildSandboxAdditions(samplePolicy({ disallowedTools }), () => undefined).disallowedTools;
+    assert.deepEqual([...denied].sort(), [...new Set([...disallowedTools, 'AskUserQuestion', 'ExitPlanMode'])].sort());
+  }
 });
