@@ -54,7 +54,7 @@ test('the run gets the policy with the switches that make it a sandbox forced on
     network: { allowedDomains: [], allowAllUnixSockets: true, strictAllowlist: true },
     filesystem: {
       ...hostile.filesystem,
-      denyRead: ['/home', '/mnt', '/tmp', '/mnt/dev/repo/**/.env*', '/run', '/var/tmp', '/media', '/srv'],
+      denyRead: ['/home', '/mnt', '/tmp', '/mnt/dev/repo/**/.env*', '/run', '/var/tmp', '/media', '/srv', '/var/snap'],
       denyWrite: [...new Set([...hostile.filesystem.denyWrite, ...forced])],
     },
     credentials: hostile.credentials,
@@ -73,7 +73,7 @@ test('every unix socket is allowed and the trees that hold sockets are hidden, w
   });
   const sandbox = buildSandboxAdditions(narrow, SAMPLE_SCOPE, () => undefined).sandbox as { network: Record<string, unknown>; filesystem: Record<string, string[]> };
   assert.equal(sandbox.network.allowAllUnixSockets, true);
-  assert.deepEqual(sandbox.filesystem.denyRead, ['/mnt/dev/repo/.env', '/run', '/tmp', '/var/tmp', '/home', '/mnt', '/media', '/srv']);
+  assert.deepEqual(sandbox.filesystem.denyRead, ['/mnt/dev/repo/.env', '/run', '/tmp', '/var/tmp', '/home', '/mnt', '/media', '/srv', '/var/snap']);
   // The rest of the filesystem part is the policy's: what it reads and writes stays reachable over the hidden trees.
   assert.deepEqual(sandbox.filesystem.allowRead, narrow.filesystem.allowRead);
   assert.deepEqual(sandbox.filesystem.allowWrite, narrow.filesystem.allowWrite);

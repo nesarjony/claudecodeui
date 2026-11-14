@@ -221,8 +221,8 @@ by cloudcli at the start. The same scope says which of git's and the CLI's files
 - **Forced**, whatever the policy says: `enabled`, `failIfUnavailable`, `autoAllowBashIfSandboxed`, `allowUnsandboxedCommands: false` (so `dangerouslyDisableSandbox` is ignored),
   `network.strictAllowlist` (an unlisted host is a deterministic deny, never a prompt), `AskUserQuestion` and `ExitPlanMode` in the denied tools, and git's and the CLI's own files read-only (above). Also
   `network.allowAllUnixSockets: true`: on this host the sandbox only starts with every unix socket allowed (AppArmor's `unpriv_bwrap` profile; the tested workaround), and
-  the constant flips once the owner fixes the profile. So the sockets stay out of sight, `/run`, `/tmp`, `/var/tmp`, `/home`, `/mnt`, `/media` and `/srv` are always joined
-  to `filesystem.denyRead`; the checkout and `scratchDir` stay reachable, because the sandbox mounts the allowed paths over a denied tree.
+  the constant flips once the owner fixes the profile. So the sockets stay out of sight, `/run`, `/tmp`, `/var/tmp`, `/home`, `/mnt`, `/media`, `/srv` and `/var/snap` (the CUPS socket) are always
+  joined to `filesystem.denyRead` (a test lists the unix sockets of the host that lie outside them); the checkout and `scratchDir` stay reachable, because the sandbox mounts the allowed paths over a denied tree.
 - **Permission modes.** A sandboxed session runs in `default`, `acceptEdits` or `plan`; `bypassPermissions` and `auto` are refused (`PERMISSION_MODE_FORBIDDEN`), because the
   sandbox covers Bash only and the file tools rely on the prompts those modes skip. The runtime holds every sandboxed run to this whatever its options say: another mode becomes
   `default`, the UI's "skip permissions" setting and allowed tools are ignored, plan mode allows no reads or web tools outright, and a mode stored before this rule is not resumed.
