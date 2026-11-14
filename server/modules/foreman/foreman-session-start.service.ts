@@ -123,6 +123,7 @@ export function createForemanSessionStart(deps: StartDependencies, dispatchTurn:
             effort: input.effort,
             permissionMode: input.permissionMode,
             sessionSummary: clipText(input.title ?? input.prompt, MAX_SUMMARY_LENGTH),
+            foremanDispatch: true,
             foremanSandbox: true,
           },
         });

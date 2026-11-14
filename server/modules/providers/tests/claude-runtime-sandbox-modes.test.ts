@@ -52,6 +52,16 @@ test('run_started reports the mode the CLI really starts in: none sent is defaul
   }
 });
 
+test('run_started reports the tool lists the run\'s options carried and whether the Foreman bridge dispatched it', async () => {
+  const owner = await runPrompt('hello', { toolsSettings: settingsWith({ allowedTools: ['Read', 'Bash(npm test:*)'], disallowedTools: ['WebFetch'] }) }, 'app-session-tools-owner');
+  const ownRun = owner.events.find((event) => event.kind === 'run_started') as RunStarted;
+  assert.deepEqual([ownRun.allowedTools, ownRun.disallowedTools, ownRun.foremanDispatch], [['Read', 'Bash(npm test:*)'], ['WebFetch'], false]);
+
+  const bridge = await runPrompt('hello', { foremanDispatch: true }, 'app-session-tools-bridge');
+  const bridgeRun = bridge.events.find((event) => event.kind === 'run_started') as RunStarted;
+  assert.deepEqual([bridgeRun.allowedTools, bridgeRun.disallowedTools, bridgeRun.foremanDispatch], [[], [], true]);
+});
+
 test('a sandboxed run asked for bypassPermissions, auto or the UI\'s skipPermissions still prompts, and a call is never allowed unanswered', async () => {
   const asks = [
     ['bypass', { permissionMode: 'bypassPermissions' }],

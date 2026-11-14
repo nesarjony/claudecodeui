@@ -1,18 +1,25 @@
 import type { projectsDb, sessionsDb } from '@/modules/database/index.js';
 import { applyModelBilling, splitModelBilling } from '@/modules/foreman/foreman-billing.service.js';
+import { ownerTurnSettings } from '@/modules/foreman/foreman-owner-settings.service.js';
+import type { ForemanRunModes } from '@/modules/foreman/foreman-run-modes.service.js';
 import type { ForemanSessionReadsService } from '@/modules/foreman/foreman-session-reads.service.js';
 import { isSandboxedSession, requireSandboxedMode } from '@/modules/foreman/foreman-session-sandbox.service.js';
 import { createForemanSessionStart } from '@/modules/foreman/foreman-session-start.service.js';
 import type { ForemanSessionState, ForemanSessionStateService } from '@/modules/foreman/foreman-session-state.service.js';
 import { awaitTurnAdmission } from '@/modules/foreman/foreman-turn-admission.service.js';
+import type { ForemanOwnerSettings } from '@/shared/types.js';
 import { AppError, clipText, summarizeToolInput } from '@/shared/utils.js';
 
-/** The options of a turn the bridge dispatches: the settings the UI sends with every turn, and the mark of a sandboxed session's run. */
+/** The options of a turn the bridge dispatches: the settings the UI sends with every turn, and the marks of the bridge's runs. */
 type ForemanTurnOptions = {
   model?: string;
   effort?: string;
   permissionMode?: string;
+  /** The owner's tools on a session handed over, in the shape the UI sends them, so the runtime applies them exactly as for the owner. */
+  toolsSettings?: { allowedTools: string[]; disallowedTools: string[]; skipPermissions: false };
   sessionSummary: string;
+  /** Set on every run the bridge dispatches: the runtime reports it, and such a run never counts as the owner's (foreman-run-modes.service.ts). */
+  foremanDispatch: true;
   /**
    * Set on every run of a sandboxed session. The Claude runtime passes it to the sandbox provider as `required`: such a run is refused
    * when its sandbox cannot be found, while a run without it (a person typing in the UI) is never refused for that.
@@ -60,6 +67,8 @@ export type ForemanSessionsDependencies = {
   setSessionModel(sessionId: string, model: string): void;
   /** Status, permission mode and sandbox of the sessions the bridge starts or drives; survives restarts. */
   state: Pick<ForemanSessionStateService, 'get' | 'track' | 'trackStrict' | 'sandboxOf'>;
+  /** What the owner's last own run of each session started with: an adopted session's turns are narrowed by it. */
+  runModes: Pick<ForemanRunModes, 'settingsOf'>;
   /** The commit a project is at (`git rev-parse HEAD`), or null when it has none or is no repository. */
   headOf(projectPath: string): Promise<string | null>;
   /** The git directory a project's worktrees share (`git rev-parse --git-common-dir`), or null when it is no repository. */
@@ -101,6 +110,20 @@ export function createForemanSessionsService(deps: ForemanSessionsDependencies) 
     return state;
   }
 
+  /**
+   * The settings a turn of an adopted session runs with: the owner's base settings, narrowed by the owner's latest own run (`ownerTurnSettings`).
+   * A session adopted before they were stored has no base, and its turns are refused rather than run with defaults that are not the owner's.
+   */
+  function ownerSettingsOf(state: ForemanSessionState): ForemanOwnerSettings {
+    if (!state.permissionMode || !state.ownerTools) {
+      throw new AppError('This session was handed over before its owner\'s permission mode and tools were recorded: release it, and the owner hands it over again.', {
+        code: 'PERMISSION_MODE_UNKNOWN',
+        statusCode: 409,
+      });
+    }
+    return ownerTurnSettings({ permissionMode: state.permissionMode, ...state.ownerTools }, deps.runModes.settingsOf(state.sessionId));
+  }
+
   /** Starts a turn and waits only long enough to report an immediate refusal or startup failure. */
   const dispatchTurn = (input: StartTurnInput): Promise<void> => awaitTurnAdmission(input.sessionId, deps.startTurn(input), admissionWindowMs);
   const start = createForemanSessionStart(deps, dispatchTurn);
@@ -113,18 +136,12 @@ export function createForemanSessionsService(deps: ForemanSessionsDependencies) 
     const session = deps.reads.requireClaudeSession(sessionId);
     // First of all: nothing about a session Foreman does not supervise (not even whether it is running) is answered to the bridge.
     // A resumed run (after a restart too) keeps the permission mode Foreman chose; its sandbox is read from the stored state when the run starts.
-    // A session handed over runs in the mode its owner last ran it in, recorded at adoption: Foreman cannot change it.
+    // A session handed over runs with its owner's mode and tools (stored at adoption, narrowed by the owner's later own runs): Foreman cannot change them.
     const state = requireSupervised(sessionId);
     if (state.supervision === 'adopted' && options.permissionMode) {
       throw new AppError('A session handed over keeps its owner\'s permission mode: permissionMode cannot be set.', { code: 'PERMISSION_MODE_LOCKED', statusCode: 400 });
     }
-    if (state.supervision === 'adopted' && !state.permissionMode) {
-      // Adopted before the hand-over recorded the owner's mode: the default it would run in is not the owner's.
-      throw new AppError('This session was handed over before its owner\'s permission mode was recorded: release it, and the owner hands it over again.', {
-        code: 'PERMISSION_MODE_UNKNOWN',
-        statusCode: 409,
-      });
-    }
+    const owner = state.supervision === 'adopted' ? ownerSettingsOf(state) : null;
     const sandboxed = isSandboxedSession(state);
     if (sandboxed) {
       requireSandboxedMode(options.permissionMode);
@@ -143,7 +160,7 @@ export function createForemanSessionsService(deps: ForemanSessionsDependencies) 
       });
     }
 
-    const permissionMode = options.permissionMode ?? state.permissionMode ?? undefined;
+    const permissionMode = owner?.permissionMode ?? options.permissionMode ?? state.permissionMode ?? undefined;
     if (options.permissionMode && options.permissionMode !== state.permissionMode) {
       deps.state.track(sessionId, { permissionMode: options.permissionMode });
     }
@@ -157,7 +174,9 @@ export function createForemanSessionsService(deps: ForemanSessionsDependencies) 
         model: session.model ?? undefined,
         effort: session.effort ?? undefined,
         permissionMode,
+        ...(owner ? { toolsSettings: { allowedTools: owner.allowedTools, disallowedTools: owner.disallowedTools, skipPermissions: false as const } } : {}),
         sessionSummary: clipText(text, MAX_SUMMARY_LENGTH),
+        foremanDispatch: true,
         ...(sandboxed ? { foremanSandbox: true as const } : {}),
       },
     });

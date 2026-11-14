@@ -2,8 +2,8 @@
  * Foreman session state repository.
  *
  * One row per session the Foreman bridge started or drives: its last known status, the permission mode Foreman
- * chose, the billing mode, the Foreman task it belongs to, the sandbox policy it runs under (as JSON, with the scope it was checked against)
- * and the HEAD it started from.
+ * chose, the billing mode, the Foreman task it belongs to, the sandbox policy it runs under (as JSON, with the scope it was checked against),
+ * the HEAD it started from and, for a session handed over, its owner's tool lists at adoption.
  * Plain storage; the meaning of the columns lives in the bridge's `foreman-session-state.service.ts`.
  */
 
@@ -21,9 +21,10 @@ export type ForemanSessionStateRow = {
   base_sequence: number;
   updated_at: string;
   sandbox_scope_json: string | null;
+  owner_tools_json: string | null;
 };
 
-const COLUMNS = 'session_id, task_id, status, permission_mode, billing, sandbox_json, supervision, base_head, base_sequence, updated_at, sandbox_scope_json';
+const COLUMNS = 'session_id, task_id, status, permission_mode, billing, sandbox_json, supervision, base_head, base_sequence, updated_at, sandbox_scope_json, owner_tools_json';
 
 export const foremanSessionStateDb = {
   get(sessionId: string): ForemanSessionStateRow | null {
@@ -41,7 +42,7 @@ export const foremanSessionStateDb = {
     getConnection()
       .prepare(
         `INSERT INTO foreman_session_state (${COLUMNS})
-         VALUES (@session_id, @task_id, @status, @permission_mode, @billing, @sandbox_json, @supervision, @base_head, @base_sequence, @updated_at, @sandbox_scope_json)
+         VALUES (@session_id, @task_id, @status, @permission_mode, @billing, @sandbox_json, @supervision, @base_head, @base_sequence, @updated_at, @sandbox_scope_json, @owner_tools_json)
          ON CONFLICT(session_id) DO UPDATE SET
            task_id = excluded.task_id,
            status = excluded.status,
@@ -52,7 +53,8 @@ export const foremanSessionStateDb = {
            base_head = excluded.base_head,
            base_sequence = excluded.base_sequence,
            updated_at = excluded.updated_at,
-           sandbox_scope_json = COALESCE(excluded.sandbox_scope_json, foreman_session_state.sandbox_scope_json)`,
+           sandbox_scope_json = COALESCE(excluded.sandbox_scope_json, foreman_session_state.sandbox_scope_json),
+           owner_tools_json = excluded.owner_tools_json`,
       )
       .run(row);
   },

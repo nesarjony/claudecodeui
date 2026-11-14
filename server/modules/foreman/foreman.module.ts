@@ -170,7 +170,7 @@ export function createForemanModule() {
     log,
   });
 
-  // The mode every Claude session's last run started in, the owner's own sessions included: a hand-over keeps it.
+  // The mode and tools every Claude session's last own run started with, the owner's own sessions included: a hand-over never exceeds them.
   const runModes = createForemanRunModes({ store: foremanRunModesDb, log });
 
   // Runs synchronously inside the runtime loop: every call only records/queues and never throws.
@@ -230,6 +230,7 @@ export function createForemanModule() {
       providerModelsService.setSessionModel('claude', sessionId, model);
     },
     state: sessionState,
+    runModes,
     headOf,
     gitCommonDirOf: (projectPath) => commits.gitCommonDirOf(projectPath),
     taskIds,

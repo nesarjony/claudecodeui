@@ -25,8 +25,8 @@ export type ForemanHandoverDependencies = {
   settleEvents(): Promise<void>;
   /** Remembers which Foreman task a session belongs to. */
   taskIds: { set(sessionId: string, taskId: string): void };
-  /** The mode each session's last run started in: an adopted session keeps its owner's. */
-  runModes: Pick<ForemanRunModes, 'modeOf'>;
+  /** What the owner's last run of each session started with: an adopted session's turns never go beyond it. */
+  runModes: Pick<ForemanRunModes, 'settingsOf'>;
   /** The owners' grants (`foreman_handover_grants`): recorded by the logged-in owner, used up by `adopt`. */
   grants: Pick<typeof foremanHandoverGrantsDb, 'put' | 'consume' | 'revoke' | 'purgeExpired'>;
   /** The clock grants are issued and checked against. */
@@ -36,8 +36,8 @@ export type ForemanHandoverDependencies = {
 /**
  * The hand-over (BR-2.10): the owner gives one of their own sessions to Foreman and takes it back. The owner first grants it while logged in
  * to cloudcli (`grant`, from the UI router only: the bridge has no route to it, so the bridge token alone never hands a session over); Foreman
- * then adopts it (`adopt`), which uses the grant up, and releases it (`release`). None of this changes the session's model, routing or
- * permission mode; it only changes whether Foreman supervises the session.
+ * then adopts it (`adopt`), which uses the grant up, and releases it (`release`). None of this changes the session's model, routing,
+ * permission mode or tools; it only changes whether Foreman supervises the session.
  */
 // Consumed by foreman.routes.ts (adopt, release, for Foreman) and foreman-ui.routes.ts (grant, revoke, for the logged-in owner).
 export function createForemanHandoverService(deps: ForemanHandoverDependencies) {
@@ -70,17 +70,18 @@ export function createForemanHandoverService(deps: ForemanHandoverDependencies) 
 
     /**
      * The session the owner granted joins Foreman's supervision as it is: its model and routing are not touched, no sandbox is added, and
-     * every turn Foreman sends runs in the permission mode the owner's last run started in. From here its events are stored and pushed like
-     * a worker's, counting commits from where the project is now, and messages, interrupts and permission answers work for it.
+     * the permission mode and tool lists the owner's last run started with are stored as the owner's base settings, which every turn Foreman
+     * sends runs with (narrowed by the owner's later own runs, never widened). From here its events are stored and pushed like a worker's,
+     * counting commits from where the project is now, and messages, interrupts and permission answers work for it.
      */
     async adopt(sessionId: string, input: { taskId?: string }) {
       const session = deps.reads.requireClaudeSession(sessionId);
       requireUnsupervised(sessionId);
-      // Foreman neither widens nor narrows the owner's mode, so without a recorded one it does not guess (the default would narrow it,
-      // anything else could widen it). Refused before the grant is touched, so the owner's grant still holds for the retry.
-      const permissionMode = deps.runModes.modeOf(sessionId);
-      if (!permissionMode) {
-        throw new AppError('The owner\'s permission mode for this session is not known yet: the owner sends one turn in it, then Foreman adopts it.', {
+      // Foreman never runs with more than the owner, so without the owner's recorded settings it does not guess (a default could widen
+      // them). Refused before the grant is touched, so the owner's grant still holds for the retry.
+      const owner = deps.runModes.settingsOf(sessionId);
+      if (!owner) {
+        throw new AppError('The owner\'s permission mode and tools for this session are not known yet: the owner sends one turn in it, then Foreman adopts it.', {
           code: 'PERMISSION_MODE_UNKNOWN',
           statusCode: 409,
         });
@@ -93,9 +94,11 @@ export function createForemanHandoverService(deps: ForemanHandoverDependencies) 
           statusCode: 403,
         });
       }
+      const { permissionMode, allowedTools, disallowedTools } = owner.settings;
       deps.state.track(sessionId, {
         supervision: 'adopted',
         permissionMode,
+        ownerTools: { allowedTools, disallowedTools, adoptedAt: now().toISOString() },
         taskId: input.taskId ?? null,
         billing: splitModelBilling(session.model).billing,
         baseHead: session.project_path ? await deps.headOf(session.project_path) : null,

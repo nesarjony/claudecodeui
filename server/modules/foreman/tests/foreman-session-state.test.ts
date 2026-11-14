@@ -38,7 +38,7 @@ const SANDBOX = samplePolicy();
 const RECORDED = { policy: SANDBOX, scope: SAMPLE_SCOPE };
 
 const base = { sessionId: 's1', projectPath: '/mnt/dev/repo' };
-const started = (sessionId = 's1'): ClaudeRuntimeEvent => ({ ...base, sessionId, kind: 'run_started', resumed: false, model: null, permissionMode: 'default' });
+const started = (sessionId = 's1'): ClaudeRuntimeEvent => ({ ...base, sessionId, kind: 'run_started', resumed: false, model: null, permissionMode: 'default', allowedTools: [], disallowedTools: [], foremanDispatch: true });
 const asked = (requestId: string, sessionId = 's1'): ClaudeRuntimeEvent => ({ ...base, sessionId, kind: 'permission_request', requestId, toolName: 'Bash', input: {}, sandboxed: true });
 const resolved = (requestId: string, sessionId = 's1'): ClaudeRuntimeEvent => ({ ...base, sessionId, kind: 'permission_resolved', requestId });
 const turn = (isError = false): ClaudeRuntimeEvent => ({ ...base, kind: 'turn_result', message: { type: 'result', is_error: isError }, model: null, toolCalls: 0, toolErrors: 0 });
@@ -53,7 +53,7 @@ function newService(log: string[] = []) {
 test('the foreman_session_state table is created with the database', async () => {
   await withIsolatedDatabase(() => {
     const columns = (getConnection().prepare('PRAGMA table_info(foreman_session_state)').all() as Array<{ name: string; pk: number }>);
-    assert.deepEqual(columns.map((column) => column.name), ['session_id', 'task_id', 'status', 'permission_mode', 'billing', 'sandbox_json', 'supervision', 'base_head', 'base_sequence', 'updated_at', 'sandbox_scope_json']);
+    assert.deepEqual(columns.map((column) => column.name), ['session_id', 'task_id', 'status', 'permission_mode', 'billing', 'sandbox_json', 'supervision', 'base_head', 'base_sequence', 'updated_at', 'sandbox_scope_json', 'owner_tools_json']);
     assert.equal(columns.find((column) => column.name === 'session_id')?.pk, 1);
   });
 });
@@ -68,7 +68,7 @@ test('track stores task, billing, permission mode, sandbox and where supervision
       { ...state.get('s1'), updatedAt: undefined },
       {
         sessionId: 's1', taskId: 'task-1', status: 'idle', permissionMode: 'default', billing: 'api-key', sandboxJson: JSON.stringify(SANDBOX),
-        sandboxScopeJson: JSON.stringify(SAMPLE_SCOPE), supervision: 'started', baseHead: 'abc', baseSequence: 4, updatedAt: undefined,
+        sandboxScopeJson: JSON.stringify(SAMPLE_SCOPE), ownerTools: null, supervision: 'started', baseHead: 'abc', baseSequence: 4, updatedAt: undefined,
       },
     );
 
@@ -308,7 +308,7 @@ test('a failing database is logged and the bridge carries on with what it has', 
 function storedRow(sandboxJson: string | null, supervision: 'started' | 'adopted' | 'released' = 'started') {
   return {
     session_id: 'stored', task_id: null, status: 'idle' as const, permission_mode: 'default', billing: null, sandbox_json: sandboxJson, supervision,
-    base_head: null, base_sequence: 0, updated_at: new Date().toISOString(), sandbox_scope_json: sandboxJson ? JSON.stringify(SAMPLE_SCOPE) : null,
+    base_head: null, base_sequence: 0, updated_at: new Date().toISOString(), sandbox_scope_json: sandboxJson ? JSON.stringify(SAMPLE_SCOPE) : null, owner_tools_json: null,
   };
 }
 

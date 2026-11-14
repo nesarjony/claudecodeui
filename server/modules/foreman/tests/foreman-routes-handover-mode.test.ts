@@ -3,9 +3,8 @@ import test from 'node:test';
 
 import { createForemanRunModes } from '@/modules/foreman/foreman-run-modes.service.js';
 import { createForemanSessionStateService } from '@/modules/foreman/foreman-session-state.service.js';
-import type { ClaudeRuntimeEvent } from '@/shared/types.js';
 
-import { createMemoryRunModeStore } from './foreman-handover-support.js';
+import { createMemoryRunModeStore, runStarted } from './foreman-handover-support.js';
 import { createBridgeServices, tick, withBridge, type World } from './foreman-routes-support.js';
 
 /**
@@ -13,9 +12,9 @@ import { createBridgeServices, tick, withBridge, type World } from './foreman-ro
  * it, and every turn Foreman sends to the adopted session runs in exactly that mode, never in a default of the bridge's.
  */
 
-const runStarted = (sessionId: string, permissionMode: string | null): ClaudeRuntimeEvent =>
-  ({ kind: 'run_started', sessionId, projectPath: '/mnt/dev/known', resumed: true, model: null, permissionMode });
 const addOwner = (world: World, sessionId = 'owner') => world.addOwnerSession(sessionId, { model: 'claude-opus-5-5', effort: 'high' });
+
+const modeOf = (modes: ReturnType<typeof createForemanRunModes>, sessionId: string) => modes.settingsOf(sessionId)?.settings.permissionMode ?? null;
 
 test('the mode of every session\'s last run is recorded, the owner\'s own included, the next run overwrites it, and nothing else is recorded', () => {
   const store = createMemoryRunModeStore();
@@ -26,12 +25,34 @@ test('the mode of every session\'s last run is recorded, the owner\'s own includ
   modes.observe(runStarted('owner', null));
   modes.observe(runStarted('', 'plan'));
   modes.observe({ kind: 'run_ended', sessionId: 'owner', projectPath: null, reason: 'completed' });
-  assert.deepEqual([modes.modeOf('owner'), modes.modeOf('worker'), modes.modeOf('never-ran')], ['acceptEdits', 'default', null]);
+  assert.deepEqual([modeOf(modes, 'owner'), modeOf(modes, 'worker'), modeOf(modes, 'never-ran')], ['acceptEdits', 'default', null]);
 
   clock = new Date('2026-11-14T09:10:00.000Z');
-  modes.observe(runStarted('owner', 'bypassPermissions'));
-  assert.deepEqual(store.rows.get('owner'), { session_id: 'owner', permission_mode: 'bypassPermissions', seen_at: '2026-11-14T09:10:00.000Z' });
+  modes.observe(runStarted('owner', 'bypassPermissions', { allowedTools: ['Bash(git:*)'], disallowedTools: ['WebFetch'] }));
+  assert.deepEqual(store.rows.get('owner'), {
+    session_id: 'owner', permission_mode: 'bypassPermissions', seen_at: '2026-11-14T09:10:00.000Z',
+    tools_json: JSON.stringify({ allowedTools: ['Bash(git:*)'], disallowedTools: ['WebFetch'] }),
+  });
+  assert.deepEqual(modes.settingsOf('owner'), {
+    settings: { permissionMode: 'bypassPermissions', allowedTools: ['Bash(git:*)'], disallowedTools: ['WebFetch'] },
+    seenAt: '2026-11-14T09:10:00.000Z',
+  });
   assert.equal(store.rows.size, 2);
+});
+
+test('a run the bridge dispatched is never recorded as the owner\'s, and a row without tools reads as unknown', () => {
+  const store = createMemoryRunModeStore();
+  const modes = createForemanRunModes({ store, now: () => new Date('2026-11-14T09:00:00.000Z') });
+  modes.observe(runStarted('owner', 'plan', { disallowedTools: ['Bash'] }));
+  modes.observe(runStarted('owner', 'bypassPermissions', { allowedTools: ['Bash'], foremanDispatch: true }));
+  assert.deepEqual(modes.settingsOf('owner')?.settings, { permissionMode: 'plan', allowedTools: [], disallowedTools: ['Bash'] });
+  modes.observe(runStarted('worker', 'default', { foremanDispatch: true }));
+  assert.equal(store.rows.has('worker'), false);
+
+  // As a row recorded before the tools were: the owner's tools are unknown, so a hand-over waits instead of guessing.
+  store.rows.set('legacy', { session_id: 'legacy', permission_mode: 'default', seen_at: '2026-11-14T08:00:00.000Z', tools_json: null });
+  store.rows.set('broken', { session_id: 'broken', permission_mode: 'default', seen_at: '2026-11-14T08:00:00.000Z', tools_json: '{"allowedTools":"Bash"}' });
+  assert.deepEqual([modes.settingsOf('legacy'), modes.settingsOf('broken')], [null, null]);
 });
 
 test('a store that fails is logged and never throws into the runtime loop; a mode it cannot read is unknown', () => {
@@ -41,7 +62,7 @@ test('a store that fails is logged and never throws into the runtime loop; a mod
     log: (message) => log.push(message),
   });
   assert.doesNotThrow(() => modes.observe(runStarted('owner', 'acceptEdits')));
-  assert.equal(modes.modeOf('owner'), null);
+  assert.equal(modes.settingsOf('owner'), null);
   assert.deepEqual(log, ['run mode of owner not recorded: disk I/O error', 'run mode of owner not read: database is locked']);
 });
 
@@ -113,8 +134,12 @@ test('without a recorded mode adopt is 409 PERMISSION_MODE_UNKNOWN, changes noth
 test('a session adopted before the owner\'s mode was recorded is refused instead of running in the default, until it is handed over again', async () => {
   await withBridge(async ({ call, world, handOver }) => {
     addOwner(world, 'legacy');
-    // A row as an earlier cloudcli wrote it at adoption: no permission mode.
+    // A row as an earlier cloudcli wrote it at adoption: no permission mode (or a mode and no tools).
     world.state.track('legacy', { supervision: 'adopted' });
+    addOwner(world, 'tools-unknown');
+    world.state.track('tools-unknown', { supervision: 'adopted', permissionMode: 'default' });
+    const toolsUnknown = await call('POST', '/sessions/tools-unknown/message', { text: 'go' });
+    assert.deepEqual([toolsUnknown.status, toolsUnknown.body.error.code], [409, 'PERMISSION_MODE_UNKNOWN'], 'adopted before its tools were stored');
     for (const [route, body] of [['message', { text: 'go' }], ['compact', {}]] as const) {
       const response = await call('POST', `/sessions/legacy/${route}`, body);
       assert.deepEqual([response.status, response.body.error.code], [409, 'PERMISSION_MODE_UNKNOWN'], route);

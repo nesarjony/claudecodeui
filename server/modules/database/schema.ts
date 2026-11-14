@@ -303,7 +303,9 @@ CREATE TABLE IF NOT EXISTS foreman_session_state (
     base_sequence INTEGER NOT NULL DEFAULT 0,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     -- Where the session works (project path and shared git directory), as JSON: the scope its sandbox policy was checked against.
-    sandbox_scope_json TEXT
+    sandbox_scope_json TEXT,
+    -- For a session handed over: the owner's tool lists at adoption and when it was adopted, as JSON ({ allowedTools, disallowedTools, adoptedAt }).
+    owner_tools_json TEXT
 );
 `;
 
@@ -357,14 +359,17 @@ CREATE TABLE IF NOT EXISTS foreman_handover_grants (
 `;
 
 /**
- * The permission mode the last run of each Claude session started in, owner sessions included and before any hand-over, so a session handed
- * over to Foreman resumes in the mode its owner ran it in. One row per session, rewritten at every run start.
+ * The permission mode and tool lists the owner's last run of each Claude session started with, before any hand-over too, so a session handed
+ * over to Foreman runs Foreman's turns with no more than its owner's. One row per session, rewritten at every run start that is not the
+ * bridge's own.
  */
 export const FOREMAN_RUN_MODES_TABLE_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS foreman_run_modes (
     session_id TEXT PRIMARY KEY NOT NULL,
     permission_mode TEXT NOT NULL,
-    seen_at TEXT NOT NULL
+    seen_at TEXT NOT NULL,
+    -- The run's tool lists as JSON ({ allowedTools, disallowedTools }); NULL for a row recorded before they were.
+    tools_json TEXT
 );
 `;
 

@@ -85,7 +85,7 @@ test('a run that fails reports the error, and how a run ends decides the session
 
 test('events Foreman has no use for map to nothing', () => {
   for (const event of [
-    { ...base, kind: 'run_started', resumed: false, model: null, permissionMode: null },
+    { ...base, kind: 'run_started', resumed: false, model: null, permissionMode: null, allowedTools: [], disallowedTools: [], foremanDispatch: true },
     { ...base, kind: 'system_message', message: { subtype: 'compact_boundary' } },
     { ...base, kind: 'permission_resolved', requestId: 'r1' },
   ] satisfies ClaudeRuntimeEvent[]) {

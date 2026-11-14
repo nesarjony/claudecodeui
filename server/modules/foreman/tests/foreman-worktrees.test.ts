@@ -133,7 +133,7 @@ function sessionsOver(projects: ReturnType<typeof fakeProjects>) {
     removeSession: async () => undefined,
     // No hand-over here: nothing is granted and no session has a mode to adopt.
     grants: createMemoryGrants(),
-    runModes: { modeOf: () => null },
+    runModes: { settingsOf: () => null },
     announceSession: async () => undefined,
     admissionWindowMs: 5,
   };

@@ -33,7 +33,7 @@ function makeRecorder(options: RecorderOptions = {}) {
 
 test('the recorder stores events in the order they happened and announces each one', async () => {
   const { recorder, store, stored } = makeRecorder();
-  recorder.handle({ ...base, kind: 'run_started', resumed: false, model: null, permissionMode: null });
+  recorder.handle({ ...base, kind: 'run_started', resumed: false, model: null, permissionMode: null, allowedTools: [], disallowedTools: [], foremanDispatch: true });
   recorder.handle({ ...base, kind: 'permission_request', requestId: 'r1', toolName: 'Bash', input: { command: 'ls' } });
   recorder.handle(turnEnd());
   recorder.handle({ ...base, kind: 'run_ended', reason: 'aborted' });
@@ -144,7 +144,7 @@ test('a turn that gave up on a 429 is one quota event: the failure that follows 
   assert.deepEqual(store.since('sess-1', 0, 10).map((event) => event.kind), ['quota'], 'neither the failed turn, nor the CLI exiting after it, nor the run ending as a crash is a second report');
 
   // The next run fails for another reason: that is an ordinary error.
-  recorder.handle({ ...base, kind: 'run_started', resumed: true, model: null, permissionMode: null });
+  recorder.handle({ ...base, kind: 'run_started', resumed: true, model: null, permissionMode: null, allowedTools: [], disallowedTools: [], foremanDispatch: true });
   recorder.handle(failedTurn);
   await recorder.whenIdle();
   assert.deepEqual(store.since('sess-1', 1, 10).map((event) => event.kind), ['error']);

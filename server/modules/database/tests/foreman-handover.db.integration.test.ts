@@ -36,7 +36,7 @@ test('the grants and run modes tables are made at init and by the migrations of 
   await withDatabase(() => {
     const expected = {
       foreman_handover_grants: [['session_id', 1], ['granted_by', 0], ['created_at', 0], ['expires_at', 0]],
-      foreman_run_modes: [['session_id', 1], ['permission_mode', 0], ['seen_at', 0]],
+      foreman_run_modes: [['session_id', 1], ['permission_mode', 0], ['seen_at', 0], ['tools_json', 0]],
     };
     for (const [table, columns] of Object.entries(expected)) {
       assert.deepEqual(columnsOf(table), columns, table);
@@ -52,10 +52,11 @@ test('the grants and run modes tables are made at init and by the migrations of 
 test('the run mode of a session is the one its last run started in', async () => {
   await withDatabase(() => {
     assert.equal(foremanRunModesDb.get('owner'), null);
-    foremanRunModesDb.record('owner', 'default', '2026-11-14T09:00:00.000Z');
-    foremanRunModesDb.record('worker', 'plan', '2026-11-14T09:01:00.000Z');
-    foremanRunModesDb.record('owner', 'acceptEdits', '2026-11-14T09:02:00.000Z');
-    assert.deepEqual(foremanRunModesDb.get('owner'), { session_id: 'owner', permission_mode: 'acceptEdits', seen_at: '2026-11-14T09:02:00.000Z' });
+    const tools = JSON.stringify({ allowedTools: ['Read'], disallowedTools: ['WebFetch'] });
+    foremanRunModesDb.record('owner', 'default', '{"allowedTools":[],"disallowedTools":[]}', '2026-11-14T09:00:00.000Z');
+    foremanRunModesDb.record('worker', 'plan', '{"allowedTools":[],"disallowedTools":[]}', '2026-11-14T09:01:00.000Z');
+    foremanRunModesDb.record('owner', 'acceptEdits', tools, '2026-11-14T09:02:00.000Z');
+    assert.deepEqual(foremanRunModesDb.get('owner'), { session_id: 'owner', permission_mode: 'acceptEdits', seen_at: '2026-11-14T09:02:00.000Z', tools_json: tools });
     assert.equal(foremanRunModesDb.get('worker')?.permission_mode, 'plan');
     assert.equal((getConnection().prepare('SELECT COUNT(*) AS count FROM foreman_run_modes').get() as { count: number }).count, 2);
   });

@@ -1,5 +1,6 @@
 import type { ForemanSessionStateRow } from '@/modules/database/index.js';
 import type { ForemanSandboxPolicy } from '@/modules/foreman/foreman-sandbox.service.js';
+import { readToolLists } from '@/modules/foreman/foreman-owner-settings.service.js';
 import { createSessionSandboxReader, isSandboxedSession } from '@/modules/foreman/foreman-session-sandbox.service.js';
 import { deriveSessionStatus } from '@/modules/foreman/foreman-session-status.service.js';
 import type { ClaudeRuntimeEvent, ForemanBilling, ForemanSandboxScope } from '@/shared/types.js';
@@ -9,6 +10,9 @@ export type ForemanSessionStatus = ForemanSessionStateRow['status'];
 
 /** Who the session belongs to as far as Foreman is concerned: one it started, one the owner handed over, or one it no longer supervises. */
 export type ForemanSupervision = ForemanSessionStateRow['supervision'];
+
+/** The owner's tool lists when the session was handed over, and when that was (ISO): with its permission mode, the base Foreman's turns never exceed. */
+type ForemanOwnerTools = { allowedTools: string[]; disallowedTools: string[]; adoptedAt: string };
 
 /** What the bridge remembers about a session it started or drives; survives a cloudcli restart. */
 export type ForemanSessionState = {
@@ -26,6 +30,8 @@ export type ForemanSessionState = {
   /** Where the session works (`ForemanSandboxScope`), as stored with the policy it was checked against; null without a sandbox. */
   sandboxScopeJson: string | null;
   supervision: ForemanSupervision;
+  /** For a session handed over: the owner's tool lists at adoption; null for any other, and for one adopted before they were stored. */
+  ownerTools: ForemanOwnerTools | null;
   /** The project's HEAD when supervision began; null when it has no commit or is no repository. */
   baseHead: string | null;
   /** The session's last event sequence when supervision began (0 for a session Foreman started). */
@@ -53,10 +59,22 @@ export type ForemanSessionStatePatch = {
   permissionMode?: string | null;
   billing?: ForemanBilling | null;
   sandbox?: { policy: ForemanSandboxPolicy; scope: ForemanSandboxScope };
+  ownerTools?: ForemanOwnerTools | null;
   supervision?: ForemanSupervision;
   baseHead?: string | null;
   baseSequence?: number;
 };
+
+/** The owner's tool lists as stored; a value that is not a whole one reads as none, so the session's turns are refused rather than run wider. */
+function readOwnerTools(json: string | null): ForemanOwnerTools | null {
+  try {
+    const value = JSON.parse(json ?? 'null') as { adoptedAt?: unknown } | null;
+    const lists = readToolLists(value);
+    return lists && typeof value?.adoptedAt === 'string' ? { ...lists, adoptedAt: value.adoptedAt } : null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Remembers, across cloudcli restarts, what the Foreman bridge needs to keep driving a session: its status, the
@@ -96,6 +114,7 @@ export function createForemanSessionStateService(dependencies: {
       billing: row.billing === 'api-key' || row.billing === 'subscription' || row.billing === 'cap' ? row.billing : null,
       sandboxJson: row.sandbox_json,
       sandboxScopeJson: row.sandbox_scope_json,
+      ownerTools: readOwnerTools(row.owner_tools_json),
       supervision: row.supervision,
       baseHead: row.base_head,
       baseSequence: row.base_sequence,
@@ -112,6 +131,7 @@ export function createForemanSessionStateService(dependencies: {
       billing: state.billing,
       sandbox_json: state.sandboxJson,
       sandbox_scope_json: state.sandboxScopeJson,
+      owner_tools_json: state.ownerTools ? JSON.stringify(state.ownerTools) : null,
       supervision: state.supervision,
       base_head: state.baseHead,
       base_sequence: state.baseSequence,
@@ -191,6 +211,7 @@ export function createForemanSessionStateService(dependencies: {
       billing: patch.billing === undefined ? current?.billing ?? null : patch.billing,
       sandboxJson: patch.sandbox === undefined ? current?.sandboxJson ?? null : JSON.stringify(patch.sandbox.policy),
       sandboxScopeJson: patch.sandbox === undefined ? current?.sandboxScopeJson ?? null : JSON.stringify(patch.sandbox.scope),
+      ownerTools: patch.ownerTools === undefined ? current?.ownerTools ?? null : patch.ownerTools,
       supervision: patch.supervision ?? current?.supervision ?? 'started',
       baseHead: patch.baseHead === undefined ? current?.baseHead ?? null : patch.baseHead,
       baseSequence: patch.baseSequence ?? current?.baseSequence ?? 0,

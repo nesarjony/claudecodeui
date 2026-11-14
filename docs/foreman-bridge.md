@@ -37,16 +37,16 @@ Success: `{ "success": true, "data": ... }`. Failure: `{ "success": false, "erro
 | 400 `IDEMPOTENCY_KEY_REQUIRED` | A call that changes a session has no valid `idempotencyKey`. |
 | 400 `SANDBOX_REQUIRED`, `SANDBOX_INVALID` | Session start without a sandbox policy, or one that is malformed or opens more than a worker may have (see Sandbox). Nothing was started. |
 | 400 `PERMISSION_MODE_FORBIDDEN` | `permissionMode` is `bypassPermissions` or `auto` on a start, message or compact of a sandboxed session (every session Foreman starts). Nothing ran. |
-| 500 `SANDBOX_NOT_RECORDED` | The start could not store its sandbox, or what was stored did not read back as the policy sent. Nothing ran (see Idempotency for the session left behind). |
+| 500 `SANDBOX_NOT_RECORDED` | The start could not store its sandbox, or what was stored did not read back as the policy sent. Nothing ran, and the session it made is taken out of sight (see Sandbox). |
 | 403 `HANDOVER_NOT_GRANTED` | `adopt` without the owner's grant (none, expired or used). Nothing changed (see Hand-over). |
 | 404 `SESSION_NOT_FOUND` | Unknown session. |
 | 409 `NOT_SUPERVISED` | The session is neither started by Foreman nor adopted (or it was released): it is not Foreman's to drive. |
 | 409 `ALREADY_SUPERVISED` | `adopt` of a session Foreman already supervises. |
-| 409 `PERMISSION_MODE_UNKNOWN` | `adopt` of a session whose owner's permission mode is not recorded yet, or a message or compact of a session adopted before modes were recorded. Nothing changed (see Hand-over). |
+| 409 `PERMISSION_MODE_UNKNOWN` | `adopt` of a session whose owner's permission mode and tools are not recorded yet, or a message or compact of a session adopted before they were recorded. Nothing changed (see Hand-over). |
 | 409 `RUN_IN_PROGRESS` | A turn is running; wait for its `turn_end`, or send with `"interrupt": true`. |
 | 409 `IDEMPOTENCY_OUTCOME_UNKNOWN` | See Idempotency. |
 | 422 `IDEMPOTENCY_KEY_REUSED` | The key was used for a different call. |
-| 502 `TURN_START_FAILED` | The CLI refused the turn at once (the session exists; read its state and events). |
+| 502 `TURN_START_FAILED` | The CLI refused the turn at once. After a message or compact the session exists (read its state and events); a start's session is taken out of sight (see Sandbox). |
 
 ## Idempotency
 
@@ -62,7 +62,8 @@ Every call that changes a session (`POST /sessions`, `.../message`, `.../interru
   with 409 `IDEMPOTENCY_OUTCOME_UNKNOWN` and runs nothing. Read `GET .../state` and `.../events`, then decide; use a new key to try again.
 - The same holds when the call took effect but cloudcli could not store its answer (a database failure): the call in hand still gets its answer, the key stays pending, and a repeat gets
   409 `IDEMPOTENCY_OUTCOME_UNKNOWN` instead of running the effect a second time. Only a call that itself fails releases its key.
-- A start that fails after the session was created (502 `TURN_START_FAILED`, 500 `SANDBOX_NOT_RECORDED`) leaves that session behind; a retry with the same key creates another.
+- A start that fails after the session was created (502 `TURN_START_FAILED`, 500 `SANDBOX_NOT_RECORDED`, anything else) leaves no live session behind: it is marked failed and
+  unsupervised and deleted or archived (see Sandbox). Its key stays free: a retry with the same key starts a new session.
 - An `adopt` refused for want of the owner's grant (403) or mode (409 `PERMISSION_MODE_UNKNOWN`) leaves its key free: retry it once the owner has acted. A repeat of an
   answered `adopt` gets the stored answer and needs no grant (it adopts nothing again).
 
@@ -179,12 +180,21 @@ A session started through the bridge is **always sandboxed**. `sandbox` is Forem
 It is the old policy builder's filled template with `sandbox` flattened, plus `scratchDir` and `approvalTimeoutMs` (optional, 1 s to 24 h, default 30 minutes). cloudcli
 applies it as the SDK `sandbox` option (bubblewrap around every Bash call), merges `permissions` into the run's flag settings (union), adds `disallowedTools` (always with
 `AskUserQuestion` and `ExitPlanMode`) to the ones no person can un-deny, and merges `env` into the CLI process environment. It creates `scratchDir`, `scratchDir/tmp` and `scratchDir/cc` first.
+The policy is checked against where the session works: its project and the git directory the project's worktrees share (`git rev-parse --git-common-dir`), both resolved
+by cloudcli at the start.
 
 - **Fail closed.** No `sandbox`, `null`, or one that fails validation (a missing part, a non-string, a list over 400 entries, a `scratchDir` that is not absolute or is over
   64 characters, or a part that opens more than the rules below allow): 400 `SANDBOX_REQUIRED` / `SANDBOX_INVALID` and **nothing starts**.
-- **Recorded before the first run.** The policy is stored with the session by a write that must succeed and is then read back the way the session's runs read it; a failed
-  write or a policy that does not read back exactly as sent is a 500 `SANDBOX_NOT_RECORDED` and nothing runs. Every later run (a message, after a restart too) reads the
-  stored policy afresh and validates it with the current rules.
+- **Recorded before the first run.** The policy is stored with the session, next to the project and git directory it was checked against, by a write that must succeed and
+  is then read back the way the session's runs read it; a failed write or a policy that does not read back exactly as sent is a 500 `SANDBOX_NOT_RECORDED` and nothing runs.
+  Every later run (a message, after a restart too) reads the stored policy afresh and validates it with the current rules against that stored scope; a policy stored without
+  one is refused.
+- **A failed start leaves nothing behind.** A start that fails once its session exists (its sandbox not recorded, its turn refused or failing at once, anything thrown) answers
+  with that failure, and the session is marked `error` and `released` (nothing drives it), loses its task link and worker mark, and is deleted when no run made a transcript
+  for it or archived when one did. It is announced to the UI only once its turn is under way. A clean-up step that fails is logged.
+- **A person typing into a worker session** (a take-over in the UI) runs sandboxed like any other turn of the session: the runtime asks for the stored policy on every
+  run, marked or not. The turn is held to the sandboxed modes, and the UI's own "skip permissions" and allowed tools are dropped: only the policy's permission rules allow a
+  call outright. The UI's denied tools still apply (they only narrow).
 - **Which runs fail closed.** Every run the bridge dispatches for a sandboxed session is marked as Foreman's (`foremanSandbox: true` in the turn's options). A stored policy
   applies to every run of its session, marked or not; one that is malformed or fails today's rules refuses every run. With no stored policy a marked run is refused and any
   other runs as before. When the database cannot be read, the policy this process last read or wrote for the session applies; without one a marked run is refused and an
@@ -195,20 +205,29 @@ applies it as the SDK `sandbox` option (bubblewrap around every Bash call), merg
 - **A git worktree works if its git directory is opened.** A worktree's git directory is the main repository's `.git`, outside the checkout. Put it in `allowWrite` and `allowRead` (the old builder's `writeDirs`), keep `hooks` and `config` of it
   in `denyWrite` and denied for Edit/Write (writes to them fail with `Read-only file system`, measured), and allow `Read(//<git dir>/**)` for the file tools. `git add` by name and `git commit` then work; `git add -A` does not (the CLI's placeholder files).
 - **Forced**, whatever the policy says: `enabled`, `failIfUnavailable`, `autoAllowBashIfSandboxed`, `allowUnsandboxedCommands: false` (so `dangerouslyDisableSandbox` is ignored),
-  `network.strictAllowlist` (an unlisted host is a deterministic deny, never a prompt), and `AskUserQuestion` and `ExitPlanMode` in the denied tools.
+  `network.strictAllowlist` (an unlisted host is a deterministic deny, never a prompt), and `AskUserQuestion` and `ExitPlanMode` in the denied tools. Also
+  `network.allowAllUnixSockets: true`: on this host the sandbox only starts with every unix socket allowed (AppArmor's `unpriv_bwrap` profile; the tested workaround), and
+  the constant flips once the owner fixes the profile. So the sockets stay out of sight, `/run`, `/tmp`, `/var/tmp`, `/home`, `/mnt`, `/media` and `/srv` are always joined
+  to `filesystem.denyRead`; the checkout and `scratchDir` stay reachable, because the sandbox mounts the allowed paths over a denied tree.
 - **Permission modes.** A sandboxed session runs in `default`, `acceptEdits` or `plan`; `bypassPermissions` and `auto` are refused (`PERMISSION_MODE_FORBIDDEN`), because the
   sandbox covers Bash only and the file tools rely on the prompts those modes skip. The runtime holds every sandboxed run to this whatever its options say: another mode becomes
-  `default`, the UI's "skip permissions" setting is ignored, plan mode allows no reads or web tools outright, and a mode stored before this rule is not resumed.
+  `default`, the UI's "skip permissions" setting and allowed tools are ignored, plan mode allows no reads or web tools outright, and a mode stored before this rule is not resumed.
 - **Validated** (400 `SANDBOX_INVALID`, naming the field), the parts that open something up:
   - `env`: only `TMPDIR`, `CLAUDE_CODE_TMPDIR`, `CI`, `NODE_ENV`, `TZ`, `LANG`, `LC_ALL`, `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME`, `GIT_COMMITTER_EMAIL`;
     the two temp directories inside `scratchDir`. (The session's routing is cloudcli's: no `ANTHROPIC_*`, `NODE_OPTIONS`, `LD_PRELOAD`.)
   - `network.allowedDomains`: each `host:port` with a port, no wildcards, not `localhost`, and never cloudcli's port (`SERVER_PORT`, and 3001) or claude-cap's, on any host
     (a name can resolve to this machine).
   - `filesystem.allowRead`, `filesystem.allowWrite` and `scratchDir`: absolute, normalised (no `..`), no patterns, at least three components (not `/`, `/mnt`, `/mnt/dev`,
-    `/home/<user>`), not the home directory or above it; a writable one (`allowWrite`, `scratchDir`) never has a `.claude` or `.ssh` component nor reaches into `.git/hooks` or `.git/config`.
+    `/home/<user>`), not a home directory or above one; a writable one (`allowWrite`, `scratchDir`) never has a `.claude` or `.ssh` component nor reaches into `.git/hooks` or `.git/config`.
+  - **Writable only where the session works.** Every `allowWrite` entry, and every `Edit`/`Write`/`NotebookEdit` allow rule, is the project, `scratchDir` or the shared git
+    directory, or lies inside one of them. Nothing else: no home dotfile (`~/.gitconfig`, `~/.bashrc`) and no tool cache (a tool's cache belongs inside `scratchDir`). A
+    project that is a whole tree of the host (a home directory, or shallower than three components) makes nothing writable in it.
+  - **No secret is reachable.** No `allowRead` or `allowWrite` entry, `scratchDir` or path allow rule may be, lie inside or hold `~/.claude`, `~/.claude.json`, `~/.config`,
+    `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.docker`, `~/.kube`, `~/.git-credentials`, `~/.cloudcli`, `~/.claude-code-ui`, `/etc/claude-cap.env` or the files
+    `FOREMAN_BRIDGE_TOKEN_FILE` and `FOREMAN_EVENTS_TOKEN_FILE` name. `~` is both `HOME` and the passwd home: the test instance runs with `HOME` pointed elsewhere.
   - `permissions.allow`: `Bash` (or `Bash(*)`), `TodoWrite`, `mcp__infigraph` (or one of its tools), and `Read`/`Edit`/`Write`/`NotebookEdit` rules on an absolute `//path`
     that does not start with a wildcard; the write rules are held to the writable-path checks above. Nothing else (bare `Read`/`Edit`/`Write`, `WebFetch`, `WebSearch`, narrower `Bash(...)`).
-  - Not checked beyond shape and size: the lists that only close things (`denyRead`, `denyWrite`, `permissions.deny`, `disallowedTools`, `credentials`) and `allowAllUnixSockets`.
+  - Not checked beyond shape and size: the lists that only close things (`denyRead`, `denyWrite`, `permissions.deny`, `disallowedTools`, `credentials`).
 - A prompt the rules do not settle becomes a `permission_request` event; `AskUserQuestion` and `ExitPlanMode` are denied at once. A prompt nobody answers within `approvalTimeoutMs` is denied with a
   message that says it was a timeout, not a decision.
 - The old regex guard (`guard` in the start body, `guarded` flags, the PreToolUse guard hook) no longer exists.
@@ -223,18 +242,24 @@ The bridge token alone can never hand a session over: the bridge has no route th
    **5 minutes**; a new grant replaces an older one. `DELETE` on the same path withdraws an unused grant: `{ sessionId, revoked }`. Refused: 401 `AUTH_REQUIRED` without a
    logged-in user, 404 unknown session, 400 not a Claude session, 409 `ALREADY_SUPERVISED`.
 2. **Foreman adopts**: `POST /sessions/:id/adopt` `{ idempotencyKey, taskId? }`. The session joins Foreman's supervision **as it is**: its model and routing (billing) are not
-   touched, it runs in its owner's permission mode (below), no sandbox is added and it is not marked as a worker. From then on its events are stored with ids and sequence
+   touched, it runs with its owner's permission mode and tools (below), no sandbox is added and it is not marked as a worker. From then on its events are stored with ids and sequence
    numbers and pushed exactly as for a started session, `eventsSince` works, and message, interrupt and permission answers work. Events are counted from adoption:
    `commitCount` counts commits since the project's `HEAD` at that moment. Answer: `{ sessionId, status, lastSequence, supervision: "adopted", projectPath, model, billing, permissionMode }`.
    Refused, in this order and with nothing changed: 404 unknown session, 400 not a Claude session, 409 `ALREADY_SUPERVISED`, 409 `PERMISSION_MODE_UNKNOWN`, 403
    `HANDOVER_NOT_GRANTED` (no grant, expired, or used). Only the last step uses the grant up, atomically and right before the supervision is recorded, so of two adopts racing
    for one grant one wins; an adopt that fails after that point (a 500) has used the grant, and the owner grants again.
-- **The owner's mode.** cloudcli records the permission mode every Claude session's last run started in, the owner's own sessions included: the mode the CLI really got
-  (the UI's "skip permissions" makes it `bypassPermissions`; no mode is `default`). `adopt` takes that mode, and every message and compact Foreman sends runs in exactly it.
-  Foreman neither widens nor narrows it: `permissionMode` on `message` / `compact` is refused (400 `PERMISSION_MODE_LOCKED`), and an owner's `bypassPermissions` or `auto` is
-  kept as the owner's choice for their own session. A session that has not run since cloudcli began recording modes: 409 `PERMISSION_MODE_UNKNOWN`, the grant stays; the owner
-  sends one turn in it, then Foreman adopts again. The mode is taken at adoption: one the owner picks later applies to the owner's own turns, not Foreman's. A session adopted
-  before modes were recorded answers a message or compact with 409 `PERMISSION_MODE_UNKNOWN`: release it, and the owner hands it over again.
+- **The owner's mode and tools.** cloudcli records, for every Claude session, the owner's own sessions included, what its owner's last run started with: the permission
+  mode the CLI really got (the UI's "skip permissions" makes it `bypassPermissions`; no mode is `default`) and the tool lists the UI sent (`toolsSettings.allowedTools` and
+  `disallowedTools`). A run the bridge dispatched (every one is marked `foremanDispatch: true`) is never recorded as the owner's. `adopt` stores the mode and lists as the
+  owner's base settings, and every message and compact Foreman sends carries them exactly as the UI would, so the runtime applies the owner's allowed and denied tools:
+  Foreman never has a tool or mode its owner does not. `permissionMode` on `message` / `compact` is refused (400 `PERMISSION_MODE_LOCKED`), and an owner's
+  `bypassPermissions` or `auto` is kept as the owner's choice for their own session.
+- **Narrower, never wider.** When the owner runs the session again after adoption, Foreman's next turn runs with the narrower of the base and that latest run: the stricter
+  mode (`plan` < `default` < `acceptEdits` < `auto` < `bypassPermissions`; a mode outside this order never replaces the base's), only the tools both allow, every tool
+  either denies. So the owner narrowing the mode or the tools applies from Foreman's next turn, widening them never does, and restoring them returns to the base.
+- A session whose owner's settings are not recorded yet (it has not run since cloudcli began recording them): 409 `PERMISSION_MODE_UNKNOWN`, the grant stays; the owner sends
+  one turn in it, then Foreman adopts again. A session adopted before the tools were recorded answers a message or compact with 409 `PERMISSION_MODE_UNKNOWN`: release it, and
+  the owner hands it over again.
 - `model` cannot be changed on an adopted session either (409 `MODEL_LOCKED`).
 - `POST /sessions/:id/release` `{ idempotencyKey }`: hand-back. Nothing more is stored or pushed for the session; events already stored are still pushed until acknowledged. The session
   stays alive and carries on as the owner's. Answer: the state (`supervision: "released"`, `lastSequence` = the last event of the hand-over). 409 `NOT_ADOPTED` for a session
@@ -243,10 +268,23 @@ The bridge token alone can never hand a session over: the bridge has no route th
   the bridge token) lists `{ sessions: [{ sessionId, supervision: "started" | "adopted", taskId }] }`.
 - Messages, interrupts and permission answers need a supervised session (`started` or `adopted`); any other session answers 409 `NOT_SUPERVISED`. Read-only calls (digest, context, git) work for any.
 
+## Security notes
+
+- **Platform mode.** With `VITE_IS_PLATFORM=true`, cloudcli's `authenticateToken` accepts every request as the first user, so the hand-over grant (a logged-in owner's)
+  protects nothing there. Platform mode must stay off for a Foreman deployment.
+- **The grant proves a login, not a person.** A process running as the same OS user as cloudcli can read its JWT secret and mint a login, and so a grant. Real separation
+  means running Foreman as its own OS user; that is the owner's decision.
+- **A take-over while the state table is unreadable.** A person typing into a worker session in the UI while the state table cannot be read and this process remembers no
+  policy for the session runs that one turn without the sandbox (see Sandbox, "Which runs fail closed").
+- **A turn joins a held process.** A turn sent while the session's CLI process is held open for background work goes into that process and runs with the settings that
+  started it. A Foreman turn on an adopted session whose owner's run holds the process therefore runs with the owner's current settings, even when they are wider than the
+  base; a Foreman turn into a worker's held process stays in its sandbox.
+
 ## What differs from Foreman's slice-2 `Bridge` interface and the simulator
 
 - `startSession` takes `sandbox` (the interface's `model` and `brief` map to `model` and `prompt`; `directory` to `projectPath`).
 - `sessionState` also returns `supervision`; `eventsSince` pages (`hasMore`).
 - The sequence counts events cloudcli emitted, like the simulator; unlike it, `session_end` is only `stopped` or `crashed` and `question` is never sent.
 - Real events carry `model`, `usage` and `headSha` on `turn_end` (additive), and there is a `quota` kind (new).
-- `adopt` works only after the owner's grant (403 `HANDOVER_NOT_GRANTED`, 409 `PERMISSION_MODE_UNKNOWN`), and its answer carries `permissionMode` (additive).
+- `adopt` works only after the owner's grant (403 `HANDOVER_NOT_GRANTED`, 409 `PERMISSION_MODE_UNKNOWN`), and its answer carries `permissionMode` (additive). Foreman's
+  turns on an adopted session run with the owner's tools as well as the mode.

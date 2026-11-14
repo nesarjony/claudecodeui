@@ -59,7 +59,7 @@ const UNMARKED = { required: false };
 const storedRow = (sessionId: string, sandboxJson: string | null): StateRow => ({
   session_id: sessionId, task_id: null, status: 'idle', permission_mode: null, billing: null, sandbox_json: sandboxJson,
   supervision: sandboxJson ? 'started' : 'adopted', base_head: null, base_sequence: 0, updated_at: '2026-11-14T08:00:00.000Z',
-  sandbox_scope_json: sandboxJson ? JSON.stringify(SAMPLE_SCOPE) : null,
+  sandbox_scope_json: sandboxJson ? JSON.stringify(SAMPLE_SCOPE) : null, owner_tools_json: null,
 });
 const refuses = (answer: unknown, pattern: RegExp) => assert.match((answer as { refuse: string }).refuse, pattern);
 

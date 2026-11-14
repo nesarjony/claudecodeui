@@ -434,8 +434,8 @@ const addSupersededTranscriptPathColumn = (db: Database): void => {
 
 /**
  * Brings a `foreman_session_state` table that predates sandboxes and hand-over up to date: `guard_json` held the old risky-action
- * guard, which no longer exists, so the column becomes `sandbox_json` and starts empty; `base_head`, `base_sequence`, `supervision` and
- * `sandbox_scope_json` are added. The rows that exist were driven by the old Foreman, which is gone, so none of them is supervised any more.
+ * guard, which no longer exists, so the column becomes `sandbox_json` and starts empty; `base_head`, `base_sequence`, `supervision`,
+ * `sandbox_scope_json` and `owner_tools_json` are added. The rows that exist were driven by the old Foreman, which is gone, so none of them is supervised any more.
  * A policy stored before its scope was recorded keeps a NULL scope, and its session's runs are refused: it cannot be checked.
  */
 const migrateForemanSessionStateColumns = (db: Database): void => {
@@ -451,6 +451,16 @@ const migrateForemanSessionStateColumns = (db: Database): void => {
     db.exec("UPDATE foreman_session_state SET supervision = 'released'");
   }
   addColumnToTableIfNotExists(db, 'foreman_session_state', columnNames, 'sandbox_scope_json', 'TEXT');
+  addColumnToTableIfNotExists(db, 'foreman_session_state', columnNames, 'owner_tools_json', 'TEXT');
+};
+
+/**
+ * Adds the tool lists to a `foreman_run_modes` table that predates them. Rows recorded before keep a NULL: their tools are unknown, and a
+ * hand-over waits for the owner's next run instead of guessing them.
+ */
+const addForemanRunModesToolsColumn = (db: Database): void => {
+  const columnNames = getTableInfo(db, 'foreman_run_modes').map((column) => column.name);
+  addColumnToTableIfNotExists(db, 'foreman_run_modes', columnNames, 'tools_json', 'TEXT');
 };
 
 const addForkedFromSessionIdColumn = (db: Database): void => {
@@ -541,6 +551,7 @@ export const runMigrations = (db: Database) => {
     db.exec(FOREMAN_IDEMPOTENCY_TABLE_SCHEMA_SQL);
     db.exec(FOREMAN_HANDOVER_GRANTS_TABLE_SCHEMA_SQL);
     db.exec(FOREMAN_RUN_MODES_TABLE_SCHEMA_SQL);
+    addForemanRunModesToolsColumn(db);
     addSupersededTranscriptPathColumn(db);
 
     db.exec(PROJECTS_TABLE_SCHEMA_SQL);

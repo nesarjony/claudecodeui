@@ -1009,7 +1009,8 @@ async function loadMcpConfig(cwd) {
  * Executes a Claude query using the SDK
  * @param {string} command - User prompt/command
  * @param {Object} options - Query options. `foremanSandbox: true` marks a run the Foreman bridge dispatched for a sandboxed session:
- *   such a run is refused unless its sandbox is found (see `resolveRuntimeSandbox`).
+ *   such a run is refused unless its sandbox is found (see `resolveRuntimeSandbox`). `foremanDispatch: true` marks every run the bridge
+ *   dispatches, reported on `run_started` so the bridge never counts it as the owner's.
  * @param {Object} ws - WebSocket connection
  * @param {Object} context - Provider-scoped model, session, and auth lookups
  * @returns {Promise<void>}
@@ -1375,9 +1376,12 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
       kind: 'run_started',
       resumed: Boolean(providerSessionId),
       model: resolvedModel || options.model || null,
-      // The mode the run really starts in (after the UI's skip-permissions setting and a sandbox's confinement), not the one asked for:
-      // a session handed over to Foreman resumes in it.
-      permissionMode: sdkOptions.permissionMode || 'default'
+      // The mode the run really starts in (after the UI's skip-permissions setting and a sandbox's confinement), not the one asked for,
+      // and the UI's tool lists as sent: a session handed over to Foreman runs Foreman's turns with no more than its owner's.
+      permissionMode: sdkOptions.permissionMode || 'default',
+      allowedTools: nonEmptyStrings(options.toolsSettings?.allowedTools),
+      disallowedTools: nonEmptyStrings(options.toolsSettings?.disallowedTools),
+      foremanDispatch: options.foremanDispatch === true
     });
     console.log('Starting async generator loop for session:', capturedSessionId || 'NEW');
     for await (const message of queryInstance) {

@@ -63,7 +63,7 @@ test('every unix socket is allowed and the trees that hold sockets are hidden, w
     network: { allowedDomains: [], allowAllUnixSockets: false },
     filesystem: { ...samplePolicy().filesystem, denyRead: ['/mnt/dev/repo/.env'] },
   });
-  const { sandbox } = buildSandboxAdditions(narrow, () => undefined) as { sandbox: { network: Record<string, unknown>; filesystem: Record<string, string[]> } };
+  const sandbox = buildSandboxAdditions(narrow, () => undefined).sandbox as { network: Record<string, unknown>; filesystem: Record<string, string[]> };
   assert.equal(sandbox.network.allowAllUnixSockets, true);
   assert.deepEqual(sandbox.filesystem.denyRead, ['/mnt/dev/repo/.env', '/run', '/tmp', '/var/tmp', '/home', '/mnt', '/media', '/srv']);
   // The rest of the filesystem part is the policy's: what it reads and writes stays reachable over the hidden trees.

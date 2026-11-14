@@ -25,7 +25,7 @@ import { createTaskIdStore } from '@/modules/foreman/foreman-task-ids.service.js
 import { createForemanUiRouter } from '@/modules/foreman/foreman-ui.routes.js';
 import { createForemanRouter } from '@/modules/foreman/foreman.routes.js';
 
-import { createMemoryGrants, createMemoryRunModeStore } from './foreman-handover-support.js';
+import { createMemoryGrants, createMemoryRunModeStore, runStarted } from './foreman-handover-support.js';
 import { createMemoryEventStorage } from './foreman-pipeline-support.js';
 import { samplePolicy } from './foreman-sandbox-support.js';
 
@@ -140,8 +140,8 @@ export function createWorld() {
   const eventStorage = createMemoryEventStorage();
   const grants = createMemoryGrants();
   const runModeStore = createMemoryRunModeStore();
-  // Records into the table as the module's does from the runtime's events.
-  const runModes = createForemanRunModes({ store: runModeStore });
+  // Records into the table as the module's does from the runtime's events, on the world's clock (which the hand-over's grants also use).
+  const runModes = createForemanRunModes({ store: runModeStore, now: () => world.clock });
 
   const rows = new SessionRows((sessionId) => {
     // A row added to the world is a session Foreman started, unless the state already knows it better (an adopted one).
@@ -158,9 +158,9 @@ export function createWorld() {
     grantRows: grants.rows,
     runModeRows: runModeStore.rows,
     runModes,
-    /** A run of the session started in `permissionMode`, as the runtime reports it: the owner ran their session. */
-    ownerRan: (sessionId: string, permissionMode: string) =>
-      runModes.observe({ kind: 'run_started', sessionId, projectPath: '/mnt/dev/known', resumed: true, model: null, permissionMode }),
+    /** A run of the session started in `permissionMode` with the UI's tool lists, as the runtime reports it: the owner ran their session. */
+    ownerRan: (sessionId: string, permissionMode: string, tools: { allowedTools?: string[]; disallowedTools?: string[] } = {}) =>
+      runModes.observe(runStarted(sessionId, permissionMode, tools)),
     /** The time the hand-over issues and checks grants at; tests move it. */
     clock: new Date('2026-11-14T09:00:00.000Z'),
     /** Who the fake login puts on the UI routes' requests; null for a request nobody logged in to. */

@@ -1373,6 +1373,16 @@ export type ForemanBilling = 'api-key' | 'subscription' | 'cap';
 export type ForemanSandboxScope = { projectPath: string; gitCommonDir: string | null };
 
 /**
+ * What a run of a session started with as far as permissions go: the mode the CLI really got (`default` when none; the UI's "skip
+ * permissions" is `bypassPermissions`) and the tool lists of its options (the UI's `toolsSettings.allowedTools` and `disallowedTools`, as
+ * sent). Recorded for the owner's runs of every Claude session; a session handed over to Foreman runs Foreman's turns with its owner's.
+ *
+ * Used by the Foreman bridge: the run modes service records it, the hand-over stores it at adoption and the sessions service passes the
+ * narrower of the stored and the owner's latest to every turn of an adopted session.
+ */
+export type ForemanOwnerSettings = { permissionMode: string; allowedTools: string[]; disallowedTools: string[] };
+
+/**
  * What a Foreman-driven session did, in the form Foreman's inbox stores (the contract in `docs/foreman-bridge.md`).
  *
  * `kind` and `payload` are what the bridge derives from one runtime observation. Only the kinds cloudcli emits are listed:
@@ -1431,6 +1441,11 @@ export type ClaudeRuntimeEvent = { sessionId: string; projectPath: string | null
       model: string | null;
       /** The mode the run starts in, as the SDK gets it (`default` when it sets none), whatever the turn asked for. */
       permissionMode: string | null;
+      /** The tools the run's options allow and deny (the UI's `toolsSettings`, as sent; empty without one). */
+      allowedTools: string[];
+      disallowedTools: string[];
+      /** True for a run the Foreman bridge dispatched (`foremanDispatch: true` in its options): never one of the owner's own. */
+      foremanDispatch: boolean;
     }
   | { kind: 'run_ended'; reason: 'completed' | 'aborted' | 'error' }
   | { kind: 'run_error'; message: string }
