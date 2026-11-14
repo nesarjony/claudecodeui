@@ -34,6 +34,7 @@ import { applyCapBilling } from '@/modules/providers/list/claude/claude-cap-bill
 import {
   applyRuntimeSandboxAdditions,
   approvalTimeoutMessage,
+  confineSandboxedPermissions,
   resolveRuntimeSandbox,
   withSandbox
 } from '@/modules/providers/list/claude/claude-runtime-sandbox.js';
@@ -1007,7 +1008,8 @@ async function loadMcpConfig(cwd) {
 /**
  * Executes a Claude query using the SDK
  * @param {string} command - User prompt/command
- * @param {Object} options - Query options
+ * @param {Object} options - Query options. `foremanSandbox: true` marks a run the Foreman bridge dispatched for a sandboxed session:
+ *   such a run is refused unless its sandbox is found (see `resolveRuntimeSandbox`).
  * @param {Object} ws - WebSocket connection
  * @param {Object} context - Provider-scoped model, session, and auth lookups
  * @returns {Promise<void>}
@@ -1202,7 +1204,7 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
 
     // Foreman-managed sessions get in-process PreCompact/SessionStart hooks (project and Foreman's own repos only) and,
     // when started through the bridge, the worker autocompact threshold. Appended to the hooks above, never replacing them.
-    const sandbox = resolveRuntimeSandbox(sessionId);
+    const sandbox = resolveRuntimeSandbox(sessionId, { required: options.foremanSandbox === true });
     // A session that has a sandbox runs in it or not at all (fail closed): there is no other guard.
     if (sandbox && 'refuse' in sandbox) {
       throw new Error(sandbox.refuse);
@@ -1211,6 +1213,10 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
     const runtimeAdditions = sandbox ? withSandbox(baseAdditions, sandbox) : baseAdditions;
     const sandboxed = Boolean(runtimeAdditions.sandbox);
     applyRuntimeSandboxAdditions(sdkOptions, runtimeAdditions);
+    // The sandbox covers Bash only, so a sandboxed run keeps its prompts: no bypass or auto mode, whatever the options or the UI's settings ask.
+    if (sandboxed) {
+      confineSandboxedPermissions(sdkOptions, { permissionMode: options.permissionMode, allowedTools: options.toolsSettings?.allowedTools });
+    }
     if (runtimeAdditions.env) {
       sdkOptions.env = { ...sdkOptions.env, ...runtimeAdditions.env };
     }
@@ -1230,9 +1236,9 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
     // (AskUserQuestion, ExitPlanMode) won't reach the UI — the classifier/bypass
     // auto-approves them and the model acts on a generated answer. Move these
     // tools to a PreToolUse hook (runs before the mode check) if we need them
-    // to work in those modes. A sandboxed run denies both tools by name (disallowedTools)
-    // already does that for it: it denies both tools in every mode, and the check
-    // below is its backstop.
+    // to work in those modes. A sandboxed run needs no hook: both tools are in its
+    // disallowedTools, which denies them in every mode, and the check below is the
+    // backstop.
     sdkOptions.canUseTool = async (toolName, input, context) => {
       const requiresInteraction = TOOLS_REQUIRING_INTERACTION.has(toolName);
       // A sandboxed run is unattended: nobody can answer a question or approve a plan, and the prompt below waits for them
@@ -1247,7 +1253,8 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
         if (enforcedDisallowedTools.some(entry => matchesToolPermission(entry, toolName, input))) {
           return { behavior: 'deny', message: 'Tool disallowed by settings' };
         }
-        if (sdkOptions.permissionMode === 'bypassPermissions') {
+        // Never for a sandboxed run: its mode is never a bypass, and this keeps it so if that ever changes.
+        if (!sandboxed && sdkOptions.permissionMode === 'bypassPermissions') {
           return { behavior: 'allow', updatedInput: input };
         }
 

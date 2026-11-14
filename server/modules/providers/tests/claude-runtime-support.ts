@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { after, before } from 'node:test';
 
+import { setClaudeRuntimeSandboxProvider, type RuntimeSandboxProvider } from '@/modules/providers/list/claude/claude-runtime-sandbox.js';
 import type { ClaudeRuntimeEvent } from '@/shared/types.js';
 
 /**
@@ -235,3 +236,13 @@ export const argValue = (argv: string[], flag: string) => argv[argv.indexOf(flag
 
 /** The settings object of a run's tool settings (what the UI stores): no allow rules, no denials, no bypass unless overridden. */
 export const settingsWith = (overrides: Record<string, unknown>) => ({ allowedTools: [], disallowedTools: [], skipPermissions: false, ...overrides });
+
+/** Runs `run` with `provider` registered as the sandbox provider, and takes it away again. */
+export async function withSandboxProvider<T>(provider: (...asked: Parameters<RuntimeSandboxProvider>) => unknown, run: () => Promise<T>): Promise<T> {
+  setClaudeRuntimeSandboxProvider(provider as RuntimeSandboxProvider);
+  try {
+    return await run();
+  } finally {
+    setClaudeRuntimeSandboxProvider(null);
+  }
+}

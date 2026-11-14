@@ -4,7 +4,7 @@ import type { ForemanSandboxPolicy } from '@/modules/foreman/foreman-sandbox.ser
 import type { ForemanSessionReadsService } from '@/modules/foreman/foreman-session-reads.service.js';
 import type { ForemanSessionState, ForemanSessionStateService } from '@/modules/foreman/foreman-session-state.service.js';
 import type { ForemanBilling } from '@/shared/types.js';
-import { AppError, clipText, summarizeToolInput } from '@/shared/utils.js';
+import { AppError, clipText, isSandboxedPermissionMode, SANDBOXED_PERMISSION_MODES, summarizeToolInput } from '@/shared/utils.js';
 
 type StartTurnInput = {
   sessionId: string;
@@ -59,6 +59,22 @@ const DEFAULT_ADMISSION_WINDOW_MS = 50;
 const MAX_TITLE_LENGTH = 100;
 const MAX_SUMMARY_LENGTH = 80;
 const MAX_PERMISSION_INPUT_LENGTH = 1000;
+
+/** Every session Foreman started runs sandboxed (a stored policy says so too); one handed over runs as its owner set it up. */
+const isSandboxed = (state: ForemanSessionState): boolean => state.supervision === 'started' || state.sandboxJson !== null;
+
+/**
+ * Refuses a permission mode a sandboxed session may not run in. The sandbox isolates Bash only; the file tools are held by the prompts that
+ * `bypassPermissions` skips and `auto` hands to a classifier.
+ */
+function requireSandboxedMode(permissionMode: string | undefined): void {
+  if (permissionMode !== undefined && !isSandboxedPermissionMode(permissionMode)) {
+    throw new AppError(
+      `permissionMode "${permissionMode}" is not allowed for a sandboxed session: the sandbox covers Bash only and the file tools rely on the prompts it would skip. Use one of: ${SANDBOXED_PERMISSION_MODES.join(', ')}.`,
+      { code: 'PERMISSION_MODE_FORBIDDEN', statusCode: 400 },
+    );
+  }
+}
 
 /**
  * Drives the sessions Foreman supervises: starting one, sending its turns, answering its permission prompts, stopping it and changing its
@@ -138,6 +154,9 @@ export function createForemanSessionsService(deps: ForemanSessionsDependencies) 
     if (state.supervision === 'adopted' && options.permissionMode) {
       throw new AppError('A session handed over keeps its owner\'s permission mode: permissionMode cannot be set.', { code: 'PERMISSION_MODE_LOCKED', statusCode: 400 });
     }
+    if (isSandboxed(state)) {
+      requireSandboxedMode(options.permissionMode);
+    }
     const processing = deps.runs.isProcessing(sessionId);
     if (processing && !options.interrupt) {
       throw new AppError(
@@ -188,6 +207,8 @@ export function createForemanSessionsService(deps: ForemanSessionsDependencies) 
       taskId?: string;
       sandbox: ForemanSandboxPolicy;
     }) {
+      // Before anything is made: every session started here is sandboxed.
+      requireSandboxedMode(input.permissionMode);
       const project = deps.projectsDb.getProjectPath(input.projectPath);
       if (!project || project.isArchived) {
         throw new AppError('projectPath is not a known cloudcli project.', { code: 'UNKNOWN_PROJECT', statusCode: 422 });

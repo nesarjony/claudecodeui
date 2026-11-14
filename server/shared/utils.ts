@@ -1306,3 +1306,20 @@ export function summarizeToolInput(input: unknown, maxLength = 200): string {
 export function isErrorTurnResult(message: Record<string, unknown>): boolean {
   return message.is_error === true || String(message.subtype ?? '').startsWith('error');
 }
+
+// ---------------------------
+//----------------- SANDBOXED RUN PERMISSION MODE UTILITIES ------------
+/**
+ * The permission modes a sandboxed run (a session the Foreman bridge started) may run in. The sandbox isolates Bash only: the file tools
+ * (Read, Edit, Write) run in the CLI process, bounded by permission rules and prompts, and `bypassPermissions` skips those prompts while `auto`
+ * hands them to a classifier. So a sandboxed run never runs in either, whatever its options, its stored state or the UI's settings say.
+ */
+// Consumed by the foreman module: foreman-sessions.service.ts names them when it refuses another mode.
+export const SANDBOXED_PERMISSION_MODES: readonly string[] = ['default', 'acceptEdits', 'plan'];
+
+/** Whether a sandboxed run may run in `mode`: one of `SANDBOXED_PERMISSION_MODES`. Anything else, a non-string included, is not. */
+// Consumed by the foreman module (foreman-sessions.service.ts refuses a start or a message in another mode, foreman-session-state.service.ts
+// never hands a stored one back) and by the providers module's claude-runtime-sandbox.ts (a sandboxed run in another mode runs in `default`).
+export function isSandboxedPermissionMode(mode: unknown): mode is string {
+  return typeof mode === 'string' && SANDBOXED_PERMISSION_MODES.includes(mode);
+}

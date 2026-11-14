@@ -216,7 +216,7 @@ test('POST message to an idle session starts a resume turn with the settings the
   await withBridge(async ({ call, world }) => {
     world.rows.set('s1', row({ session_id: 's1', model: 'claude-opus-5-5@api', effort: 'xhigh' }));
 
-    const response = await call('POST', '/sessions/s1/message', { text: 'Now add tests', permissionMode: 'bypassPermissions' });
+    const response = await call('POST', '/sessions/s1/message', { text: 'Now add tests', permissionMode: 'acceptEdits' });
     assert.equal(response.status, 202);
     assert.deepEqual(response.body.data, { sessionId: 's1', accepted: true, interrupted: false });
 
@@ -227,12 +227,12 @@ test('POST message to an idle session starts a resume turn with the settings the
     assert.equal(turn.interruptActiveRun, false);
     assert.equal(turn.options.model, 'claude-opus-5-5@api');
     assert.equal(turn.options.effort, 'xhigh');
-    assert.equal(turn.options.permissionMode, 'bypassPermissions');
+    assert.equal(turn.options.permissionMode, 'acceptEdits');
 
     // The permission mode is remembered for the next message.
     await tick();
     await call('POST', '/sessions/s1/message', { text: 'And docs' });
-    assert.equal(world.startedTurns[1].options.permissionMode, 'bypassPermissions');
+    assert.equal(world.startedTurns[1].options.permissionMode, 'acceptEdits');
   });
 });
 
@@ -563,17 +563,6 @@ test('POST /sessions records no starting commit for a project that has none, and
   });
 });
 
-test('every permission mode starts under a sandbox: the sandbox, not the mode, is the boundary', async () => {
-  await withBridge(async ({ call, world }) => {
-    for (const permissionMode of ['default', 'auto', 'acceptEdits', 'bypassPermissions', 'plan']) {
-      const response = await call('POST', '/sessions', startBody({ permissionMode }));
-      assert.equal(response.status, 201, permissionMode);
-      assert.equal(world.startedTurns.at(-1)?.options.permissionMode, permissionMode);
-      assert.equal(world.state.get(response.body.data.sessionId)?.permissionMode, permissionMode);
-    }
-  });
-});
-
 test('the guard is gone: a body with a guard and no sandbox does not start, and a guard next to a sandbox is ignored', async () => {
   await withBridge(async ({ call, world }) => {
     const guard = { enabled: true, riskyPatterns: ['\\bgit\\s+push\\b'], secretPatterns: [], writeOutsideRepo: true };
@@ -600,16 +589,16 @@ test('a message to a sandboxed session can change its permission mode and never 
     const sessionId = started.body.data.sessionId as string;
     await tick();
 
-    const response = await call('POST', `/sessions/${sessionId}/message`, { text: 'go on', permissionMode: 'bypassPermissions' });
+    const response = await call('POST', `/sessions/${sessionId}/message`, { text: 'go on', permissionMode: 'acceptEdits' });
     assert.equal(response.status, 202);
-    assert.equal(world.startedTurns[1].options.permissionMode, 'bypassPermissions');
-    assert.equal(world.state.get(sessionId)?.permissionMode, 'bypassPermissions');
+    assert.equal(world.startedTurns[1].options.permissionMode, 'acceptEdits');
+    assert.equal(world.state.get(sessionId)?.permissionMode, 'acceptEdits');
     assert.deepEqual(world.state.sandboxOf(sessionId), { policy: samplePolicy() });
     assert.equal('sandbox' in world.startedTurns[1].options, false);
 
     // The next message without a mode resumes in the remembered one.
     await tick();
     await call('POST', `/sessions/${sessionId}/message`, { text: 'and docs' });
-    assert.equal(world.startedTurns[2].options.permissionMode, 'bypassPermissions');
+    assert.equal(world.startedTurns[2].options.permissionMode, 'acceptEdits');
   });
 });

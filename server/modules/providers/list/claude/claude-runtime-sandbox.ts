@@ -9,6 +9,8 @@
  * tests set it before importing the provider), so the helpers here are either module state set by the Foreman bridge or pure functions.
  */
 
+import { isSandboxedPermissionMode } from '@/shared/utils.js';
+
 /**
  * What the runtime's additions provider may add to a run: extra SDK hooks, environment variables, subagents, the model to retry on after a
  * refusal and tools the run may never use, plus, for a sandboxed run, the SDK `sandbox` option, the permission rules to merge into the flag
@@ -34,10 +36,17 @@ export type RuntimeSandbox = RuntimeAdditions & { sandbox: Record<string, unknow
 export type RuntimeSandboxRefusal = { refuse: string };
 
 /**
+ * What the sandbox provider is told about the run besides its session: `required` when the run is marked as one the Foreman bridge dispatched
+ * for a sandboxed session (`foremanSandbox: true` in its options). Such a run never goes ahead without a sandbox; an unmarked run (a person
+ * typing in the UI) is never refused just because the bridge's records cannot be read.
+ */
+export type RuntimeSandboxRun = { required: boolean };
+
+/**
  * The sandbox provider the Foreman bridge registers. It answers synchronously for an app session id: `null` for a session without a sandbox,
  * a refusal when the run must not start, or the sandbox to apply.
  */
-export type RuntimeSandboxProvider = (sessionId: string) => RuntimeSandboxRefusal | RuntimeSandbox | null;
+export type RuntimeSandboxProvider = (sessionId: string, run: RuntimeSandboxRun) => RuntimeSandboxRefusal | RuntimeSandbox | null;
 
 /**
  * The part of a run's SDK options that the sandbox touches: the SDK `sandbox` option and the permission rules inside the flag `settings`.
@@ -59,13 +68,16 @@ export function setClaudeRuntimeSandboxProvider(provider: RuntimeSandboxProvider
 
 /**
  * The sandbox of a session, or what refuses its run. A provider that throws refuses: a session whose sandbox cannot be worked out must not
- * run unisolated. `null` means the session has no sandbox (or no provider is registered, or the run has no session id).
+ * run unisolated. `null` means the session has no sandbox (or no provider is registered, or the run has no session id), except for a run that
+ * `required` one: with nobody to ask for its sandbox it is refused.
  */
 // Consumed by claude-runtime.provider.js before every run, to decide whether the run is sandboxed, refused or plain.
-export function resolveRuntimeSandbox(sessionId: string | undefined): RuntimeSandboxRefusal | RuntimeSandbox | null {
-  if (!runtimeSandboxProvider || !sessionId) return null;
+export function resolveRuntimeSandbox(sessionId: string | undefined, run: RuntimeSandboxRun = { required: false }): RuntimeSandboxRefusal | RuntimeSandbox | null {
+  if (!runtimeSandboxProvider || !sessionId) {
+    return run.required ? { refuse: 'This run must be sandboxed, but there is no sandbox to apply to it, so it does not run.' } : null;
+  }
   try {
-    return runtimeSandboxProvider(sessionId);
+    return runtimeSandboxProvider(sessionId, run);
   } catch (error) {
     const reason = (error as { message?: unknown } | null)?.message || error;
     return { refuse: `The sandbox of this session could not be set up (${String(reason)}), so it does not run.` };
@@ -118,4 +130,21 @@ export function applyRuntimeSandboxAdditions(sdkOptions: RuntimeSdkOptions, addi
       deny: union(current.deny, additions.permissions?.deny),
     },
   };
+}
+
+/**
+ * Puts a sandboxed run back under its permission prompts, whatever its options asked for. The sandbox isolates Bash only; the file tools are
+ * held by the rules and the prompts. So the run's mode is the requested one only when a sandboxed run may use it (`default` otherwise, which
+ * also undoes the UI's "skip permissions" setting), and the read-only tools the runtime allows outright in plan mode for a person (Read and
+ * the web tools, anywhere) are taken back: a worker's reads go through its rules. The UI's own allowed tools are kept.
+ */
+// Consumed by claude-runtime.provider.js once a run turns out to be sandboxed, and by the Claude runtime sandbox tests.
+export function confineSandboxedPermissions(sdkOptions: RuntimeSdkOptions, requested: { permissionMode?: unknown; allowedTools?: unknown }): void {
+  const mode = isSandboxedPermissionMode(requested.permissionMode) ? requested.permissionMode : 'default';
+  if (mode === 'default') {
+    delete sdkOptions.permissionMode;
+  } else {
+    sdkOptions.permissionMode = mode;
+  }
+  sdkOptions.allowedTools = Array.isArray(requested.allowedTools) ? requested.allowedTools.filter((entry) => typeof entry === 'string') : [];
 }

@@ -1,7 +1,7 @@
 import type { ForemanSessionStateRow } from '@/modules/database/index.js';
 import { parseSandboxPolicy, type ForemanSandboxPolicy } from '@/modules/foreman/foreman-sandbox.service.js';
 import type { ClaudeRuntimeEvent, ForemanBilling } from '@/shared/types.js';
-import { isErrorTurnResult } from '@/shared/utils.js';
+import { isErrorTurnResult, isSandboxedPermissionMode } from '@/shared/utils.js';
 
 export type ForemanSessionStatus = ForemanSessionStateRow['status'];
 
@@ -13,7 +13,7 @@ export type ForemanSessionState = {
   sessionId: string;
   taskId: string | null;
   status: ForemanSessionStatus;
-  /** The permission mode Foreman last chose for the session; a resumed run keeps it. */
+  /** The permission mode Foreman last chose for the session; a resumed run keeps it. Never one a sandboxed session may not run in. */
   permissionMode: string | null;
   billing: ForemanBilling | null;
   /** The sandbox policy Foreman sent, as stored; null for a session without one (a person's own). Read through `sandboxOf`. */
@@ -108,11 +108,13 @@ export function createForemanSessionStateService(dependencies: {
   const pendingPrompts = new Map<string, Set<string>>();
 
   function fromRow(row: ForemanSessionStateRow): ForemanSessionState {
+    // A mode stored before sandboxed sessions were held to their prompts (`bypassPermissions`, `auto`) is not handed back to resume with.
+    const sandboxed = row.supervision === 'started' || row.sandbox_json !== null;
     return {
       sessionId: row.session_id,
       taskId: row.task_id,
       status: row.status,
-      permissionMode: row.permission_mode,
+      permissionMode: sandboxed && row.permission_mode !== null && !isSandboxedPermissionMode(row.permission_mode) ? null : row.permission_mode,
       billing: row.billing === 'api-key' || row.billing === 'subscription' || row.billing === 'cap' ? row.billing : null,
       sandboxJson: row.sandbox_json,
       supervision: row.supervision,

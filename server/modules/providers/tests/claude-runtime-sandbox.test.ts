@@ -4,7 +4,6 @@ import test from 'node:test';
 import {
   applyRuntimeSandboxAdditions,
   approvalTimeoutMessage,
-  setClaudeRuntimeSandboxProvider,
   withSandbox,
 } from '@/modules/providers/list/claude/claude-runtime-sandbox.js';
 import type { ClaudeRuntimeEvent } from '@/shared/types.js';
@@ -23,6 +22,7 @@ import {
   sleep,
   useFakeClaudeRuntime,
   waitForPermissionRequest,
+  withSandboxProvider,
   type RunOutcome,
 } from './claude-runtime-support.js';
 
@@ -40,7 +40,7 @@ const sandboxAdditions = (overrides: Record<string, unknown> = {}) => ({
     failIfUnavailable: true,
     autoAllowBashIfSandboxed: true,
     allowUnsandboxedCommands: false,
-    network: { allowedDomains: ['127.0.0.1:34817'], allowAllUnixSockets: false, strictAllowlist: true },
+    network: { allowedDomains: ['registry.npmjs.org:443'], allowAllUnixSockets: false, strictAllowlist: true },
     filesystem: { denyRead: ['/home'], allowRead: ['/mnt/dev/scratch'], allowWrite: ['/mnt/dev/scratch'], denyWrite: [] as string[] },
     credentials: { envVars: [{ name: 'ANTHROPIC_API_KEY', mode: 'deny' }] },
   } as Record<string, unknown>,
@@ -50,16 +50,6 @@ const sandboxAdditions = (overrides: Record<string, unknown> = {}) => ({
   approvalTimeoutMs: 400,
   ...overrides,
 });
-
-/** Runs `run` with `provider` registered as the sandbox provider, and takes it away again. */
-async function withSandboxProvider<T>(provider: (sessionId: string) => unknown, run: () => Promise<T>): Promise<T> {
-  setClaudeRuntimeSandboxProvider(provider as never);
-  try {
-    return await run();
-  } finally {
-    setClaudeRuntimeSandboxProvider(null);
-  }
-}
 
 async function withAdditions<T>(provider: Parameters<typeof runtime.setClaudeRuntimeAdditionsProvider>[0], run: () => Promise<T>): Promise<T> {
   runtime.setClaudeRuntimeAdditionsProvider(provider);
@@ -315,17 +305,14 @@ for (const { prompt, toolName } of INTERACTIVE_TOOLS) {
 // canUseTool in a sandboxed run: the sandbox bounds what a call can do, the denied tools stay denied
 // ---------------------------------------------------------------------------------------------
 
-test('in a sandboxed run a stored allow rule or a bypass mode settles a call without a prompt, as in any run', async () => {
+// A bypass mode does not: see claude-runtime-sandbox-modes.test.ts.
+test('in a sandboxed run a stored allow rule settles a call without a prompt, as in any run', async () => {
   await withSandboxProvider(() => sandboxAdditions({ disallowedTools: [] }), async () => {
     const before = (await permissionAnswers()).length;
     const rule = await runPrompt('ask', { toolsSettings: settingsWith({ allowedTools: ['Bash'] }) }, 'app-session-sb-rule');
     assert.ok(!kinds(rule).includes('permission_request'));
-    assert.equal((await permissionAnswers()).at(-1)?.response.behavior, 'allow');
-
-    const bypass = await runPrompt('ask', { toolsSettings: settingsWith({ skipPermissions: true }) }, 'app-session-sb-bypass');
-    assert.ok(!kinds(bypass).includes('permission_request'));
     const answers = await permissionAnswers();
-    assert.equal(answers.length, before + 2);
+    assert.equal(answers.length, before + 1);
     assert.equal(answers.at(-1)?.response.behavior, 'allow');
   });
 });
