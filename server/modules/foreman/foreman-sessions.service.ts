@@ -1,6 +1,6 @@
 import type { projectsDb, sessionsDb } from '@/modules/database/index.js';
 import { applyModelBilling, splitModelBilling } from '@/modules/foreman/foreman-billing.service.js';
-import { ownerTurnSettings } from '@/modules/foreman/foreman-owner-settings.service.js';
+import { isNarrowerOrEqual, ownerTurnSettings } from '@/modules/foreman/foreman-owner-settings.service.js';
 import type { ForemanRunModes } from '@/modules/foreman/foreman-run-modes.service.js';
 import type { ForemanSessionReadsService } from '@/modules/foreman/foreman-session-reads.service.js';
 import { isSandboxedSession, requireSandboxedMode } from '@/modules/foreman/foreman-session-sandbox.service.js';
@@ -67,8 +67,8 @@ export type ForemanSessionsDependencies = {
   setSessionModel(sessionId: string, model: string): void;
   /** Status, permission mode and sandbox of the sessions the bridge starts or drives; survives restarts. */
   state: Pick<ForemanSessionStateService, 'get' | 'track' | 'trackStrict' | 'sandboxOf'>;
-  /** What the owner's last own run of each session started with: an adopted session's turns are narrowed by it. */
-  runModes: Pick<ForemanRunModes, 'settingsOf'>;
+  /** What the owner's last own run of each session started with (an adopted session's turns are narrowed by it), and the latest run of any origin. */
+  runModes: Pick<ForemanRunModes, 'settingsOf' | 'latestRunOf'>;
   /** The commit a project is at (`git rev-parse HEAD`), or null when it has none or is no repository. */
   headOf(projectPath: string): Promise<string | null>;
   /** The git directory a project's worktrees share (`git rev-parse --git-common-dir`), or null when it is no repository. */
@@ -124,6 +124,23 @@ export function createForemanSessionsService(deps: ForemanSessionsDependencies) 
     return ownerTurnSettings({ permissionMode: state.permissionMode, ...state.ownerTools }, deps.runModes.settingsOf(state.sessionId));
   }
 
+  /**
+   * Refuses a turn of an adopted session while its CLI process is live with settings wider than `effective` (or not known): a turn sent then
+   * joins that process (one held open for background work) and runs with the settings that started it, not with the ones it carries.
+   */
+  function requireLiveRunWithin(sessionId: string, effective: ForemanOwnerSettings): void {
+    if (!deps.runtime.isLive(sessionId)) {
+      return;
+    }
+    const live = deps.runModes.latestRunOf(sessionId);
+    if (!live || !isNarrowerOrEqual(live, effective)) {
+      throw new AppError(
+        'The session\'s CLI process is still live and was started with wider settings than its owner now allows; a turn sent now would run with them. Retry once the process has ended, interrupt it first, or let the owner\'s run finish.',
+        { code: 'SETTINGS_WIDER_THAN_OWNERS', statusCode: 409 },
+      );
+    }
+  }
+
   /** Starts a turn and waits only long enough to report an immediate refusal or startup failure. */
   const dispatchTurn = (input: StartTurnInput): Promise<void> => awaitTurnAdmission(input.sessionId, deps.startTurn(input), admissionWindowMs);
   const start = createForemanSessionStart(deps, dispatchTurn);
@@ -152,6 +169,9 @@ export function createForemanSessionsService(deps: ForemanSessionsDependencies) 
         'A turn is already running for this session. Wait for turn_end, call interrupt, or send with "interrupt": true.',
         { code: 'RUN_IN_PROGRESS', statusCode: 409 },
       );
+    }
+    if (owner) {
+      requireLiveRunWithin(sessionId, owner);
     }
     if (!deps.runtime.isLive(sessionId) && splitModelBilling(session.model).billing === 'api-key' && !deps.runtime.hasApiKey()) {
       throw new AppError('This session is billed to the API key, but no API key file is available.', {

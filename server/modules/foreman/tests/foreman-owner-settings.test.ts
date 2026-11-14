@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { narrowerOwnerSettings, ownerTurnSettings, readToolLists } from '@/modules/foreman/foreman-owner-settings.service.js';
+import { isNarrowerOrEqual, narrowerOwnerSettings, ownerTurnSettings, readToolLists } from '@/modules/foreman/foreman-owner-settings.service.js';
 import type { ForemanOwnerSettings } from '@/shared/types.js';
 
 /** The comparison of an owner's settings, case by case: Foreman's turns run with the narrower of the stored and the owner's latest, never wider. */
@@ -64,11 +64,30 @@ test('whatever the owner\'s latest holds, the answer is never wider than the sto
             assert.ok(answer.permissionMode === baseMode || rank(answer.permissionMode) < rank(baseMode), 'mode no wider');
             assert.ok(answer.allowedTools.every((tool) => baseAllowed.includes(tool) && currentAllowed.includes(tool)), 'nothing allowed beyond both');
             assert.ok(['WebSearch', ...currentDenied].every((tool) => answer.disallowedTools.includes(tool)), 'nothing denied is dropped');
+            assert.ok(isNarrowerOrEqual(answer, base), 'and the comparison agrees');
           }
         }
       }
     }
   }
+});
+
+test('isNarrowerOrEqual: no wider in the mode, the allowed tools or the denied ones, whatever the order of the lists', () => {
+  const bound = settings('acceptEdits', ['Read', 'Grep'], ['WebFetch']);
+  assert.ok(isNarrowerOrEqual(bound, bound));
+  assert.ok(isNarrowerOrEqual(settings('acceptEdits', ['Grep', 'Read'], ['WebFetch']), bound), 'order does not matter');
+  assert.ok(isNarrowerOrEqual(settings('plan', ['Read'], ['Bash', 'WebFetch']), bound), 'stricter in every part');
+  assert.ok(isNarrowerOrEqual(settings('dontAsk'), settings('dontAsk')), 'a mode outside the order is as wide as itself');
+  const wider: Array<[string, ForemanOwnerSettings]> = [
+    ['a wider mode', settings('auto', ['Read', 'Grep'], ['WebFetch'])],
+    ['a tool more allowed', settings('acceptEdits', ['Read', 'Grep', 'Edit'], ['WebFetch'])],
+    ['a tool less denied', settings('acceptEdits', ['Read', 'Grep'], [])],
+    ['a mode outside the order', settings('dontAsk', ['Read'], ['WebFetch'])],
+  ];
+  for (const [label, candidate] of wider) {
+    assert.equal(isNarrowerOrEqual(candidate, bound), false, label);
+  }
+  assert.equal(isNarrowerOrEqual(bound, settings('dontAsk', ['Read', 'Grep'], ['WebFetch'])), false, 'nor is a known mode within one outside the order');
 });
 
 test('a Foreman turn uses the stored settings until the owner runs again after adoption, then the narrower of the two', () => {

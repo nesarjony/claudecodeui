@@ -44,6 +44,7 @@ Success: `{ "success": true, "data": ... }`. Failure: `{ "success": false, "erro
 | 409 `ALREADY_SUPERVISED` | `adopt` of a session Foreman already supervises. |
 | 409 `PERMISSION_MODE_UNKNOWN` | `adopt` of a session whose owner's permission mode and tools are not recorded yet, or a message or compact of a session adopted before they were recorded. Nothing changed (see Hand-over). |
 | 409 `RUN_IN_PROGRESS` | A turn is running; wait for its `turn_end`, or send with `"interrupt": true`. |
+| 409 `SETTINGS_WIDER_THAN_OWNERS` | A message or compact of an adopted session while its CLI process is live and was started with more than the owner now allows (or with settings cloudcli did not see). Nothing ran (see Hand-over). |
 | 409 `IDEMPOTENCY_OUTCOME_UNKNOWN` | See Idempotency. |
 | 422 `IDEMPOTENCY_KEY_REUSED` | The key was used for a different call. |
 | 502 `TURN_START_FAILED` | The CLI refused the turn at once. After a message or compact the session exists (read its state and events); a start's session is taken out of sight (see Sandbox). |
@@ -181,7 +182,7 @@ It is the old policy builder's filled template with `sandbox` flattened, plus `s
 applies it as the SDK `sandbox` option (bubblewrap around every Bash call), merges `permissions` into the run's flag settings (union), adds `disallowedTools` (always with
 `AskUserQuestion` and `ExitPlanMode`) to the ones no person can un-deny, and merges `env` into the CLI process environment. It creates `scratchDir`, `scratchDir/tmp` and `scratchDir/cc` first.
 The policy is checked against where the session works: its project and the git directory the project's worktrees share (`git rev-parse --git-common-dir`), both resolved
-by cloudcli at the start.
+by cloudcli at the start. The same scope says which of git's and the CLI's files every run keeps read-only (below).
 
 - **Fail closed.** No `sandbox`, `null`, or one that fails validation (a missing part, a non-string, a list over 400 entries, a `scratchDir` that is not absolute or is over
   64 characters, or a part that opens more than the rules below allow): 400 `SANDBOX_REQUIRED` / `SANDBOX_INVALID` and **nothing starts**.
@@ -200,12 +201,28 @@ by cloudcli at the start.
   other runs as before. When the database cannot be read, the policy this process last read or wrote for the session applies; without one a marked run is refused and an
   unmarked one runs as before, so an unreadable state table never stops the owner's own sessions. **Residual risk:** a person typing into a worker session in the UI while
   the table is unreadable and nothing is remembered runs that one turn without the sandbox.
-- **Do not deny `Edit`/`Write` on `.git/**`.** The CLI turns every Edit/Write deny rule into a read-only mount in the sandbox, so a deny of the checkout's `.git/**` leaves git unable to write its index, objects and refs:
-  `git commit` fails with `Unable to create '.../index.lock': Read-only file system` (measured, real CLI; the old builder's template has exactly these rules). Deny only what must stay protected: `.git/hooks/**` and `.git/config`.
-- **A git worktree works if its git directory is opened.** A worktree's git directory is the main repository's `.git`, outside the checkout. Put it in `allowWrite` and `allowRead` (the old builder's `writeDirs`), keep `hooks` and `config` of it
-  in `denyWrite` and denied for Edit/Write (writes to them fail with `Read-only file system`, measured), and allow `Read(//<git dir>/**)` for the file tools. `git add` by name and `git commit` then work; `git add -A` does not (the CLI's placeholder files).
+- **Git's and the CLI's own files are read-only, whatever the policy says.** A worker that could write them would have code run outside the sandbox the next time git or
+  the CLI runs there (the owner's next commit, Foreman's integrate step, the session's next run). At the start of every run cloudcli reads the project's git layout from the
+  disk and adds these paths to `filesystem.denyWrite` and as `Edit`/`Write`/`NotebookEdit` deny rules (`//path`, `//path/**` for a directory; nothing the policy already has is repeated):
+  - of the shared git directory, and of the checkout's `.git` when it is a directory (a clone): `hooks`, `config`, `config.worktree`, and every entry of `worktrees/` but the
+    session's own admin directory (another batch's worktree must not be redirected);
+  - for a linked worktree (its `.git` is a file): that file, and `commondir`, `gitdir` and `config.worktree` of its own admin directory (the target of the file's `gitdir:` line);
+  - the project's `.claude/settings.json`, `.claude/settings.local.json` and `.mcp.json`.
+
+  Paths that do not exist are listed too: the sandbox runtime keeps them from being created.
+- **Nothing else of a git directory is denied, and a policy should not deny it.** The CLI turns every Edit/Write deny rule into a read-only mount in the sandbox, so a deny of
+  `.git/**` leaves git unable to write its index, objects and refs: `git commit` fails with `Unable to create '.../index.lock': Read-only file system` (measured, real CLI; the
+  old builder's template has exactly these rules).
+- **A git worktree works if its git directory is opened.** A worktree's git directory is the main repository's `.git`, outside the checkout. Put it in `allowWrite` and `allowRead` (the old builder's `writeDirs`)
+  and allow `Read(//<git dir>/**)` for the file tools; its hooks and config stay read-only (above; writes to them fail with `Read-only file system`, measured). `git add` by name and `git commit` then work; `git add -A` does not (the CLI's placeholder files).
+- **Not forced: the refs of other branches.** With the shared git directory writable, a worker can move any branch (`refs/heads/*`, `packed-refs`), not only its batch's: a ref
+  is a file whose `.lock` sibling git must create, so refs cannot be denied one by one without breaking commits. Foreman's integrate step must check that no ref but the batch
+  branch changed. Recommendation, **untested here** (the sandbox battery tests the whole-git-directory case only): give each batch branch its own ref directory
+  (`foreman/<goal>/<batch>/work`) and let the policy open for writing only `refs/heads/foreman/<goal>/<batch>/`, `objects`, `logs/refs/heads/foreman/<goal>/<batch>/` and the
+  worktree's own admin directory instead of the whole git directory. Also untested: whether a worker can move a whole `.git` or admin directory aside (the mounts protect the
+  paths above, not their parents); the integrate step should run git with hooks off (`-c core.hooksPath=/dev/null`) after checking `git rev-parse --git-common-dir`.
 - **Forced**, whatever the policy says: `enabled`, `failIfUnavailable`, `autoAllowBashIfSandboxed`, `allowUnsandboxedCommands: false` (so `dangerouslyDisableSandbox` is ignored),
-  `network.strictAllowlist` (an unlisted host is a deterministic deny, never a prompt), and `AskUserQuestion` and `ExitPlanMode` in the denied tools. Also
+  `network.strictAllowlist` (an unlisted host is a deterministic deny, never a prompt), `AskUserQuestion` and `ExitPlanMode` in the denied tools, and git's and the CLI's own files read-only (above). Also
   `network.allowAllUnixSockets: true`: on this host the sandbox only starts with every unix socket allowed (AppArmor's `unpriv_bwrap` profile; the tested workaround), and
   the constant flips once the owner fixes the profile. So the sockets stay out of sight, `/run`, `/tmp`, `/var/tmp`, `/home`, `/mnt`, `/media` and `/srv` are always joined
   to `filesystem.denyRead`; the checkout and `scratchDir` stay reachable, because the sandbox mounts the allowed paths over a denied tree.
@@ -257,6 +274,12 @@ The bridge token alone can never hand a session over: the bridge has no route th
 - **Narrower, never wider.** When the owner runs the session again after adoption, Foreman's next turn runs with the narrower of the base and that latest run: the stricter
   mode (`plan` < `default` < `acceptEdits` < `auto` < `bypassPermissions`; a mode outside this order never replaces the base's), only the tools both allow, every tool
   either denies. So the owner narrowing the mode or the tools applies from Foreman's next turn, widening them never does, and restoring them returns to the base.
+- **Not into a process that is wider.** A turn sent while the session's CLI process is live (held open for background work after its turn) joins that process and runs with
+  the settings that started it, not with the ones it carries. cloudcli remembers what the latest run of every session started with (mode and tool lists, whoever started it; in
+  memory, as no process outlives cloudcli) and refuses a message or compact of an adopted session with 409 `SETTINGS_WIDER_THAN_OWNERS` while its process is live and that run
+  is wider than what Foreman's turn would get (the narrower-of above, by the same comparison), or was not seen. Nothing is dispatched and the key stays free: retry once the
+  process has ended (`live: false` in `GET /sessions`; a held process ends once its background work has reported back, or after 30 quiet minutes), interrupt it first
+  (`POST .../interrupt` ends it), or let the owner's run finish. A process started no wider (the owner's with the same or narrower settings, Foreman's own earlier turn) is joined.
 - A session whose owner's settings are not recorded yet (it has not run since cloudcli began recording them): 409 `PERMISSION_MODE_UNKNOWN`, the grant stays; the owner sends
   one turn in it, then Foreman adopts again. A session adopted before the tools were recorded answers a message or compact with 409 `PERMISSION_MODE_UNKNOWN`: release it, and
   the owner hands it over again.
@@ -277,8 +300,12 @@ The bridge token alone can never hand a session over: the bridge has no route th
 - **A take-over while the state table is unreadable.** A person typing into a worker session in the UI while the state table cannot be read and this process remembers no
   policy for the session runs that one turn without the sandbox (see Sandbox, "Which runs fail closed").
 - **A turn joins a held process.** A turn sent while the session's CLI process is held open for background work goes into that process and runs with the settings that
-  started it. A Foreman turn on an adopted session whose owner's run holds the process therefore runs with the owner's current settings, even when they are wider than the
-  base; a Foreman turn into a worker's held process stays in its sandbox.
+  started it. On an adopted session a Foreman turn is refused (409 `SETTINGS_WIDER_THAN_OWNERS`) while that process was started wider than the owner now allows; only the mode
+  and the tool lists are compared, not the model or the MCP servers. A Foreman turn into a worker's held process stays in its sandbox.
+- **Git and the agent's settings.** Every sandboxed run keeps git's hooks and configs, the worktree pointers and the agent's project settings read-only (see Sandbox). Not
+  covered: refs of other branches, hook scripts that are tracked files of the repository (a `core.hooksPath` inside the checkout, such as husky's `.husky/`), build and
+  package scripts, and scripts the project's settings call: each is worker-written code that runs when someone runs it outside the sandbox. Foreman's integrate step must treat
+  them as untrusted.
 
 ## What differs from Foreman's slice-2 `Bridge` interface and the simulator
 
@@ -287,4 +314,4 @@ The bridge token alone can never hand a session over: the bridge has no route th
 - The sequence counts events cloudcli emitted, like the simulator; unlike it, `session_end` is only `stopped` or `crashed` and `question` is never sent.
 - Real events carry `model`, `usage` and `headSha` on `turn_end` (additive), and there is a `quota` kind (new).
 - `adopt` works only after the owner's grant (403 `HANDOVER_NOT_GRANTED`, 409 `PERMISSION_MODE_UNKNOWN`), and its answer carries `permissionMode` (additive). Foreman's
-  turns on an adopted session run with the owner's tools as well as the mode.
+  turns on an adopted session run with the owner's tools as well as the mode, and are refused while a wider process of the session is live (409 `SETTINGS_WIDER_THAN_OWNERS`, new).
