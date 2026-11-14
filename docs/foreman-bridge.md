@@ -216,11 +216,8 @@ by cloudcli at the start. The same scope says which of git's and the CLI's files
 - **A git worktree works if its git directory is opened.** A worktree's git directory is the main repository's `.git`, outside the checkout. Put it in `allowWrite` and `allowRead` (the old builder's `writeDirs`)
   and allow `Read(//<git dir>/**)` for the file tools; its hooks and config stay read-only (above; writes to them fail with `Read-only file system`, measured). `git add` by name and `git commit` then work; `git add -A` does not (the CLI's placeholder files).
 - **Not forced: the refs of other branches.** With the shared git directory writable, a worker can move any branch (`refs/heads/*`, `packed-refs`), not only its batch's: a ref
-  is a file whose `.lock` sibling git must create, so refs cannot be denied one by one without breaking commits. Foreman's integrate step must check that no ref but the batch
-  branch changed. Recommendation, **untested here** (the sandbox battery tests the whole-git-directory case only): give each batch branch its own ref directory
-  (`foreman/<goal>/<batch>/work`) and let the policy open for writing only `refs/heads/foreman/<goal>/<batch>/`, `objects`, `logs/refs/heads/foreman/<goal>/<batch>/` and the
-  worktree's own admin directory instead of the whole git directory. Also untested: whether a worker can move a whole `.git` or admin directory aside (the mounts protect the
-  paths above, not their parents); the integrate step should run git with hooks off (`-c core.hooksPath=/dev/null`) after checking `git rev-parse --git-common-dir`.
+  is a file whose `.lock` sibling git must create, so refs cannot be denied one by one without breaking commits. The battery shows it (Policy guidance, Known limitations).
+  Foreman's integrate step must check that no ref but the batch branch changed.
 - **Forced**, whatever the policy says: `enabled`, `failIfUnavailable`, `autoAllowBashIfSandboxed`, `allowUnsandboxedCommands: false` (so `dangerouslyDisableSandbox` is ignored),
   `network.strictAllowlist` (an unlisted host is a deterministic deny, never a prompt), `AskUserQuestion` and `ExitPlanMode` in the denied tools, and git's and the CLI's own files read-only (above). Also
   `network.allowAllUnixSockets: true`: on this host the sandbox only starts with every unix socket allowed (AppArmor's `unpriv_bwrap` profile; the tested workaround), and
@@ -248,6 +245,59 @@ by cloudcli at the start. The same scope says which of git's and the CLI's files
 - A prompt the rules do not settle becomes a `permission_request` event; `AskUserQuestion` and `ExitPlanMode` are denied at once. A prompt nobody answers within `approvalTimeoutMs` is denied with a
   message that says it was a timeout, not a decision.
 - The old regex guard (`guard` in the start body, `guarded` flags, the PreToolUse guard hook) no longer exists.
+
+### What a conforming policy looks like
+
+The old Foreman builder's output (`resolveSandboxTemplate` + `fillTemplate` of `foreman-wt/sandbox/src/sandbox/policy.ts`) is refused as it is. The battery sends it through an
+adapter (`scripts/foreman-battery/lib.mts`, `adaptedPolicy`) that drops what cloudcli refuses and keeps the rest as built; the adapted policy starts in every accepted mode
+(docs/foreman-sandbox-battery-evidence.md lists what the adapter changed in that run). Slice 3b's builder must make the same changes:
+
+1. **`allowWrite` holds only the worktree, `scratchDir` and the shared git directory** (the builder's `writeDirs`). The tool caches the builder opens (`writeAllow`:
+   `~/.cache/node`, `~/.cache/pnpm`, `~/.local/share/pnpm`) are dropped from `allowWrite`; they may stay in `allowRead`. A cache a worker writes belongs in `scratchDir`.
+2. **No `/etc` in `systemRead`.** `Read(//etc)` and `Read(//etc/**)` are refused: `/etc` holds `/etc/claude-cap.env`. Name the files under `/etc` a worker needs, if any.
+3. **No write deny on the checkout's `.git/**`** (`Edit`/`Write(//<cwd>/.git/**)`): a read-only `.git` takes no commit, and cloudcli forces what of git must stay read-only.
+   The other denies (`.claude/**`, `.mcp.json`, the secret globs) only close and stay.
+4. **A worktree's git directory readable by the file tools:** `Read(//<git common dir>/**)` next to the `writeDirs` entry. A rule's absolute path is `/` plus the absolute
+   path (`//mnt/...`, the builder's `ruleAbs`); `///mnt/...` is refused as not normalised (the battery's earlier adapter wrote it that way).
+5. Refused when the config has them, though the default config does not: `env` names outside the allowlist above (the builder's `config.env` is passed through), an
+   `allowedDomains` entry without a port, with a wildcard, `localhost` or on cloudcli's or claude-cap's port (the builder documents `host` and `*.example.com` as valid),
+   `readAllow`/`writeAllow` entries that reach a secret, an `mcpAllow` entry other than `mcp__infigraph`, a `scratchDir` over 64 characters. The builder should refuse
+   such a config itself, naming the entry, instead of sending a start that cloudcli refuses.
+
+Kept as built: the hidden trees and secret globs in `denyRead`, `credentials.envVars`, `disallowedTools`, `env` (`TMPDIR` and `CLAUDE_CODE_TMPDIR` in `scratchDir`), the `Bash`,
+`TodoWrite` and `mcp__infigraph` allow rules and the `{cwd}`/`{scratch}` read and write rules.
+
+### Policy guidance
+
+What the battery measured (docs/foreman-sandbox-battery-evidence.md: once in each accepted mode with the adapted policy, and once with a policy that asks for nothing, so
+that only what cloudcli forces holds):
+
+- **Git internals are cloudcli's to protect, and they hold.** A shell write, a rename onto the file, `git config` (lock file and rename), a move into `hooks/` and the Write tool
+  all fail on the shared directory's `hooks/`, `config` and `config.worktree`, on another worktree's admin directory, on the session's own `commondir`, `gitdir` and
+  `config.worktree` and on the worktree's `.git` pointer; the host is unchanged. The policy needs no git denies of its own, and must not deny `.git/**` (above).
+- **The agent's settings hold too:** `.claude/settings.json` (present), `.claude/settings.local.json` and `.mcp.json` (absent) are neither changed nor created, by Bash or the
+  Write tool.
+- **A protected path cannot be moved aside with its parent.** Moving the own admin directory, `worktrees/`, the shared git directory, the worktree itself or `.claude` fails
+  with "Device or resource busy" (the kernel does not rename a directory that holds a mount point, and every protected path is one inside the sandbox) and the host is unchanged.
+- **Loopback services are reachable only through the sandbox's proxy, for a listed `host:port`.** Inside the sandbox 127.0.0.1 is a network namespace of its own (a direct
+  connection is refused), and the proxy refuses every port not in `allowedDomains` (403 "Connection blocked by network allowlist"). cloudcli refuses a policy that lists its
+  own ports or claude-cap's, so the live instance, the test instance and claude-cap (any profile) are out of reach: curl and python, through the proxy and directly, left
+  claude-cap's request log and the bridge's counts as they were. Listing a loopback port opens exactly that port (the battery's control service answered).
+- **Plan mode is no stricter for Bash than the sandbox.** In plan mode the CLI runs some commands without asking (in the battery, two that write inside the worktree and the
+  scratch directory), refuses some by its rules, asks for most, and hands some to its auto-mode classifier, a model call on the session's own route; with a real model those
+  may run without a prompt. Every one of them runs sandboxed; the file tools still follow the rules and the prompts.
+- **Ref isolation (recommendation, untested):** give each batch branch its own ref directory (`foreman/<goal>/<batch>/work`) and open for writing only
+  `refs/heads/foreman/<goal>/<batch>/`, `objects`, `logs/refs/heads/foreman/<goal>/<batch>/` and the worktree's own admin directory instead of the whole git directory. The
+  battery opens the whole git directory and has not tried this layout. Until it is tested, Foreman's integrate step compares every ref but the batch branch before and after
+  (`git for-each-ref`), and runs git with hooks off (`-c core.hooksPath=/dev/null`) after checking `git rev-parse --git-common-dir`.
+
+**Known limitations** (not contained by design; the battery records them in their own section):
+
+- **Other branches' refs are writable.** Shown: `git update-ref refs/heads/other HEAD` and a plain write of `refs/heads/third` moved those branches on the host.
+- **Hooks and scripts that are tracked files of the repository** are the worker's to write. Shown: `.husky/pre-commit` written in the checkout. It runs when someone runs git
+  outside the sandbox with `core.hooksPath` pointing there (a worker cannot set that: the config is read-only; a repository that already has it set runs it), and build and
+  package scripts run when someone runs them. Foreman's integrate step treats them as untrusted.
+- **Moving a `.git` or admin directory's parent aside:** not possible in this battery (above). The protection rests on the mounts the sandbox makes at the start of each run.
 
 ## Hand-over (BR-2.10)
 
@@ -302,10 +352,72 @@ The bridge token alone can never hand a session over: the bridge has no route th
 - **A turn joins a held process.** A turn sent while the session's CLI process is held open for background work goes into that process and runs with the settings that
   started it. On an adopted session a Foreman turn is refused (409 `SETTINGS_WIDER_THAN_OWNERS`) while that process was started wider than the owner now allows; only the mode
   and the tool lists are compared, not the model or the MCP servers. A Foreman turn into a worker's held process stays in its sandbox.
-- **Git and the agent's settings.** Every sandboxed run keeps git's hooks and configs, the worktree pointers and the agent's project settings read-only (see Sandbox). Not
-  covered: refs of other branches, hook scripts that are tracked files of the repository (a `core.hooksPath` inside the checkout, such as husky's `.husky/`), build and
+- **Git and the agent's settings.** Every sandboxed run keeps git's hooks and configs, the worktree pointers and the agent's project settings read-only (see Sandbox; the
+  battery shows it in every mode, Policy guidance). Not covered: refs of other branches, hook scripts that are tracked files of the repository (a `core.hooksPath` inside the checkout, such as husky's `.husky/`), build and
   package scripts, and scripts the project's settings call: each is worker-written code that runs when someone runs it outside the sandbox. Foreman's integrate step must treat
   them as untrusted.
+
+## Deploying
+
+**Nothing here was deployed.** This branch runs only as the test instance (`127.0.0.1:3011`); the live instance (:3001) and the old Foreman (:4111) run the previous build.
+Deploying is the owner's decision. This is what deploying changes and how to cut over.
+
+### What breaks for the old Foreman (:4111)
+
+- **Its starts are refused.** It sends `guard` and no `sandbox`: every `POST /sessions` answers 400 `SANDBOX_REQUIRED` and nothing starts. Its other calls that change a
+  session carry no `idempotencyKey`: 400 `IDEMPOTENCY_KEY_REQUIRED`.
+- **Its events stop.** The previous build pushes every event to `FOREMAN_EVENTS_URL`, by default `http://127.0.0.1:4111/foreman/events`, with the bridge token and in the
+  old shape, at most once (an event is dropped when Foreman does not take it). This build has no default URL, pushes only with `FOREMAN_EVENTS_URL` and `FOREMAN_EVENTS_TOKEN_FILE` set, presents the intake token (never the bridge
+  token) and sends the envelope of Events (`id`, `sequence`, `kind`, `payload`). The old intake takes neither.
+- **No hand-over.** `adopt` needs the owner's grant (403 `HANDOVER_NOT_GRANTED`), which the old Foreman knows nothing of.
+- The sessions it started are not supervised any more (the migration, below).
+
+### The database migration
+
+On its first start the build migrates `~/.cloudcli/auth.db` in place:
+
+- `foreman_session_state.guard_json` is renamed to `sandbox_json` and emptied (the guard no longer exists); `base_head`, `base_sequence`, `supervision`, `sandbox_scope_json`
+  and `owner_tools_json` are added, and every existing row becomes `released`: nothing Foreman started before is supervised, driven or reported any more.
+- New tables: `foreman_events` (the stored, numbered events), `foreman_idempotency` (the answers by key), `foreman_handover_grants` (the owner's grants) and
+  `foreman_run_modes` (the mode and tools of every session's latest run).
+- A sandbox policy stored without its scope is refused on every run (see Sandbox). Sessions started on the test instance's database before scopes were recorded do not run
+  again; start new ones.
+- The previous build reads and writes `guard_json`, which no longer exists: it cannot run on the migrated database. Rolling back needs the backup below.
+
+### `auth.db`
+
+`~/.cloudcli/auth.db` is mode 644 today, and so are its three older copies beside it (`auth.db.bak-qc`, `auth.db.before-session-rename-20260813`,
+`auth.db.pre-fullfillment-move.bak`). It holds the JWT secret (`app_config`, `jwt_secret`) and the password hashes (`users`): any local user can read them and mint a login.
+With the live instance stopped, copy it to a private backup (with its `-wal` and `-shm`, or `-journal`, if present; it uses the rollback journal today), then `chmod 600` the
+database and every copy.
+
+### Deploy it together with the new Foreman
+
+- **Tokens:** the bridge token (`FOREMAN_BRIDGE_TOKEN_FILE`, what Foreman presents) and the events token (`FOREMAN_EVENTS_TOKEN_FILE`, what cloudcli presents to Foreman's
+  intake), two different values, each in a file of mode 600.
+- **`FOREMAN_EVENTS_URL`:** the new Foreman's intake. `FOREMAN_EVENTS_TOKEN_FILE` has no default: without it nothing is pushed (events are still stored and `eventsSince`
+  serves them).
+- **claude-cap:** the `foreman-worker` profile enabled and reachable as `<CLAUDE_CAP_URL>/profile/foreman-worker`, with its caps (MiniMax: 70% of the five-hour and 80% of the
+  weekly window). A started session's billing is `cap` unless Foreman says otherwise; `CLAUDE_CAP_URL` and `CLAUDE_CAP_PROFILE` only when not the defaults.
+- **Platform mode off:** `VITE_IS_PLATFORM` unset (see Security notes).
+
+### Cutover checklist
+
+1. Drain the old Foreman: stop new starts, then let the running batches finish or interrupt them. They are not resumed: after the migration their sessions are `released`.
+2. Stop the live instance. Back up `auth.db` and `chmod 600` it and its copies (above).
+3. Stop the old Foreman (:4111).
+4. Deploy the branch build as the live instance with the configuration above, and start it; it migrates the database on start. (The owner's decision and action; nothing
+   here deploys anything.)
+5. Start the new Foreman with the bridge token, the events token and its intake at `FOREMAN_EVENTS_URL`.
+6. Check:
+   - `GET /api/foreman/health` with `Authorization: Bearer <bridge token>` answers 200, and 401 without it;
+   - platform mode is off: no `VITE_IS_PLATFORM=true` in the instance's environment (`/proc/<pid>/environ`);
+   - both token files are mode 600 (`stat -c %a`), and the boot log has no warning about them;
+   - claude-cap's profile is there: `GET http://127.0.0.1:34817/state` lists `foreman-worker`, enabled, with its caps;
+   - the sandbox battery passes against the deployed build's test twin (the test instance at the same commit):
+     `node --import tsx scripts/foreman-battery/attack-battery.mts`, verdict CONTAINED.
+7. Rollback: stop the instance, restore the `auth.db` backup, start the previous build and the old Foreman. The migration renamed a column, so the previous build does not run
+   on the migrated database; what was recorded after the cutover is lost with the restore.
 
 ## What differs from Foreman's slice-2 `Bridge` interface and the simulator
 
