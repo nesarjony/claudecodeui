@@ -290,7 +290,7 @@ function readLatestTodos(entries: TranscriptEntry[]): DigestTodo[] | null {
  * the CLI and gain fields over time, so anything unexpected is skipped rather than failing.
  * Pure and synchronous so it can be tested against fixture transcripts.
  */
-// Consumed by foreman-sessions.service.ts (digest endpoint) and the digest tests.
+// Consumed by foreman-session-reads.service.ts (digest endpoint) and the digest tests.
 export function buildSessionDigest(
   rows: TranscriptEntry[],
   options: { turns: number; truncatedHead?: boolean },
@@ -523,7 +523,7 @@ export type TranscriptContextEstimate = {
  * context was just rebuilt, so its recorded post-compaction size is used; otherwise the last
  * real assistant message's prompt plus output tokens (what the next request will carry).
  */
-// Consumed by foreman-sessions.service.ts for the context endpoint's fallback.
+// Consumed by foreman-session-reads.service.ts for the context endpoint's fallback.
 export function estimateContextFromTranscript(rows: TranscriptEntry[]): TranscriptContextEstimate | null {
   for (let index = rows.length - 1; index >= 0; index -= 1) {
     const entry = rows[index];
@@ -596,7 +596,7 @@ async function readTranscriptBytes(file: string, bytes: number): Promise<{ rows:
  * Reads transcript rows from the end of the file, doubling the window (up to 32 MiB) until
  * `isEnough` accepts them or the whole file has been read. Returns `null` when the file is unreadable.
  */
-// Consumed by foreman-sessions.service.ts for digests and context estimates.
+// Consumed by foreman-session-reads.service.ts for digests and context estimates.
 export async function readTranscriptRows(
   file: string,
   isEnough: (rows: TranscriptEntry[]) => boolean,
@@ -615,7 +615,7 @@ export async function readTranscriptRows(
 }
 
 /** True when `rows` contain at least `turns` turn starts. */
-// Consumed by foreman-sessions.service.ts as the widening condition for digest reads.
+// Consumed by foreman-session-reads.service.ts as the widening condition for digest reads.
 export function hasTurnStarts(rows: TranscriptEntry[], turns: number): boolean {
   let count = 0;
   for (const entry of rows) {
@@ -633,7 +633,7 @@ export function hasTurnStarts(rows: TranscriptEntry[], turns: number): boolean {
  * Finds a session's transcript file: the indexed `jsonl_path` when it exists, otherwise a scan of
  * `~/.claude/projects/*` for `<providerSessionId>.jsonl` (brand-new sessions are not indexed yet).
  */
-// Consumed by foreman-sessions.service.ts to locate the transcript behind a session row.
+// Consumed by foreman-session-reads.service.ts to locate the transcript behind a session row.
 export async function locateTranscript(
   session: { jsonl_path: string | null; provider_session_id: string | null },
   projectsRoot: string = path.join(os.homedir(), '.claude', 'projects'),

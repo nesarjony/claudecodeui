@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -14,6 +14,8 @@ import {
   extractBearerToken,
   readBridgeToken,
   resolveBridgeTokenFile,
+  resolveEventsTokenFile,
+  warnAboutTokenSetup,
 } from '@/modules/foreman/foreman-auth.service.js';
 import { AppError } from '@/shared/utils.js';
 
@@ -60,6 +62,53 @@ test('the token file defaults to ~/.config/foreman/bridge-token and can be overr
     resolveBridgeTokenFile({ FOREMAN_BRIDGE_TOKEN_FILE: '/run/secrets/bridge' }, '/home/nesar'),
     '/run/secrets/bridge',
   );
+});
+
+test('the intake token file is only what FOREMAN_EVENTS_TOKEN_FILE names: it never falls back to the bridge token file', () => {
+  assert.equal(resolveEventsTokenFile({}), undefined);
+  assert.equal(resolveEventsTokenFile({ FOREMAN_EVENTS_TOKEN_FILE: '   ' }), undefined);
+  assert.equal(resolveEventsTokenFile({ FOREMAN_BRIDGE_TOKEN_FILE: '/run/secrets/bridge' }), undefined);
+  assert.equal(resolveEventsTokenFile({ FOREMAN_EVENTS_TOKEN_FILE: ' /run/secrets/intake ' }), '/run/secrets/intake');
+});
+
+test('boot says that nothing is pushed, naming the variable, only while no intake token file is set', () => {
+  const warnings: string[] = [];
+  warnAboutTokenSetup({ bridgeTokenFile: '/nonexistent/bridge-token', eventsTokenFile: undefined }, (message) => warnings.push(message));
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0] ?? '', /FOREMAN_EVENTS_TOKEN_FILE is not set/);
+  assert.match(warnings[0] ?? '', /not pushed/);
+
+  const none: string[] = [];
+  warnAboutTokenSetup({ bridgeTokenFile: '/nonexistent/bridge-token', eventsTokenFile: '/nonexistent/intake-token' }, (message) => none.push(message));
+  assert.deepEqual(none, [], 'a token file that does not exist is reported where it is needed, not here');
+});
+
+test('a token file that group or others can reach is warned about, by path and mode and never by content; a private one is not', async () => {
+  await withTokenFile('s3cret-token', async (tokenFile) => {
+    for (const [mode, warns] of [[0o600, false], [0o400, false], [0o644, true], [0o660, true], [0o602, true]] as const) {
+      await chmod(tokenFile, mode);
+      const warnings: string[] = [];
+      warnAboutTokenSetup({ bridgeTokenFile: tokenFile, eventsTokenFile: tokenFile }, (message) => warnings.push(message));
+      assert.equal(warnings.length, warns ? 1 : 0, `mode ${mode.toString(8)} (one file named twice is one warning)`);
+      if (warns) {
+        assert.ok(warnings[0]?.includes(tokenFile) && warnings[0].includes(mode.toString(8)));
+        assert.ok(!warnings[0]?.includes('s3cret-token'), 'the token is not printed');
+      }
+    }
+  });
+});
+
+test('each of the two token files is checked on its own', async () => {
+  await withTokenFile('bridge-secret', async (bridgeTokenFile) => {
+    await withTokenFile('intake-secret', async (eventsTokenFile) => {
+      await chmod(bridgeTokenFile, 0o600);
+      await chmod(eventsTokenFile, 0o644);
+      const warnings: string[] = [];
+      warnAboutTokenSetup({ bridgeTokenFile, eventsTokenFile }, (message) => warnings.push(message));
+      assert.equal(warnings.length, 1);
+      assert.ok(warnings[0]?.includes(eventsTokenFile));
+    });
+  });
 });
 
 test('the token is the trimmed file content, and a missing or blank file means no token', async () => {

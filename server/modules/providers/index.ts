@@ -21,6 +21,12 @@ export { getLiveAgentTasks, getLiveBackgroundTasks, stopClaudeAgentTask } from '
 // threshold to the runs of Foreman-managed sessions.
 export { setClaudeRuntimeAdditionsProvider } from './list/claude/claude-runtime.provider.js';
 
+// setClaudeRuntimeSandboxProvider: used by the foreman module to run a session it started in its sandbox.
+export { setClaudeRuntimeSandboxProvider } from './list/claude/claude-runtime-sandbox.js';
+
+// resolveCapConfig: used by the foreman module, whose sandbox policies may never open claude-cap's port to a worker.
+export { resolveCapConfig } from './list/claude/claude-cap-billing.js';
+
 // subscribeClaudeRuntimeEvents/setClaudeSessionModel/getClaudeSessionContextUsage/hasClaudeApiKey/
 // isClaudeSDKSessionActive/getActiveClaudeSDKSessions: used by the foreman module to observe and
 // steer live Claude sessions on behalf of the Foreman service.

@@ -1,7 +1,33 @@
 import express, { type NextFunction, type Request, type Response } from 'express';
 
+import type { ForemanHandoverService } from '@/modules/foreman/foreman-handover.service.js';
 import type { ForemanSuggestionsClient } from '@/modules/foreman/foreman-suggestions.service.js';
+import type { ForemanSessionStateService } from '@/modules/foreman/foreman-session-state.service.js';
 import { AppError, asyncHandler, createApiSuccessResponse } from '@/shared/utils.js';
+
+const SESSION_ID_PATTERN = /^[a-zA-Z0-9._-]{1,120}$/;
+
+/** The request after cloudcli's login (`authenticateToken`), which puts the logged-in user's row on it. */
+type AuthenticatedRequest = Request & { user?: { id?: unknown; username?: unknown } };
+
+function readSessionId(value: unknown): string {
+  if (typeof value !== 'string' || !SESSION_ID_PATTERN.test(value)) {
+    throw new AppError('Invalid session id.', { code: 'INVALID_SESSION_ID', statusCode: 400 });
+  }
+  return value;
+}
+
+/** Who is asking: the logged-in user's name, or their id. With nobody logged in (a router mounted without the login) nothing is handed over. */
+function readLoggedInUser(request: Request): string {
+  const user = (request as AuthenticatedRequest).user;
+  if (typeof user?.username === 'string' && user.username) {
+    return user.username;
+  }
+  if (typeof user?.id === 'number' || (typeof user?.id === 'string' && user.id)) {
+    return String(user.id);
+  }
+  throw new AppError('Only the logged-in owner can hand a session over.', { code: 'AUTH_REQUIRED', statusCode: 401 });
+}
 
 /**
  * Builds the user-facing Foreman suggestions router, mounted at `/api/foreman-suggestions` behind the normal cloudcli
@@ -13,10 +39,19 @@ import { AppError, asyncHandler, createApiSuccessResponse } from '@/shared/utils
  * - `POST /:id/execute`         has Foreman carry out a `write_notes` or `handoff` suggestion; answers what it did
  *                               (`result.newSessionId` for a handoff, `result.version` for notes)
  * - `GET  /notes?sessionId=`    the latest task notes for a session, `{ notes: { content, version, turn, createdAt } | null }`
+ * - `GET  /supervised`         the sessions Foreman supervises now, `{ sessions: [{ sessionId, supervision: 'started' | 'adopted', taskId }] }`,
+ *                               so the sidebar can mark the ones the owner handed over
+ * - `POST /handover/:sessionId` the owner lets Foreman adopt the session once within five minutes: 201 `{ sessionId, expiresAt }`. Only
+ *                               here, behind the login: the bridge token alone can never hand a session over.
+ * - `DELETE /handover/:sessionId` withdraws a grant Foreman has not used: `{ sessionId, revoked }`
  */
 // Consumed by foreman.module.ts, which mounts it on the server entrypoint, and by the route tests.
-export function createForemanUiRouter(options: { client: ForemanSuggestionsClient }) {
-  const { client } = options;
+export function createForemanUiRouter(options: {
+  client: ForemanSuggestionsClient;
+  state: Pick<ForemanSessionStateService, 'listSupervised'>;
+  handover: Pick<ForemanHandoverService, 'grant' | 'revoke'>;
+}) {
+  const { client, state, handover } = options;
   const router = express.Router();
 
   router.use((_request: Request, response: Response, next: NextFunction) => {
@@ -31,6 +66,21 @@ export function createForemanUiRouter(options: { client: ForemanSuggestionsClien
     }
     response.json(createApiSuccessResponse({ suggestion: await client.getPending(sessionId) }));
   }));
+
+  router.get('/supervised', (_request, response) => {
+    response.json(createApiSuccessResponse({ sessions: state.listSupervised() }));
+  });
+
+  // Ahead of `/:id/execute` and `/:id/feedback`, which would otherwise take the grant of a session named `execute` or `feedback`.
+  router.post('/handover/:sessionId', (request, response) => {
+    const grantedBy = readLoggedInUser(request);
+    response.status(201).json(createApiSuccessResponse(handover.grant(readSessionId(request.params.sessionId), grantedBy)));
+  });
+
+  router.delete('/handover/:sessionId', (request, response) => {
+    readLoggedInUser(request);
+    response.json(createApiSuccessResponse(handover.revoke(readSessionId(request.params.sessionId))));
+  });
 
   router.get('/notes', asyncHandler(async (request, response) => {
     const sessionId = request.query.sessionId;

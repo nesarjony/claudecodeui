@@ -106,19 +106,29 @@ export function resolveCapConfig(env: EnvLike = process.env, warn: (message: str
 }
 
 /**
+ * The URL that selects the profile in the path: `<proxy>/profile/<profile>`. claude-cap routes by it, so a request that reaches the
+ * proxy by any client setting is still answered by the profile's upstream. The header names the same profile (a different one is a
+ * 400 `profile_conflict`).
+ */
+export function capProfileUrl(config: CapConfig): string {
+  return `${config.url}/profile/${config.profile}`;
+}
+
+/**
  * The variables a cap session sets, as the CLI has to see them. The same set goes into the child's process environment
  * and into the run's flag-level settings.
  *
- * `ANTHROPIC_BASE_URL` is the one that carries the traffic on the API-key path (measured: the CLI ignores
- * `ANTHROPIC_LLM_HOST` there). `ANTHROPIC_LLM_HOST` is the proxy URL of the patched CLI's OAuth path (the subscription
- * route); it is set to the same URL so that no path can reach Anthropic directly.
+ * `ANTHROPIC_BASE_URL` carries the traffic on the API-key path and `ANTHROPIC_LLM_HOST` on the patched CLI's inference path
+ * (the subscription route); both name the profile URL so that no path can reach Anthropic directly. A session handed over by the owner
+ * has no `@cap` marker and never gets these.
  */
 export function capSessionEnv(config: CapConfig): Record<string, string> {
+  const profileUrl = capProfileUrl(config);
   return {
-    ANTHROPIC_BASE_URL: config.url,
-    ANTHROPIC_API_BASE_URL: config.url,
-    CLAUDE_AGENT_API_BASE_URL: config.url,
-    ANTHROPIC_LLM_HOST: config.url,
+    ANTHROPIC_BASE_URL: profileUrl,
+    ANTHROPIC_API_BASE_URL: profileUrl,
+    CLAUDE_AGENT_API_BASE_URL: profileUrl,
+    ANTHROPIC_LLM_HOST: profileUrl,
     ANTHROPIC_API_KEY: CAP_DUMMY_API_KEY,
     ANTHROPIC_CUSTOM_HEADERS: `${CAP_PROFILE_HEADER}: ${config.profile}`,
     ...CAP_MODEL_ENV,

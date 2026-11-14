@@ -2,6 +2,10 @@ import { Database } from 'better-sqlite3';
 
 import {
   APP_CONFIG_TABLE_SCHEMA_SQL,
+  FOREMAN_EVENTS_TABLE_SCHEMA_SQL,
+  FOREMAN_HANDOVER_GRANTS_TABLE_SCHEMA_SQL,
+  FOREMAN_IDEMPOTENCY_TABLE_SCHEMA_SQL,
+  FOREMAN_RUN_MODES_TABLE_SCHEMA_SQL,
   FOREMAN_SESSION_STATE_TABLE_SCHEMA_SQL,
   LAST_SCANNED_AT_SQL,
   NOTIFICATION_CHANNEL_ENDPOINTS_TABLE_SCHEMA_SQL,
@@ -428,6 +432,37 @@ const addSupersededTranscriptPathColumn = (db: Database): void => {
   addColumnToTableIfNotExists(db, 'superseded_provider_sessions', columnNames, 'jsonl_path', 'TEXT');
 };
 
+/**
+ * Brings a `foreman_session_state` table that predates sandboxes and hand-over up to date: `guard_json` held the old risky-action
+ * guard, which no longer exists, so the column becomes `sandbox_json` and starts empty; `base_head`, `base_sequence`, `supervision`,
+ * `sandbox_scope_json` and `owner_tools_json` are added. The rows that exist were driven by the old Foreman, which is gone, so none of them is supervised any more.
+ * A policy stored before its scope was recorded keeps a NULL scope, and its session's runs are refused: it cannot be checked.
+ */
+const migrateForemanSessionStateColumns = (db: Database): void => {
+  const columnNames = getTableInfo(db, 'foreman_session_state').map((column) => column.name);
+  if (columnNames.includes('guard_json')) {
+    db.exec('ALTER TABLE foreman_session_state RENAME COLUMN guard_json TO sandbox_json');
+    db.exec('UPDATE foreman_session_state SET sandbox_json = NULL');
+  }
+  addColumnToTableIfNotExists(db, 'foreman_session_state', columnNames, 'base_head', 'TEXT');
+  addColumnToTableIfNotExists(db, 'foreman_session_state', columnNames, 'base_sequence', 'INTEGER NOT NULL DEFAULT 0');
+  if (!columnNames.includes('supervision')) {
+    addColumnToTableIfNotExists(db, 'foreman_session_state', columnNames, 'supervision', "TEXT NOT NULL DEFAULT 'started'");
+    db.exec("UPDATE foreman_session_state SET supervision = 'released'");
+  }
+  addColumnToTableIfNotExists(db, 'foreman_session_state', columnNames, 'sandbox_scope_json', 'TEXT');
+  addColumnToTableIfNotExists(db, 'foreman_session_state', columnNames, 'owner_tools_json', 'TEXT');
+};
+
+/**
+ * Adds the tool lists to a `foreman_run_modes` table that predates them. Rows recorded before keep a NULL: their tools are unknown, and a
+ * hand-over waits for the owner's next run instead of guessing them.
+ */
+const addForemanRunModesToolsColumn = (db: Database): void => {
+  const columnNames = getTableInfo(db, 'foreman_run_modes').map((column) => column.name);
+  addColumnToTableIfNotExists(db, 'foreman_run_modes', columnNames, 'tools_json', 'TEXT');
+};
+
 const addForkedFromSessionIdColumn = (db: Database): void => {
   const columnNames = getTableInfo(db, 'sessions').map((column) => column.name);
   addColumnToTableIfNotExists(db, 'sessions', columnNames, 'forked_from_session_id', 'TEXT');
@@ -511,6 +546,12 @@ export const runMigrations = (db: Database) => {
     db.exec(SESSION_DRAFTS_TABLE_SCHEMA_SQL);
     db.exec(SUPERSEDED_PROVIDER_SESSIONS_TABLE_SCHEMA_SQL);
     db.exec(FOREMAN_SESSION_STATE_TABLE_SCHEMA_SQL);
+    migrateForemanSessionStateColumns(db);
+    db.exec(FOREMAN_EVENTS_TABLE_SCHEMA_SQL);
+    db.exec(FOREMAN_IDEMPOTENCY_TABLE_SCHEMA_SQL);
+    db.exec(FOREMAN_HANDOVER_GRANTS_TABLE_SCHEMA_SQL);
+    db.exec(FOREMAN_RUN_MODES_TABLE_SCHEMA_SQL);
+    addForemanRunModesToolsColumn(db);
     addSupersededTranscriptPathColumn(db);
 
     db.exec(PROJECTS_TABLE_SCHEMA_SQL);
