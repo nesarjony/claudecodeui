@@ -1,8 +1,10 @@
+import { isDeepStrictEqual } from 'node:util';
+
 import type { projectsDb, sessionsDb } from '@/modules/database/index.js';
 import { applyModelBilling, splitModelBilling } from '@/modules/foreman/foreman-billing.service.js';
 import type { ForemanSandboxPolicy } from '@/modules/foreman/foreman-sandbox.service.js';
 import type { ForemanSessionReadsService } from '@/modules/foreman/foreman-session-reads.service.js';
-import type { ForemanSessionState, ForemanSessionStateService } from '@/modules/foreman/foreman-session-state.service.js';
+import type { ForemanSessionState, ForemanSessionStatePatch, ForemanSessionStateService } from '@/modules/foreman/foreman-session-state.service.js';
 import type { ForemanBilling } from '@/shared/types.js';
 import { AppError, clipText, isSandboxedPermissionMode, SANDBOXED_PERMISSION_MODES, summarizeToolInput } from '@/shared/utils.js';
 
@@ -42,7 +44,7 @@ export type ForemanSessionsDependencies = {
   /** Records the model a session runs with (so resumed runs keep it). */
   setSessionModel(sessionId: string, model: string): void;
   /** Status, permission mode and sandbox of the sessions the bridge starts or drives; survives restarts. */
-  state: Pick<ForemanSessionStateService, 'get' | 'track'>;
+  state: Pick<ForemanSessionStateService, 'get' | 'track' | 'trackStrict' | 'sandboxOf'>;
   /** The commit a project is at (`git rev-parse HEAD`), or null when it has none or is no repository. */
   headOf(projectPath: string): Promise<string | null>;
   /** Remembers which Foreman task a session belongs to. */
@@ -95,6 +97,25 @@ export function createForemanSessionsService(deps: ForemanSessionsDependencies) 
       });
     }
     return state;
+  }
+
+  /**
+   * Records a session this bridge starts, with its sandbox, before its first run: with a write that throws when it fails, then read back
+   * the way every run of the session reads it. Anything but exactly the policy that was sent stops the start, because the session's runs
+   * would not find their sandbox.
+   */
+  function recordSandboxedStart(sessionId: string, patch: ForemanSessionStatePatch & { sandbox: ForemanSandboxPolicy }): void {
+    const notRecorded = (reason: string) =>
+      new AppError(`The sandbox of the session was not recorded (${reason}), so nothing was run.`, { code: 'SANDBOX_NOT_RECORDED', statusCode: 500 });
+    try {
+      deps.state.trackStrict(sessionId, patch);
+    } catch (error) {
+      throw notRecorded(`the write failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    const readBack = deps.state.sandboxOf(sessionId);
+    if (!readBack || !('policy' in readBack) || !isDeepStrictEqual(readBack.policy, patch.sandbox)) {
+      throw notRecorded('what is stored does not read back as the policy that was sent');
+    }
   }
 
   /** Starts a turn and waits only long enough to report an immediate refusal or startup failure. */
@@ -230,7 +251,7 @@ export function createForemanSessionsService(deps: ForemanSessionsDependencies) 
       deps.managed?.mark(created.sessionId);
       // Recorded before the run starts, so the run that this call starts is already sandboxed and its events are the session's, and a
       // run that is resumed after a restart still has the permission mode and sandbox it started with.
-      deps.state.track(created.sessionId, {
+      recordSandboxedStart(created.sessionId, {
         taskId: input.taskId ?? null,
         billing: input.billing,
         permissionMode: input.permissionMode,

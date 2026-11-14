@@ -62,7 +62,7 @@ test('track stores task, billing, permission mode, sandbox and where supervision
     const state = newService();
     assert.equal(state.get('s1'), null);
 
-    state.track('s1', { taskId: 'task-1', billing: 'api-key', permissionMode: 'default', sandbox: SANDBOX, baseHead: 'abc', baseSequence: 4 });
+    state.trackStrict('s1', { taskId: 'task-1', billing: 'api-key', permissionMode: 'default', sandbox: SANDBOX, baseHead: 'abc', baseSequence: 4 });
     assert.deepEqual(
       { ...state.get('s1'), updatedAt: undefined },
       { sessionId: 's1', taskId: 'task-1', status: 'idle', permissionMode: 'default', billing: 'api-key', sandboxJson: JSON.stringify(SANDBOX), supervision: 'started', baseHead: 'abc', baseSequence: 4, updatedAt: undefined },
@@ -73,13 +73,10 @@ test('track stores task, billing, permission mode, sandbox and where supervision
     assert.equal(state.get('s1')?.taskId, 'task-1');
     assert.equal(state.get('s1')?.sandboxJson, JSON.stringify(SANDBOX));
 
-    state.track('s1', { sandbox: null });
-    assert.equal(state.get('s1')?.sandboxJson, null);
-
     // What is stored is what a reader gets back.
     const row = foremanSessionStateDb.get('s1');
     assert.equal(row?.permission_mode, 'plan');
-    assert.equal(row?.sandbox_json, null);
+    assert.equal(row?.sandbox_json, JSON.stringify(SANDBOX));
     assert.equal(row?.task_id, 'task-1');
   });
 });
@@ -102,7 +99,7 @@ test('cap billing is stored and read back, and survives a restart', async () => 
 test('after a restart a new service reads the same state: mode, sandbox and task survive, running becomes idle', async () => {
   await withIsolatedDatabase(() => {
     const before = newService();
-    before.track('running-one', { taskId: 'task-7', billing: 'subscription', permissionMode: 'plan', sandbox: SANDBOX });
+    before.trackStrict('running-one', { taskId: 'task-7', billing: 'subscription', permissionMode: 'plan', sandbox: SANDBOX });
     before.setStatus('running-one', 'running');
     before.track('waiting-one', { permissionMode: 'default' });
     before.setStatus('waiting-one', 'waiting_permission');
@@ -293,9 +290,9 @@ test('a failing database is logged and the bridge carries on with what it has', 
   const state = createForemanSessionStateService({ store: failing, log: (message) => log.push(message) });
 
   assert.equal(state.get('s1'), null);
-  const tracked = state.track('s1', { permissionMode: 'default', sandbox: SANDBOX });
+  const tracked = state.track('s1', { permissionMode: 'default' });
   assert.equal(tracked.permissionMode, 'default');
-  assert.equal(state.get('s1')?.sandboxJson, JSON.stringify(SANDBOX), 'served from memory');
+  assert.equal(state.get('s1')?.permissionMode, 'default', 'served from memory');
   state.observe(started());
   assert.equal(state.get('s1')?.status, 'running');
   assert.ok(log.some((message) => /restart recovery failed/.test(message)));

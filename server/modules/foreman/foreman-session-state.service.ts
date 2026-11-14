@@ -35,13 +35,16 @@ export type ForemanSessionStateStore = {
   listSupervised(): Array<{ session_id: string; supervision: 'started' | 'adopted'; task_id: string | null }>;
 };
 
-/** Fields `track` may set. `undefined` leaves a field as it is; `null` clears it. */
+/**
+ * Fields `track` and `trackStrict` may set. `undefined` leaves a field as it is; `null` clears it. Only `trackStrict` records a sandbox, and
+ * nothing clears one: a session that has a sandbox keeps it.
+ */
 export type ForemanSessionStatePatch = {
   taskId?: string | null;
   status?: ForemanSessionStatus;
   permissionMode?: string | null;
   billing?: ForemanBilling | null;
-  sandbox?: ForemanSandboxPolicy | null;
+  sandbox?: ForemanSandboxPolicy;
   supervision?: ForemanSupervision;
   baseHead?: string | null;
   baseSequence?: number;
@@ -200,6 +203,23 @@ export function createForemanSessionStateService(dependencies: {
     }
   }
 
+  /** The state a patch leaves a session in (a new session starts `idle`). */
+  function patched(sessionId: string, patch: ForemanSessionStatePatch): ForemanSessionState {
+    const current = get(sessionId);
+    return {
+      sessionId,
+      taskId: patch.taskId === undefined ? current?.taskId ?? null : patch.taskId,
+      status: patch.status ?? current?.status ?? 'idle',
+      permissionMode: patch.permissionMode === undefined ? current?.permissionMode ?? null : patch.permissionMode,
+      billing: patch.billing === undefined ? current?.billing ?? null : patch.billing,
+      sandboxJson: patch.sandbox === undefined ? current?.sandboxJson ?? null : JSON.stringify(patch.sandbox),
+      supervision: patch.supervision ?? current?.supervision ?? 'started',
+      baseHead: patch.baseHead === undefined ? current?.baseHead ?? null : patch.baseHead,
+      baseSequence: patch.baseSequence ?? current?.baseSequence ?? 0,
+      updatedAt: now().toISOString(),
+    };
+  }
+
   function setStatus(sessionId: string, status: ForemanSessionStatus): void {
     const current = get(sessionId);
     if (!current || current.status === status) {
@@ -214,23 +234,22 @@ export function createForemanSessionStateService(dependencies: {
     /** The remembered state of a session, or null when the bridge never started or drove it. */
     get,
 
-    /** Records (or updates) the state of a session the bridge starts or drives; a new session starts `idle`. */
-    track(sessionId: string, patch: ForemanSessionStatePatch): ForemanSessionState {
-      const current = get(sessionId);
-      const next: ForemanSessionState = {
-        sessionId,
-        taskId: patch.taskId === undefined ? current?.taskId ?? null : patch.taskId,
-        status: patch.status ?? current?.status ?? 'idle',
-        permissionMode: patch.permissionMode === undefined ? current?.permissionMode ?? null : patch.permissionMode,
-        billing: patch.billing === undefined ? current?.billing ?? null : patch.billing,
-        sandboxJson: patch.sandbox === undefined ? current?.sandboxJson ?? null : patch.sandbox && JSON.stringify(patch.sandbox),
-        supervision: patch.supervision ?? current?.supervision ?? 'started',
-        baseHead: patch.baseHead === undefined ? current?.baseHead ?? null : patch.baseHead,
-        baseSequence: patch.baseSequence ?? current?.baseSequence ?? 0,
-        updatedAt: now().toISOString(),
-      };
+    /** Records (or updates) the state of a session the bridge starts or drives; a write that fails is logged, and memory carries on. */
+    track(sessionId: string, patch: Omit<ForemanSessionStatePatch, 'sandbox'>): ForemanSessionState {
+      const next = patched(sessionId, patch);
       cache.set(sessionId, next);
       persist(() => store.upsert(toRow(next)));
+      return next;
+    },
+
+    /**
+     * Like `track`, but the write must succeed: it throws when the database refuses it, and memory changes only after it succeeded. The
+     * one way to record a sandbox, because a policy that is not stored is a later run without its sandbox.
+     */
+    trackStrict(sessionId: string, patch: ForemanSessionStatePatch): ForemanSessionState {
+      const next = patched(sessionId, patch);
+      store.upsert(toRow(next));
+      cache.set(sessionId, next);
       return next;
     },
 
