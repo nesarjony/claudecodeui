@@ -50,13 +50,15 @@ Success: `{ "success": true, "data": ... }`. Failure: `{ "success": false, "erro
 Every call that changes a session (`POST /sessions`, `.../message`, `.../interrupt`, `.../permission`, `.../model`, `.../compact`,
 `.../adopt`, `.../release`) carries `idempotencyKey` in its JSON body: 1-200 characters of letters, digits and `._:-`.
 
-- cloudcli applies a key **at most once**. A repeat of the same call (same operation, same session, same body) gets the **first answer**
+- cloudcli applies a key **at most once**. A repeat of the same call (same operation, same session, same body; the order of the body's keys does not matter, at any depth) gets the **first answer**
   back, with its original HTTP status, and nothing runs again. This holds across a cloudcli restart: the answer is stored.
 - A repeat that arrives while the first call is still running waits for it and gets its answer.
 - A call that fails does not use up its key: a retry with the same key runs again.
 - The same key for a different call: 422 `IDEMPOTENCY_KEY_REUSED`.
 - A call that began in a process that then died has no stored answer, and cloudcli cannot know whether its effect happened. It answers a repeat
   with 409 `IDEMPOTENCY_OUTCOME_UNKNOWN` and runs nothing. Read `GET .../state` and `.../events`, then decide; use a new key to try again.
+- The same holds when the call took effect but cloudcli could not store its answer (a database failure): the call in hand still gets its answer, the key stays pending, and a repeat gets
+  409 `IDEMPOTENCY_OUTCOME_UNKNOWN` instead of running the effect a second time. Only a call that itself fails releases its key.
 - A start that fails after the session was created (502 `TURN_START_FAILED`, 500 `SANDBOX_NOT_RECORDED`) leaves that session behind; a retry with the same key creates another.
 
 Suggested keys: `start:<runId>:<attempt>`, `message:<runId>:<position>`. They are opaque to cloudcli.

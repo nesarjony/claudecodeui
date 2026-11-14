@@ -50,6 +50,52 @@ test('a call that fails releases its key, so a retry runs', async () => {
   assert.deepEqual(await idempotency.once(call, async () => ({ status: 200, body: 'second try' })), { status: 200, body: 'second try' });
 });
 
+test('a call whose answer could not be stored keeps its key pending: the caller still gets the answer, and a repeat is refused as unknown, never run again', async () => {
+  const rows = new Map<string, ForemanIdempotencyRow>();
+  const logged: string[] = [];
+  const failing: ForemanIdempotencyStorage = { ...memoryStorage(rows), complete: () => { throw new Error('database is locked'); } };
+  const idempotency = createForemanIdempotency({ storage: failing, log: (message) => logged.push(message) });
+  let runs = 0;
+  const run = async () => ({ status: 201, body: { sessionId: `session-${(runs += 1)}` } });
+  assert.deepEqual(await idempotency.once(call, run), { status: 201, body: { sessionId: 'session-1' } });
+  assert.equal(logged.length, 1);
+  assert.match(logged[0] ?? '', /database is locked/);
+  assert.equal(rows.get(call.key)?.state, 'pending', 'the key was not released');
+  await assert.rejects(idempotency.once(call, run), (error: unknown) => error instanceof AppError && error.code === 'IDEMPOTENCY_OUTCOME_UNKNOWN' && error.statusCode === 409);
+  assert.equal(runs, 1);
+});
+
+test('an answer that cannot be turned into JSON is not stored either, and the key stays pending', async () => {
+  const rows = new Map<string, ForemanIdempotencyRow>();
+  const idempotency = createForemanIdempotency({ storage: memoryStorage(rows) });
+  const circular: Record<string, unknown> = {};
+  circular.self = circular;
+  assert.deepEqual(await idempotency.once(call, async () => ({ status: 200, body: circular })), { status: 200, body: circular });
+  assert.equal(rows.get(call.key)?.state, 'pending');
+});
+
+test('the fingerprint is the same for the same content with its keys in another order, at any depth', () => {
+  const asked = { scope: 'sess-1', asked: { text: 'hi', options: { b: [{ y: 1, x: 2 }, 3], a: null }, interrupt: true } };
+  const reordered = { asked: { interrupt: true, options: { a: null, b: [{ x: 2, y: 1 }, 3] }, text: 'hi' }, scope: 'sess-1' };
+  assert.equal(fingerprintOf(asked), fingerprintOf(reordered));
+  // What is asked still counts: a value, an extra key, the order of an array.
+  assert.notEqual(fingerprintOf(asked), fingerprintOf({ ...asked, asked: { ...asked.asked, text: 'ho' } }));
+  assert.notEqual(fingerprintOf(asked), fingerprintOf({ ...asked, extra: 1 }));
+  assert.notEqual(fingerprintOf(asked), fingerprintOf({ ...asked, asked: { ...asked.asked, options: { b: [3, { y: 1, x: 2 }], a: null } } }));
+  // An undefined member (the route blanks the key it leaves out) is no member.
+  assert.equal(fingerprintOf({ a: 1, idempotencyKey: undefined }), fingerprintOf({ a: 1 }));
+});
+
+test('the same body sent with its keys in another order is a repeat of the call, not a different call', async () => {
+  const idempotency = createForemanIdempotency({ storage: memoryStorage() });
+  let runs = 0;
+  const run = async () => ({ status: 202, body: { runs: (runs += 1) } });
+  const first = await idempotency.once({ key: call.key, operation: 'message', fingerprint: fingerprintOf({ text: 'hi', nested: { a: 1, b: 2 } }) }, run);
+  const again = await idempotency.once({ key: call.key, operation: 'message', fingerprint: fingerprintOf({ nested: { b: 2, a: 1 }, text: 'hi' }) }, run);
+  assert.deepEqual(again, first);
+  assert.equal(runs, 1);
+});
+
 test('the same key for a different call is refused', async () => {
   const idempotency = createForemanIdempotency({ storage: memoryStorage() });
   await idempotency.once(call, async () => ({ status: 200, body: 1 }));

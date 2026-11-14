@@ -236,7 +236,7 @@ export function createForemanModule() {
     sessions,
     reads,
     handover,
-    idempotency: createForemanIdempotency({ storage: foremanIdempotencyDb }),
+    idempotency: createForemanIdempotency({ storage: foremanIdempotencyDb, log }),
     git: createForemanGitService({ projectsDb }),
     // A worktree is registered as a project the way the Worktrees module registers one it opens (the add-project path).
     worktrees: createForemanWorktreesService({
