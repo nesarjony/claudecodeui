@@ -1,6 +1,7 @@
 import { fireEvent, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
+import type { ReviewItem } from '@/modules/foreman-next/api/contract';
 import { reviewFixture } from '@/modules/foreman-next/api/mock/decideFixtures';
 import { ReviewRow } from '@/modules/foreman-next/decide/ReviewRow';
 import { quickApi, renderWithForeman } from '@/modules/foreman-next/tests/testHelpers';
@@ -11,14 +12,20 @@ const item = () => {
   return first;
 };
 
-const inList = (api = quickApi(), onSettled = vi.fn()) => {
+const ofKind = (kind: ReviewItem['kind']): ReviewItem => {
+  const found = reviewFixture(Date.now()).find((candidate) => candidate.kind === kind);
+  if (!found) throw new Error(`no ${kind} item`);
+  return found;
+};
+
+const inList = (api = quickApi(), target = item()) => {
   renderWithForeman(
     <ul>
-      <ReviewRow item={item()} onSettled={onSettled} />
+      <ReviewRow item={target} />
     </ul>,
     { api },
   );
-  return { api, onSettled };
+  return { api };
 };
 
 describe('a Review row', () => {
@@ -30,23 +37,36 @@ describe('a Review row', () => {
   });
 
   it('closes the item early with OK', async () => {
-    const { api, onSettled } = inList();
+    const { api } = inList();
     const acknowledge = vi.spyOn(api, 'acknowledgeReviewItem');
     fireEvent.click(screen.getByRole('button', { name: 'OK' }));
-    await waitFor(() => expect(onSettled).toHaveBeenCalled());
-    expect(acknowledge).toHaveBeenCalledWith('r-rule');
+    await waitFor(() => expect(acknowledge).toHaveBeenCalledWith('r-rule'));
   });
 
   it('will not veto without a reason, then vetoes and records why', async () => {
-    const { api, onSettled } = inList();
+    const { api } = inList();
     const veto = vi.spyOn(api, 'vetoReviewItem');
     fireEvent.click(screen.getByRole('button', { name: 'Veto' }));
     const confirm = screen.getByRole('button', { name: 'Veto and record why' }) as HTMLButtonElement;
     expect(confirm.disabled).toBe(true);
     fireEvent.change(screen.getByLabelText('Why are you vetoing this?'), { target: { value: 'the rule is too broad' } });
     fireEvent.click(confirm);
-    await waitFor(() => expect(onSettled).toHaveBeenCalled());
-    expect(veto).toHaveBeenCalledWith('r-rule', 'the rule is too broad');
+    await waitFor(() => expect(veto).toHaveBeenCalledWith('r-rule', 'the rule is too broad'));
+  });
+
+  it('opens a re-plan\'s diff on the goal page, by the subject Foreman gave and not by its title', () => {
+    inList(quickApi(), ofKind('replan'));
+    expect(screen.getByRole('link', { name: 'Diff' }).getAttribute('href')).toBe('/foreman/work/g-inbox?compare=previous');
+  });
+
+  it('opens the decision card of something Foreman decided alone', () => {
+    inList(quickApi(), ofKind('delegated-decision'));
+    expect(screen.getByRole('link', { name: 'Card' }).getAttribute('href')).toBe('/foreman/decisions/h-retry-1');
+  });
+
+  it('has nothing to open for a rule or a lesson, which have no page yet', () => {
+    inList();
+    expect(screen.queryByRole('link')).toBeNull();
   });
 
   it('shows the change itself under Details', () => {

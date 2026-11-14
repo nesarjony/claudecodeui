@@ -1,5 +1,5 @@
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { quickApi, renderForemanApp } from '@/modules/foreman-next/tests/testHelpers';
 
@@ -29,7 +29,8 @@ describe('the chat drawer', () => {
   it('is about the goal on screen, with the conversation, its evidence links and its undoable actions', async () => {
     renderForemanApp('/foreman/work/g-inbox');
     const drawer = await openDrawer();
-    expect((within(drawer).getByLabelText('about:') as HTMLSelectElement).value).toBe('goal:g-inbox');
+    expect(await within(drawer).findByText('Why did t1 need a second judge round?')).toBeTruthy();
+    expect((within(drawer).getByLabelText('about:') as HTMLSelectElement).value).toBe('g-inbox');
     expect(await within(drawer).findByText('Why did t1 need a second judge round?')).toBeTruthy();
     expect(within(drawer).getByRole('link', { name: /decision card/ }).getAttribute('href')).toBe('/foreman/decisions/dec-steer-9');
     expect(within(drawer).getByText('✓ 2 actions')).toBeTruthy();
@@ -38,17 +39,39 @@ describe('the chat drawer', () => {
     expect(within(drawer).queryByRole('button', { name: 'Undo' })).toBeNull();
   });
 
-  it('is about the run on screen', async () => {
+  it('keeps the conversation of the run\'s goal when the screen is a run, and says what it is looking at', async () => {
     renderForemanApp('/foreman/work/runs/run-t2');
     const drawer = await openDrawer();
-    expect((within(drawer).getByLabelText('about:') as HTMLSelectElement).value).toBe('batch:run-t2');
+    expect(await within(drawer).findByText('Why did t1 need a second judge round?')).toBeTruthy();
+    expect((within(drawer).getByLabelText('about:') as HTMLSelectElement).value).toBe('g-inbox');
+    expect(within(drawer).getByText('Looking at: t2-layout')).toBeTruthy();
   });
 
-  it('lets the owner pick another subject and shows its conversation', async () => {
+  it('keeps the conversation of the decision\'s goal when the screen is a decision card', async () => {
+    renderForemanApp('/foreman/decisions/dec-steer-9');
+    const drawer = await openDrawer();
+    expect(await within(drawer).findByText('Looking at: Steer at turn 9 · t2-layout')).toBeTruthy();
+    expect((within(drawer).getByLabelText('about:') as HTMLSelectElement).value).toBe('g-inbox');
+  });
+
+  it('sends the screen as context with the message, and the goal as the thread', async () => {
+    const api = quickApi();
+    const send = vi.spyOn(api, 'sendChat');
+    renderForemanApp('/foreman/work/runs/run-t2', api);
+    const drawer = await openDrawer();
+    await within(drawer).findByText('Why did t1 need a second judge round?');
+    fireEvent.change(within(drawer).getByLabelText('Message Foreman...'), { target: { value: 'Pause after this' } });
+    fireEvent.click(within(drawer).getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(send).toHaveBeenCalled());
+    expect(send).toHaveBeenCalledWith({ goalId: 'g-inbox', subject: { kind: 'run', id: 'run-t2' }, text: 'Pause after this', delivery: 'next-safe-point' });
+  });
+
+  it('lets the owner pick another goal and shows its conversation', async () => {
     renderForemanApp('/foreman');
     const drawer = await openDrawer();
     expect(await within(drawer).findByText(/Ask about anything on this screen/)).toBeTruthy();
-    fireEvent.change(within(drawer).getByLabelText('about:'), { target: { value: 'goal:g-inbox' } });
+    expect(Array.from((within(drawer).getByLabelText('about:') as HTMLSelectElement).options).map((option) => option.textContent)).toEqual(['Foreman', 'desk · Inbox', 'desk · Contacts']);
+    fireEvent.change(within(drawer).getByLabelText('about:'), { target: { value: 'g-inbox' } });
     expect(await within(drawer).findByText('Why did t1 need a second judge round?')).toBeTruthy();
   });
 
@@ -86,7 +109,63 @@ describe('the chat drawer', () => {
     const field = within(drawer).getByLabelText('Message Foreman...') as HTMLInputElement;
     fireEvent.change(field, { target: { value: 'Pause' } });
     fireEvent.click(within(drawer).getByRole('button', { name: 'Send' }));
-    expect(await within(drawer).findByText('The message was not sent.')).toBeTruthy();
+    expect(await within(drawer).findByText('That did not work. Try again.')).toBeTruthy();
     expect(field.value).toBe('Pause');
+  });
+
+  it('remembers an answer of Foreman as knowledge, once', async () => {
+    const api = quickApi();
+    const remember = vi.spyOn(api, 'rememberChatMessage');
+    renderForemanApp('/foreman/work/g-inbox', api);
+    const drawer = await openDrawer();
+    await within(drawer).findByText('Why did t1 need a second judge round?');
+    expect(within(drawer).getAllByRole('button', { name: 'Remember' })).toHaveLength(2);
+    fireEvent.click(within(drawer).getAllByRole('button', { name: 'Remember' })[0] as HTMLElement);
+    expect(await within(drawer).findByText('Remembered as knowledge')).toBeTruthy();
+    expect(remember).toHaveBeenCalledWith('m2');
+    expect(within(drawer).getAllByRole('button', { name: 'Remember' })).toHaveLength(1);
+  });
+});
+
+describe('the chat drawer on a narrow screen', () => {
+  const widthBefore = window.innerWidth;
+  afterEach(() => {
+    window.innerWidth = widthBefore;
+  });
+
+  const openNarrow = async () => {
+    window.innerWidth = 700;
+    renderForemanApp('/foreman');
+    return openDrawer();
+  };
+
+  it('keeps Tab inside the drawer: from the last control to the first, and Shift+Tab the other way', async () => {
+    const drawer = await openNarrow();
+    const controls = Array.from(drawer.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled]), select:not([disabled])'));
+    const first = controls[0] as HTMLElement;
+    const last = controls[controls.length - 1] as HTMLElement;
+    last.focus();
+    fireEvent.keyDown(document, { key: 'Tab' });
+    expect(document.activeElement).toBe(first);
+    fireEvent.keyDown(document, { key: 'Tab', shiftKey: true });
+    expect(document.activeElement).toBe(last);
+  });
+
+  it('brings focus back inside when it has left the drawer', async () => {
+    const drawer = await openNarrow();
+    screen.getByRole('link', { name: 'Work' }).focus();
+    fireEvent.keyDown(document, { key: 'Tab' });
+    expect(drawer.contains(document.activeElement)).toBe(true);
+  });
+
+  it('leaves Tab alone on a wide screen, where the drawer is a column beside the page', async () => {
+    window.innerWidth = 1400;
+    renderForemanApp('/foreman');
+    const drawer = await openDrawer();
+    const link = screen.getByRole('link', { name: 'Work' });
+    link.focus();
+    const prevented = !fireEvent.keyDown(document, { key: 'Tab' });
+    expect(prevented).toBe(false);
+    expect(drawer.contains(document.activeElement)).toBe(false);
   });
 });

@@ -104,6 +104,19 @@ describe('Settings', () => {
     expect(within(attention).getByText('Quiet hours hold everything except stop events.')).toBeTruthy();
   });
 
+  it('shows the read-only lines: budget, MiniMax, models, roles with the editor, and each repo', async () => {
+    renderForemanApp('/foreman/settings');
+    const facts = await screen.findByRole('region', { name: 'Budget, models and repos' });
+    expect(within(facts).getByText('API $200 a month (owner only) · pace about $6.50 a day · goal share: Inbox $40')).toBeTruthy();
+    expect(within(facts).getByText('stop desk workers at 80% of the 5-hour or weekly window; the rest stays yours; auto-resume')).toBeTruthy();
+    expect(within(facts).getByText('Opus (API credit) · desk workers MiniMax-M3 only · side runs MiniMax')).toBeTruthy();
+    expect(within(facts).getByText(/Strategist v3 · Supervisor v3 · Judge v4 · Coach v1/)).toBeTruthy();
+    expect(within(facts).getByRole('link', { name: /Editor/ }).getAttribute('href')).toBe('http://127.0.0.1:4111');
+    expect(within(facts).getByText(/checks: pnpm verify · 7 protected paths · infigraph ✓ indexed \d{2}:\d{2}/)).toBeTruthy();
+    expect(within(facts).getByText('checks: npm test · 2 protected paths · infigraph not indexed')).toBeTruthy();
+    expect(within(facts).queryByRole('button')).toBeNull();
+  });
+
   it('saves an edited attention policy', async () => {
     const api = quickApi();
     const save = vi.spyOn(api, 'setAttention');

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { ApiRequestError } from '@/shared/api';
+import { createMockApi } from '@/modules/foreman-next/api/mock/mockClient';
 import { MOCK_SCENARIOS } from '@/modules/foreman-next/api/mock/scenarios';
 import { quickApi } from '@/modules/foreman-next/tests/testHelpers';
 
@@ -18,14 +19,51 @@ describe('the mock client, default scenario', () => {
     const api = quickApi();
     await api.vetoReviewItem('r-rule', 'too early');
     await api.acknowledgeReviewItem('r-lesson');
-    expect((await api.review()).map((item) => item.id)).toEqual(['r-replan']);
+    expect((await api.review()).map((item) => item.id)).toEqual(['r-replan', 'r-retry']);
   });
 
-  it('starts a new goal with a strategy that waits for approval, then approves it', async () => {
-    const api = quickApi();
+  it('studies a new goal first, with no strategy, and moves on to a strategy that waits for approval', async () => {
+    const api = createMockApi({ latencyMs: 0, studyMs: 40 });
     const created = await api.createGoal({ repo: 'desk', goal: 'Reports' });
-    expect((await api.goal(created.id)).strategy?.status).toBe('awaiting-approval');
+    const studying = await api.goal(created.id);
+    expect(studying).toMatchObject({ state: 'studying', strategy: null, hasStrategy: false });
+    expect(studying.study?.map((step) => step.id)).toEqual(['docs', 'conventions', 'checklist', 'git', 'code-map']);
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    const planned = await api.goal(created.id);
+    expect(planned).toMatchObject({ state: 'queued', study: null });
+    expect(planned.strategy?.status).toBe('awaiting-approval');
     expect((await api.approveStrategy(created.id)).strategy?.status).toBe('approved');
+  });
+
+  it('gives the owner questions in the order of rows held, most first, so no client has to sort', async () => {
+    const holds = (await quickApi().questions()).map((question) => question.holdsRows);
+    expect(holds).toEqual([...holds].sort((first, second) => second - first));
+  });
+
+  it('knows each question\'s goal by id, and each history entry\'s', async () => {
+    const api = quickApi();
+    expect((await api.questions()).every((question) => question.goalId === 'g-inbox')).toBe(true);
+    expect((await api.history()).every((entry) => entry.goalId === 'g-inbox')).toBe(true);
+  });
+
+  it('keeps one conversation per goal, with the screen as context, and remembers an answer', async () => {
+    const api = quickApi();
+    expect((await api.chatThread('g-inbox')).messages.length).toBeGreaterThan(0);
+    expect((await api.chatThread(null)).messages).toEqual([]);
+    const [, reply] = await api.sendChat({ goalId: null, subject: { kind: 'run', id: 'run-t2' }, text: 'status?', delivery: 'next-safe-point' });
+    expect((await api.chatThread(null)).messages).toHaveLength(2);
+    expect((await api.chatThread('g-inbox')).messages.some((message) => message.id === reply?.id)).toBe(false);
+    const remembered = await api.rememberChatMessage(reply?.id ?? '');
+    expect(remembered.remembered).toBe('global');
+    expect((await api.rememberChatMessage('m2')).remembered).toBe('goal');
+  });
+
+  it('answers the read-only settings, the repos and the alerts behind the strip\'s count', async () => {
+    const api = quickApi();
+    expect((await api.settings()).roles.map((role) => role.name)).toEqual(['Strategist', 'Supervisor', 'Judge', 'Coach']);
+    expect((await api.repos()).map((repo) => repo.name)).toEqual(['desk', 'scratch']);
+    expect((await api.alerts()).map((alert) => alert.subject)).toEqual([{ kind: 'run', id: 'run-t2' }]);
+    expect((await api.status()).alerts).toBe(1);
   });
 
   it('refuses to change a locked delegation kind and clears a suggestion the owner accepts', async () => {
@@ -62,7 +100,15 @@ describe('the mock client, hand-over (BR-2.10)', () => {
 
   it('does not hand over a worker session or one Foreman already supervises', async () => {
     const api = quickApi();
-    expect(await api.sessionSupervision('sess-t2-layout')).toEqual({ state: 'worker' });
+    expect(await api.sessionSupervision('sess-t2-layout')).toEqual({
+      state: 'worker',
+      runId: 'run-t2',
+      goal: 'desk · Inbox',
+      batch: 't2-layout',
+      model: 'MiniMax-M3',
+      sandboxed: true,
+      control: 'foreman',
+    });
     await expect(api.handOverSession('sess-t2-layout')).rejects.toMatchObject({ status: 409 });
     await expect(api.handOverSession('sess-desk-boss')).rejects.toMatchObject({ status: 409 });
   });
@@ -76,6 +122,16 @@ describe('the mock client, hand-over (BR-2.10)', () => {
 describe('the mock client, special states', () => {
   it('has a scenario for each state of wireframes §15', () => {
     expect(MOCK_SCENARIOS).toEqual(expect.arrayContaining(['empty', 'quiet', 'budget-paused', 'minimax-paused', 'degraded', 'run-failed', 'taken-over', 'error', 'unreachable', 'loading']));
+  });
+
+  it('budget-paused: the owner-only question that lifts the pause is there, and cannot be delegated', async () => {
+    const questions = await quickApi('budget-paused').questions();
+    expect(questions[0]).toMatchObject({ id: 'q-ceiling', delegationKind: 'charter', delegable: false });
+    expect(questions.filter((question) => question.delegable)).toHaveLength(2);
+  });
+
+  it('taken-over: the worker session reports the owner as driving', async () => {
+    expect(await quickApi('taken-over').sessionSupervision('sess-t2-layout')).toMatchObject({ state: 'worker', control: 'owner' });
   });
 
   it('empty: no goals, nothing to decide', async () => {

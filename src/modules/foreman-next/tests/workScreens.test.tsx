@@ -1,6 +1,7 @@
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
+import { createMockApi } from '@/modules/foreman-next/api/mock/mockClient';
 import { quickApi, renderForemanApp } from '@/modules/foreman-next/tests/testHelpers';
 
 describe('Work', () => {
@@ -38,12 +39,51 @@ describe('Work', () => {
     const dialog = await screen.findByRole('dialog');
     const create = within(dialog).getByRole('button', { name: 'Create goal' }) as HTMLButtonElement;
     expect(create.disabled).toBe(true);
-    fireEvent.change(within(dialog).getByLabelText('Repo'), { target: { value: 'desk' } });
+    const repo = within(dialog).getByLabelText('Repo') as HTMLSelectElement;
+    expect(Array.from(repo.options).map((option) => option.value)).toEqual(['desk', 'scratch']);
+    fireEvent.change(repo, { target: { value: 'scratch' } });
     fireEvent.change(within(dialog).getByLabelText('Goal'), { target: { value: 'Reports' } });
     fireEvent.click(create);
     expect(await screen.findByText('Waiting for your approval before any worker starts')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
     await waitFor(() => expect(screen.queryByText('Waiting for your approval before any worker starts')).toBeNull());
+  });
+
+  it('creates the goal for the repo the owner picked, from the repos Foreman has', async () => {
+    const api = quickApi();
+    const create = vi.spyOn(api, 'createGoal');
+    renderForemanApp('/foreman/work', api);
+    fireEvent.click(await screen.findByRole('button', { name: '+ New goal' }));
+    const dialog = await screen.findByRole('dialog');
+    await within(dialog).findByLabelText('Repo');
+    fireEvent.change(within(dialog).getByLabelText('Goal'), { target: { value: 'Reports' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create goal' }));
+    await waitFor(() => expect(create).toHaveBeenCalledWith({ repo: 'desk', goal: 'Reports' }));
+  });
+
+  it('says Foreman studies a new goal before any strategy exists, with nothing to approve yet', async () => {
+    const api = createMockApi({ latencyMs: 0, studyMs: 60_000 });
+    const created = await api.createGoal({ repo: 'desk', goal: 'Reports' });
+    renderForemanApp(`/foreman/work/${created.id}`, api);
+    const study = await screen.findByRole('region', { name: 'Foreman studies' });
+    expect(within(study).getAllByRole('listitem').map((item) => item.textContent)).toEqual(['●docs', '○conventions', '○checklist', '○git history', '○infigraph code map']);
+    expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Re-plan' })).toBeNull();
+  });
+
+  it('lists a goal that Foreman studies among the active work on the board', async () => {
+    const api = createMockApi({ latencyMs: 0, studyMs: 60_000 });
+    await api.createGoal({ repo: 'desk', goal: 'Reports' });
+    renderForemanApp('/foreman/work', api);
+    const active = await screen.findByRole('region', { name: 'Active' });
+    expect(await within(active).findByText('Foreman studies the repo')).toBeTruthy();
+  });
+
+  it('opens the comparison with the previous strategy when a Review link asks for it', async () => {
+    renderForemanApp('/foreman/work/g-inbox?compare=previous');
+    const strategy = await screen.findByRole('region', { name: 'Strategy v2' });
+    expect(within(strategy).getByText('Fix batch last')).toBeTruthy();
+    expect(within(strategy).getByRole('button', { name: 'Compare v1' }).getAttribute('aria-expanded')).toBe('true');
   });
 
   it('shows the goal page: progress, forecast, spend, the strategy and the batches', async () => {

@@ -7,11 +7,30 @@ describe('the shell', () => {
   it('navigates Today, Decide, Work and Settings, with the blocking count, and nothing for later slices', async () => {
     renderForemanApp('/foreman');
     const nav = await screen.findByRole('navigation', { name: 'Foreman' });
-    expect(within(nav).getAllByRole('link').map((link) => link.textContent?.replace(/\s+/g, ' ').trim())).toEqual(['Today', 'Decide2', 'Work', 'Settings', 'Studio ↗']);
+    expect(within(nav).getAllByRole('link').map((link) => link.textContent?.replace(/\s+/g, ' ').trim())).toEqual(['Today', 'Decide2', 'Work', 'Settings', '◂ Workspace', 'Studio ↗']);
     expect(await within(nav).findByLabelText('2 decisions need you')).toBeTruthy();
     expect(within(nav).queryByText('Knowledge')).toBeNull();
     expect(within(nav).queryByText('Lab')).toBeNull();
     expect(within(nav).getByRole('link', { name: 'Today' }).getAttribute('aria-current')).toBe('page');
+  });
+
+  it('links the alert count to the list of alerts, which opens what each is about', async () => {
+    renderForemanApp('/foreman');
+    fireEvent.click(await screen.findByRole('link', { name: '! 1 alert' }));
+    expect(await screen.findByRole('heading', { name: 'Alerts' })).toBeTruthy();
+    expect(screen.getByText('t2-layout went 9 turns without a commit')).toBeTruthy();
+    expect(screen.getByRole('link', { name: /Open run/ }).getAttribute('href')).toBe('/foreman/work/runs/run-t2');
+  });
+
+  it('shows no alert link and an empty list when nothing is wrong', async () => {
+    renderForemanApp('/foreman/alerts', quickApi('empty'));
+    expect(await screen.findByText('No alerts.')).toBeTruthy();
+    expect(screen.queryByRole('link', { name: /alert/ })).toBeNull();
+  });
+
+  it('links back to the workspace', async () => {
+    renderForemanApp('/foreman');
+    expect((await screen.findByRole('link', { name: /Workspace/ })).getAttribute('href')).toBe('/');
   });
 
   it('links to Studio when Foreman gives its address', async () => {
@@ -40,8 +59,10 @@ describe('Today', () => {
     expect(await within(needs).findByText('Bulk actions in v1?')).toBeTruthy();
     expect(within(needs).getAllByText(/holds \d+ rows · 2h/).map((row) => row.textContent)).toEqual(['holds 20 rows · 2h', 'holds 15 rows · 2h']);
     const review = screen.getByRole('region', { name: /^Review/ });
-    expect(await within(review).findAllByRole('button', { name: 'Looks right' })).toHaveLength(3);
-    expect(within(review).getAllByText(/^closes \d{2}:\d{2} · in /)).toHaveLength(3);
+    expect(await within(review).findAllByRole('button', { name: 'Looks right' })).toHaveLength(4);
+    expect(within(review).getAllByText(/^closes \d{2}:\d{2} · in /)).toHaveLength(4);
+    expect(within(review).getByRole('link', { name: 'Diff' }).getAttribute('href')).toBe('/foreman/work/g-inbox?compare=previous');
+    expect(within(review).getByRole('link', { name: 'Card' }).getAttribute('href')).toBe('/foreman/decisions/h-retry-1');
     const goals = screen.getByRole('region', { name: 'Goals' });
     expect(within(goals).getByText('65/120')).toBeTruthy();
     expect(within(goals).getByText(/● on track · ~\w{3} · \$11 to go/)).toBeTruthy();
@@ -67,7 +88,7 @@ describe('Today', () => {
     renderForemanApp('/foreman', api);
     const review = await screen.findByRole('region', { name: /^Review/ });
     fireEvent.click((await within(review).findAllByRole('button', { name: 'Looks right' }))[0] as HTMLElement);
-    await waitFor(() => expect(within(review).getAllByRole('button', { name: 'Looks right' })).toHaveLength(2));
+    await waitFor(() => expect(within(review).getAllByRole('button', { name: 'Looks right' })).toHaveLength(3));
   });
 
   it('asks the owner to give Foreman a goal when there are none, and opens the New goal flow', async () => {

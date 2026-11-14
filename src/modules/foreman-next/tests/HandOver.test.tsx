@@ -1,30 +1,28 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
-import { ForemanSessionBar } from '@/modules/foreman-next/handover/ForemanSessionBar';
-import { HandOverDialog } from '@/modules/foreman-next/handover/HandOverDialog';
+import { ForemanNextRoute, ForemanSessionBar, ForemanSidebarEntry } from '@/modules/foreman-next/ForemanNextLazy';
 import { SessionSupervisionBar } from '@/modules/foreman-next/handover/SessionSupervisionBar';
+import { HandOverDialog } from '@/modules/foreman-next/modals/HandOverDialog';
 import { quickApi, renderWithForeman } from '@/modules/foreman-next/tests/testHelpers';
 
 describe('the Hand to Foreman dialog', () => {
   it('hands the session over with no goal when the field is left empty', async () => {
     const api = quickApi();
     const handOver = vi.spyOn(api, 'handOverSession');
-    const onHandedOver = vi.fn();
     const onClose = vi.fn();
-    renderWithForeman(<HandOverDialog sessionId="sess-free" onClose={onClose} onHandedOver={onHandedOver} />, { api });
+    renderWithForeman(<HandOverDialog sessionId="sess-free" onClose={onClose} />, { api });
     const dialog = screen.getByRole('dialog');
     expect((within(dialog).getByLabelText('Goal (optional)') as HTMLInputElement).placeholder).toBe('take this over');
     fireEvent.click(within(dialog).getByRole('button', { name: 'Hand over' }));
-    await waitFor(() => expect(onHandedOver).toHaveBeenCalledOnce());
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
     expect(handOver).toHaveBeenCalledWith('sess-free', undefined);
-    expect(onClose).toHaveBeenCalled();
   });
 
   it('sends the goal the owner typed', async () => {
     const api = quickApi();
     const handOver = vi.spyOn(api, 'handOverSession');
-    renderWithForeman(<HandOverDialog sessionId="sess-free" onClose={vi.fn()} onHandedOver={vi.fn()} />, { api });
+    renderWithForeman(<HandOverDialog sessionId="sess-free" onClose={vi.fn()} />, { api });
     fireEvent.change(screen.getByLabelText('Goal (optional)'), { target: { value: '  finish the Contacts import ' } });
     fireEvent.submit(screen.getByRole('dialog').querySelector('form') as HTMLFormElement);
     await waitFor(() => expect(handOver).toHaveBeenCalled());
@@ -35,7 +33,7 @@ describe('the Hand to Foreman dialog', () => {
     const api = quickApi();
     const handOver = vi.spyOn(api, 'handOverSession');
     const onClose = vi.fn();
-    renderWithForeman(<HandOverDialog sessionId="sess-free" onClose={onClose} onHandedOver={vi.fn()} />, { api });
+    renderWithForeman(<HandOverDialog sessionId="sess-free" onClose={onClose} />, { api });
     fireEvent.keyDown(document, { key: 'Escape' });
     expect(onClose).toHaveBeenCalled();
     expect(handOver).not.toHaveBeenCalled();
@@ -45,7 +43,7 @@ describe('the Hand to Foreman dialog', () => {
     const api = quickApi();
     const handOver = vi.spyOn(api, 'handOverSession');
     const onClose = vi.fn();
-    renderWithForeman(<HandOverDialog sessionId="sess-free" onClose={onClose} onHandedOver={vi.fn()} />, { api });
+    renderWithForeman(<HandOverDialog sessionId="sess-free" onClose={onClose} />, { api });
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     expect(onClose).toHaveBeenCalled();
     expect(handOver).not.toHaveBeenCalled();
@@ -54,7 +52,7 @@ describe('the Hand to Foreman dialog', () => {
   it('says so and stays open when the hand-over is refused', async () => {
     const api = quickApi();
     const onClose = vi.fn();
-    renderWithForeman(<HandOverDialog sessionId="sess-t2-layout" onClose={onClose} onHandedOver={vi.fn()} />, { api });
+    renderWithForeman(<HandOverDialog sessionId="sess-t2-layout" onClose={onClose} />, { api });
     fireEvent.click(screen.getByRole('button', { name: 'Hand over' }));
     expect(await screen.findByRole('alert')).toBeTruthy();
     expect(onClose).not.toHaveBeenCalled();
@@ -100,16 +98,53 @@ describe('the session bar', () => {
     expect(screen.getByRole('button', { name: 'Take back' })).toBeTruthy();
   });
 
-  it('shows nothing on a Foreman worker session, which is not the owner\'s to hand over', async () => {
-    const api = quickApi();
-    const supervision = vi.spyOn(api, 'sessionSupervision');
-    const { container } = renderWithForeman(<SessionSupervisionBar sessionId="sess-t2-layout" />, { api });
-    await waitFor(() => expect(supervision).toHaveBeenCalled());
-    await waitFor(() => expect(container.querySelector('button')).toBeNull());
+  it('shows the Foreman worker banner on a worker session, with Watch in Foreman and Take over, and no hand-over', async () => {
+    renderWithForeman(<SessionSupervisionBar sessionId="sess-t2-layout" />);
+    const banner = await screen.findByRole('status');
+    expect(banner.textContent).toContain('Foreman worker · desk · Inbox · batch t2-layout · MiniMax-M3 · sandboxed · supervised');
+    expect(within(banner).getByText(/Foreman's messages in this session are labelled "Foreman"\./)).toBeTruthy();
+    expect(within(banner).getByRole('link', { name: /Watch in Foreman/ }).getAttribute('href')).toBe('/foreman/work/runs/run-t2');
+    expect(within(banner).getByRole('button', { name: 'Take over' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Hand to Foreman' })).toBeNull();
   });
 
-  it('renders nothing at all while the new Foreman UI is switched off', () => {
-    const { container } = render(<ForemanSessionBar sessionId="sess-free" />);
+  it('takes a worker session over: "You\'re driving" with Hand back, then back to supervised', async () => {
+    const api = quickApi();
+    const takeOver = vi.spyOn(api, 'takeOverRun');
+    const handBack = vi.spyOn(api, 'handBackRun');
+    renderWithForeman(<SessionSupervisionBar sessionId="sess-t2-layout" />, { api });
+    fireEvent.click(await screen.findByRole('button', { name: 'Take over' }));
+    expect(await screen.findByText("You're driving. Foreman paused supervision of t2-layout and will resume when you hand back.")).toBeTruthy();
+    expect(takeOver).toHaveBeenCalledWith('run-t2');
+    expect(screen.queryByRole('button', { name: 'Take over' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Hand back to Foreman' }));
+    expect(await screen.findByRole('button', { name: 'Take over' })).toBeTruthy();
+    expect(handBack).toHaveBeenCalledWith('run-t2');
+  });
+
+  it('opens already driving when the owner took the worker over before', async () => {
+    renderWithForeman(<SessionSupervisionBar sessionId="sess-t2-layout" />, { api: quickApi('taken-over') });
+    expect(await screen.findByText(/You're driving/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Hand back to Foreman' })).toBeTruthy();
+  });
+
+  it('keeps the banner and says so when taking over fails', async () => {
+    const api = quickApi();
+    vi.spyOn(api, 'takeOverRun').mockRejectedValue(new Error('down'));
+    renderWithForeman(<SessionSupervisionBar sessionId="sess-t2-layout" />, { api });
+    fireEvent.click(await screen.findByRole('button', { name: 'Take over' }));
+    expect(await screen.findByRole('alert')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Take over' })).toBeTruthy();
+  });
+
+  it('renders nothing at all while the new Foreman UI is switched off: no session bar, no sidebar entry, no route', () => {
+    const { container } = render(
+      <>
+        <ForemanSessionBar sessionId="sess-free" />
+        <ForemanSidebarEntry />
+        <ForemanNextRoute />
+      </>,
+    );
     expect(container.innerHTML).toBe('');
   });
 });

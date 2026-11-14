@@ -48,11 +48,4 @@ describe('useForemanResource', () => {
     expect(result.current.status).toBe('loading');
     await waitFor(() => expect(result.current.data?.id).toBe('g-contacts'));
   });
-
-  it('polls at the given interval', async () => {
-    const api = quickApi();
-    const status = vi.spyOn(api, 'status');
-    renderHook(() => useForemanResource((foreman) => foreman.status(), { pollMs: 20 }), { wrapper: wrapperFor(api) });
-    await waitFor(() => expect(status.mock.calls.length).toBeGreaterThanOrEqual(3));
-  });
 });

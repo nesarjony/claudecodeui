@@ -41,11 +41,11 @@ describe('Decide', () => {
   it('lists Review with the evidence and veto windows, and removes a vetoed item', async () => {
     renderForemanApp('/foreman/decide/review');
     expect(await screen.findByText(/Foreman decided these alone/)).toBeTruthy();
-    expect(screen.getAllByRole('button', { name: 'Veto' })).toHaveLength(3);
+    expect(screen.getAllByRole('button', { name: 'Veto' })).toHaveLength(4);
     fireEvent.click(screen.getAllByRole('button', { name: 'Veto' })[2] as HTMLElement);
     fireEvent.change(screen.getByLabelText('Why are you vetoing this?'), { target: { value: 'wait for the owner call' } });
     fireEvent.click(screen.getByRole('button', { name: 'Veto and record why' }));
-    await waitFor(() => expect(screen.getAllByRole('button', { name: 'Veto' })).toHaveLength(2));
+    await waitFor(() => expect(screen.getAllByRole('button', { name: 'Veto' })).toHaveLength(3));
     expect(screen.queryByText('Re-planned desk · Inbox (strategy v2)')).toBeNull();
   });
 
@@ -55,7 +55,29 @@ describe('Decide', () => {
     expect(screen.getAllByText('you agreed').length).toBeGreaterThan(0);
     fireEvent.click(screen.getByRole('link', { name: 'Steer at turn 9 · t2-layout' }));
     expect(await screen.findByRole('article', { name: 'Steer at turn 9 · t2-layout' })).toBeTruthy();
-    expect(screen.getByRole('link', { name: /History/ })).toBeTruthy();
+  });
+
+  it('goes back to the run when the card belongs to one, and to History otherwise', async () => {
+    const { unmount } = renderForemanApp('/foreman/decisions/dec-steer-9');
+    expect((await screen.findByRole('link', { name: /◂ Run/ })).getAttribute('href')).toBe('/foreman/work/runs/run-t2');
+    unmount();
+    renderForemanApp('/foreman/decisions/h-export');
+    expect((await screen.findByRole('link', { name: /◂ History/ })).getAttribute('href')).toBe('/foreman/decide/history');
+  });
+
+  it('shows no trust-ladder step for a question the owner can never delegate, but names why it is theirs', async () => {
+    renderForemanApp('/foreman/decide', quickApi('budget-paused'));
+    const ceiling = await screen.findByRole('article', { name: 'Raise the monthly API ceiling?' });
+    expect(within(ceiling).getByText(/charter questions are set to "Ask me"/)).toBeTruthy();
+    expect(within(ceiling).queryByLabelText(/Let Foreman decide/)).toBeNull();
+    const bulk = screen.getByRole('article', { name: 'Bulk actions in v1?' });
+    expect(within(bulk).getByLabelText(/Let Foreman decide product scope questions/)).toBeTruthy();
+  });
+
+  it('shows the kind of each decision Foreman classified, in History and on the card', async () => {
+    renderForemanApp('/foreman/decide/history');
+    expect((await screen.findAllByText('Product scope')).length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Retry or re-plan a batch').length).toBeGreaterThan(0);
   });
 
   it('says a decision is missing instead of showing an empty card', async () => {

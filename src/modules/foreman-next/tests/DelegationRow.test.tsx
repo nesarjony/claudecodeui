@@ -5,7 +5,7 @@ import type { DelegationRule } from '@/modules/foreman-next/api/contract';
 import { delegationFixture } from '@/modules/foreman-next/api/mock/settingsFixtures';
 import { DelegationRow } from '@/modules/foreman-next/settings/DelegationRow';
 import { DelegationTable } from '@/modules/foreman-next/settings/DelegationTable';
-import { quickApi, renderWithForeman } from '@/modules/foreman-next/tests/testHelpers';
+import { quickApi, readyResource, renderWithForeman } from '@/modules/foreman-next/tests/testHelpers';
 
 const rule = (kind: DelegationRule['kind']): DelegationRule => {
   const found = delegationFixture().find((candidate) => candidate.kind === kind);
@@ -14,16 +14,15 @@ const rule = (kind: DelegationRule['kind']): DelegationRule => {
 };
 
 const row = (target: DelegationRule, api = quickApi()) => {
-  const onChanged = vi.fn();
   renderWithForeman(
     <table>
       <tbody>
-        <DelegationRow rule={target} onChanged={onChanged} />
+        <DelegationRow rule={target} />
       </tbody>
     </table>,
     { api },
   );
-  return { api, onChanged };
+  return { api };
 };
 
 describe('the trust ladder controls', () => {
@@ -37,11 +36,10 @@ describe('the trust ladder controls', () => {
   });
 
   it('moves a kind up a level and clears the veto window for levels that have none', async () => {
-    const { api, onChanged } = row(rule('replan-goal'));
+    const { api } = row(rule('replan-goal'));
     const set = vi.spyOn(api, 'setDelegation');
     fireEvent.change(screen.getByLabelText('Level for Re-plan a goal'), { target: { value: 'decide-silent' } });
-    await waitFor(() => expect(onChanged).toHaveBeenCalled());
-    expect(set).toHaveBeenCalledWith('replan-goal', { level: 'decide-silent', vetoWindowHours: null });
+    await waitFor(() => expect(set).toHaveBeenCalledWith('replan-goal', { level: 'decide-silent', vetoWindowHours: null }));
   });
 
   it('gives "Decide, tell me" a default veto window of 6 hours, and lets the owner change it', async () => {
@@ -65,12 +63,11 @@ describe('the trust ladder controls', () => {
   });
 
   it('offers Foreman\'s suggestion for the owner to approve, and nothing when there is none', async () => {
-    const { api, onChanged } = row(rule('product-scope'));
+    const { api } = row(rule('product-scope'));
     const set = vi.spyOn(api, 'setDelegation');
     expect(screen.getByText('Move to "Recommend and wait"')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
-    await waitFor(() => expect(onChanged).toHaveBeenCalled());
-    expect(set).toHaveBeenCalledWith('product-scope', { level: 'recommend-wait', vetoWindowHours: null });
+    await waitFor(() => expect(set).toHaveBeenCalledWith('product-scope', { level: 'recommend-wait', vetoWindowHours: null }));
   });
 
   it('has no suggestion and no agreement figure for a kind with no history', () => {
@@ -88,7 +85,8 @@ describe('the trust ladder controls', () => {
   });
 
   it('loads the whole ladder from Foreman, charter row last and locked', async () => {
-    renderWithForeman(<DelegationTable />);
+    const api = quickApi();
+    renderWithForeman(<DelegationTable delegation={readyResource(await api.delegation())} />, { api });
     expect(await screen.findByText('Product scope')).toBeTruthy();
     expect(screen.getAllByRole('combobox', { name: /^Level for/ })).toHaveLength(5);
     expect(screen.getByText('Judge grading, scorecard, safety limits, budgets')).toBeTruthy();

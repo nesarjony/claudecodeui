@@ -10,9 +10,10 @@ import { createMockApi } from '@/modules/foreman-next/api/mock/mockClient';
 import type { MockScenario } from '@/modules/foreman-next/api/mock/scenarios';
 import { ForemanApiProvider } from '@/modules/foreman-next/context/ForemanApiProvider';
 import { ForemanNextRoutes } from '@/modules/foreman-next/ForemanNextRoutes';
+import type { Resource } from '@/modules/foreman-next/hooks/useForemanResource';
 
 /** A mock API that answers at once, so tests wait for the screen and not for simulated latency. */
-export const quickApi = (scenario: MockScenario = 'default'): ForemanApi => createMockApi({ scenario, latencyMs: 0 });
+export const quickApi = (scenario: MockScenario = 'default'): ForemanApi => createMockApi({ scenario, latencyMs: 0, studyMs: 0 });
 
 /** Renders one component with the English catalog, the router and the given API. */
 export function renderWithForeman(ui: ReactElement, { api = quickApi(), route = '/foreman' }: { api?: ForemanApi; route?: string } = {}) {
@@ -38,3 +39,6 @@ export function renderForemanApp(route: string, api: ForemanApi = quickApi()) {
     </I18nextProvider>,
   );
 }
+
+/** A resource that has already loaded, for panels that receive their data from the screen. */
+export const readyResource = <T,>(data: T): Resource<T> => ({ status: 'ready', data, error: null, refresh: async () => undefined });
