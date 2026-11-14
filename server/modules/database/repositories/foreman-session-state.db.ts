@@ -31,7 +31,10 @@ export const foremanSessionStateDb = {
     return row ?? null;
   },
 
-  /** Inserts or replaces the whole row for a session. */
+  /**
+   * Inserts or replaces the whole row for a session, except that a recorded sandbox is never erased: a row written without one (by a
+   * caller that could not read the row first) keeps the policy it had.
+   */
   upsert(row: ForemanSessionStateRow): void {
     getConnection()
       .prepare(
@@ -42,7 +45,7 @@ export const foremanSessionStateDb = {
            status = excluded.status,
            permission_mode = excluded.permission_mode,
            billing = excluded.billing,
-           sandbox_json = excluded.sandbox_json,
+           sandbox_json = COALESCE(excluded.sandbox_json, foreman_session_state.sandbox_json),
            supervision = excluded.supervision,
            base_head = excluded.base_head,
            base_sequence = excluded.base_sequence,

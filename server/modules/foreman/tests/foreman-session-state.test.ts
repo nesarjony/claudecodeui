@@ -297,7 +297,8 @@ test('a failing database is logged and the bridge carries on with what it has', 
   assert.equal(state.get('s1')?.status, 'running');
   assert.ok(log.some((message) => /restart recovery failed/.test(message)));
   assert.ok(log.some((message) => /not persisted/.test(message)));
-  assert.ok('refuse' in (state.sandboxOf('s1') ?? {}), 'a sandbox that cannot be read from the database refuses the run, it is never assumed away');
+  assert.ok('refuse' in (state.sandboxOf('s1', { required: true }) ?? {}), 'a run of the bridge whose sandbox cannot be read is refused, it is never assumed away');
+  assert.equal(state.sandboxOf('s1'), null, 'the owner\'s session is not refused because the table cannot be read');
 });
 
 function storedRow(sandboxJson: string | null, supervision: 'started' | 'adopted' | 'released' = 'started') {
@@ -314,8 +315,19 @@ test('sandboxOf answers null for a session without a sandbox, the policy for one
     assert.deepEqual(state.sandboxOf('stored'), { policy: SANDBOX });
     for (const broken of ['{not json', JSON.stringify({ scratchDir: '/x' }), JSON.stringify({ ...SANDBOX, scratchDir: 'relative' })]) {
       foremanSessionStateDb.upsert(storedRow(broken));
-      assert.match((state.sandboxOf('stored') as { refuse: string }).refuse, /malformed, so it does not run/);
+      assert.match((state.sandboxOf('stored') as { refuse: string }).refuse, /malformed or no longer allowed, so it does not run/);
     }
+  });
+});
+
+test('a row written without a sandbox never erases the one recorded for the session', async () => {
+  await withIsolatedDatabase(() => {
+    newService().trackStrict('stored', { sandbox: SANDBOX });
+    // A writer that could not read the row first (its read failed) writes the whole row without the sandbox.
+    foremanSessionStateDb.upsert(storedRow(null, 'adopted'));
+    assert.equal(foremanSessionStateDb.get('stored')?.supervision, 'adopted');
+    assert.equal(foremanSessionStateDb.get('stored')?.sandbox_json, JSON.stringify(SANDBOX));
+    assert.deepEqual(newService().sandboxOf('stored'), { policy: SANDBOX });
   });
 });
 

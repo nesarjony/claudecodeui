@@ -1,5 +1,6 @@
 import type { ForemanSessionStateRow } from '@/modules/database/index.js';
-import { parseSandboxPolicy, type ForemanSandboxPolicy } from '@/modules/foreman/foreman-sandbox.service.js';
+import type { ForemanSandboxPolicy } from '@/modules/foreman/foreman-sandbox.service.js';
+import { createSessionSandboxReader } from '@/modules/foreman/foreman-session-sandbox.service.js';
 import type { ClaudeRuntimeEvent, ForemanBilling } from '@/shared/types.js';
 import { isErrorTurnResult, isSandboxedPermissionMode } from '@/shared/utils.js';
 
@@ -109,6 +110,7 @@ export function createForemanSessionStateService(dependencies: {
   // A session with no stored state is remembered as null: every runtime event of every session passes through here.
   const cache = new Map<string, ForemanSessionState | null>();
   const pendingPrompts = new Map<string, Set<string>>();
+  const sandboxes = createSessionSandboxReader({ store, log });
 
   function fromRow(row: ForemanSessionStateRow): ForemanSessionState {
     // A mode stored before sandboxed sessions were held to their prompts (`bypassPermissions`, `auto`) is not handed back to resume with.
@@ -250,6 +252,9 @@ export function createForemanSessionStateService(dependencies: {
       const next = patched(sessionId, patch);
       store.upsert(toRow(next));
       cache.set(sessionId, next);
+      if (patch.sandbox) {
+        sandboxes.remember(sessionId, patch.sandbox);
+      }
       return next;
     },
 
@@ -262,25 +267,10 @@ export function createForemanSessionStateService(dependencies: {
     listSupervised: () => store.listSupervised().map((row) => ({ sessionId: row.session_id, supervision: row.supervision, taskId: row.task_id })),
 
     /**
-     * The sandbox a run of the session must apply, `null` for a session that has none, or why the run must not start. Read from the
-     * database every time and never from the cache, and a failed or unreadable read refuses: this is the one answer that fails closed.
+     * The sandbox a run of the session must apply, `null` for a session that has none, or why the run must not start; `required` for a run
+     * the bridge marked as its own. Fails closed only for Foreman's runs (see foreman-session-sandbox.service.ts).
      */
-    sandboxOf(sessionId: string): { policy: ForemanSandboxPolicy } | { refuse: string } | null {
-      let row: ForemanSessionStateRow | null;
-      try {
-        row = store.get(sessionId);
-      } catch (error) {
-        return { refuse: `The sandbox of this session could not be read (${error instanceof Error ? error.message : String(error)}), so it does not run.` };
-      }
-      if (!row?.sandbox_json) {
-        return null;
-      }
-      try {
-        return { policy: parseSandboxPolicy(JSON.parse(row.sandbox_json)) };
-      } catch {
-        return { refuse: 'The stored sandbox of this session is malformed, so it does not run: a sandboxed session never runs without isolation.' };
-      }
-    },
+    sandboxOf: sandboxes.sandboxOf,
 
     /** Feeds one runtime event; moves a tracked session's status. Never throws (it runs inside the runtime loop). */
     observe(event: ClaudeRuntimeEvent): void {

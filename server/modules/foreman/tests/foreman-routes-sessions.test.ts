@@ -546,7 +546,7 @@ test('POST /sessions with a good sandbox starts a sandboxed session: the policy 
     assert.deepEqual(world.headCalls, ['/mnt/dev/known']);
 
     // The sandbox does not travel with the turn: a caller cannot drop it from a later run, the run asks for the stored one.
-    assert.deepEqual(Object.keys(world.startedTurns[0].options).sort(), ['effort', 'model', 'permissionMode', 'sessionSummary']);
+    assert.deepEqual(Object.keys(world.startedTurns[0].options).sort(), ['effort', 'foremanSandbox', 'model', 'permissionMode', 'sessionSummary']);
 
     const listed = (await call('GET', '/sessions')).body.data.sessions.find((entry: { id: string }) => entry.id === sessionId);
     assert.equal(listed.sandboxed, true);

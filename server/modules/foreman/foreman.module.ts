@@ -126,9 +126,10 @@ export function createForemanModule() {
     store: foremanSessionStateDb,
     log: (message) => console.log(`[Foreman bridge] ${message}`),
   });
-  // A session that has a sandbox runs in it or not at all: the runtime asks for it before every run and refuses on `refuse`.
-  setClaudeRuntimeSandboxProvider((sessionId) => {
-    const sandbox = sessionState.sandboxOf(sessionId);
+  // A session that has a sandbox runs in it or not at all: the runtime asks for it before every run and refuses on `refuse`. The run says
+  // whether it is one the bridge dispatched for a sandboxed session, which is refused when its sandbox cannot be found.
+  setClaudeRuntimeSandboxProvider((sessionId, run) => {
+    const sandbox = sessionState.sandboxOf(sessionId, run);
     return sandbox && ('refuse' in sandbox ? sandbox : buildSandboxAdditions(sandbox.policy));
   });
 

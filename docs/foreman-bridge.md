@@ -32,7 +32,9 @@ Success: `{ "success": true, "data": ... }`. Failure: `{ "success": false, "erro
 | 503 `FOREMAN_BRIDGE_DISABLED` | No token configured. |
 | 400 `INVALID_REQUEST`, `INVALID_SESSION_ID` | Malformed body, id or query. |
 | 400 `IDEMPOTENCY_KEY_REQUIRED` | A call that changes a session has no valid `idempotencyKey`. |
-| 400 `SANDBOX_REQUIRED`, `SANDBOX_INVALID` | Session start without a sandbox policy, or one that is malformed (see Sandbox). Nothing was started. |
+| 400 `SANDBOX_REQUIRED`, `SANDBOX_INVALID` | Session start without a sandbox policy, or one that is malformed or opens more than a worker may have (see Sandbox). Nothing was started. |
+| 400 `PERMISSION_MODE_FORBIDDEN` | `permissionMode` is `bypassPermissions` or `auto` on a start, message or compact of a sandboxed session (every session Foreman starts). Nothing ran. |
+| 500 `SANDBOX_NOT_RECORDED` | The start could not store its sandbox, or what was stored did not read back as the policy sent. Nothing ran (see Idempotency for the session left behind). |
 | 404 `SESSION_NOT_FOUND` | Unknown session. |
 | 409 `NOT_SUPERVISED` | The session is neither started by Foreman nor adopted (or it was released): it is not Foreman's to drive. |
 | 409 `RUN_IN_PROGRESS` | A turn is running; wait for its `turn_end`, or send with `"interrupt": true`. |
@@ -52,7 +54,7 @@ Every call that changes a session (`POST /sessions`, `.../message`, `.../interru
 - The same key for a different call: 422 `IDEMPOTENCY_KEY_REUSED`.
 - A call that began in a process that then died has no stored answer, and cloudcli cannot know whether its effect happened. It answers a repeat
   with 409 `IDEMPOTENCY_OUTCOME_UNKNOWN` and runs nothing. Read `GET .../state` and `.../events`, then decide; use a new key to try again.
-- A start that fails after the session was created (502 `TURN_START_FAILED`) leaves that session behind; a retry with the same key creates another.
+- A start that fails after the session was created (502 `TURN_START_FAILED`, 500 `SANDBOX_NOT_RECORDED`) leaves that session behind; a retry with the same key creates another.
 
 Suggested keys: `start:<runId>:<attempt>`, `message:<runId>:<position>`. They are opaque to cloudcli.
 
@@ -64,8 +66,8 @@ Session ids are cloudcli's stable app session ids. `lastSequence` is the sequenc
 | Call | Body / query | Answer |
 |---|---|---|
 | `GET /health` | | `{ status: "ok", time }` |
-| `POST /sessions` | `projectPath` (a known cloudcli project; a worktree made by `POST /projects/worktree` is one), `prompt`, `sandbox` (required), `idempotencyKey`, and optionally `model`, `billing`, `permissionMode`, `effort`, `title`, `taskId` | 201 `{ sessionId, projectPath, title, model, billing, permissionMode, taskId, status: "running", sandboxed: true }` |
-| `POST /sessions/:id/message` | `text`, `idempotencyKey`, optionally `interrupt: true`, `permissionMode` | 202 `{ sessionId, accepted: true, interrupted }` |
+| `POST /sessions` | `projectPath` (a known cloudcli project; a worktree made by `POST /projects/worktree` is one), `prompt`, `sandbox` (required), `idempotencyKey`, and optionally `model`, `billing`, `permissionMode` (`default`, `acceptEdits` or `plan`), `effort`, `title`, `taskId` | 201 `{ sessionId, projectPath, title, model, billing, permissionMode, taskId, status: "running", sandboxed: true }` |
+| `POST /sessions/:id/message` | `text`, `idempotencyKey`, optionally `interrupt: true`, `permissionMode` (as for the start) | 202 `{ sessionId, accepted: true, interrupted }` |
 | `POST /sessions/:id/interrupt` | `idempotencyKey` | `{ sessionId, interrupted, wasRunning, hadLiveProcess }`; 409 `NOT_RUNNING` when nothing runs |
 | `POST /sessions/:id/permission` | `requestId`, `decision: "allow" \| "deny"`, `idempotencyKey`, optionally `reason` | `{ resolved: true }`; 404 `NO_PENDING_PERMISSION` when someone answered first or the run is gone |
 | `GET /sessions/:id/permissions` | | `{ permissions: [{ requestId, toolName, input, askedAt }] }`: the prompts waiting now |
@@ -152,18 +154,38 @@ A session started through the bridge is **always sandboxed**. `sandbox` is Forem
 `scratchDir` must be **at most 64 characters**: the CLI's network bridge makes a unix socket under `<scratchDir>/tmp`, a socket path may be 107 bytes at most, and with a longer directory every Bash call of the session dies with "Sandbox is required but failed to initialize: Failed to create bridge sockets". cloudcli refuses a longer one at the start (`SANDBOX_INVALID`).
 
 It is the old policy builder's filled template with `sandbox` flattened, plus `scratchDir` and `approvalTimeoutMs` (optional, 1 s to 24 h, default 30 minutes). cloudcli
-applies it as the SDK `sandbox` option (bubblewrap around every Bash call), merges `permissions` into the run's flag settings (union), adds `disallowedTools` to the ones
-no person can un-deny, and merges `env` into the CLI process environment. It creates `scratchDir`, `scratchDir/tmp` and `scratchDir/cc` first.
+applies it as the SDK `sandbox` option (bubblewrap around every Bash call), merges `permissions` into the run's flag settings (union), adds `disallowedTools` (always with
+`AskUserQuestion` and `ExitPlanMode`) to the ones no person can un-deny, and merges `env` into the CLI process environment. It creates `scratchDir`, `scratchDir/tmp` and `scratchDir/cc` first.
 
-- **Fail closed.** No `sandbox`, `null`, or one that fails validation (missing part, a relative path, a scratch directory over 64 characters, a non-string, a list over 400 entries): 400 `SANDBOX_REQUIRED` / `SANDBOX_INVALID` and **nothing starts**.
-  The policy is stored with the session, so every later run (a message, after a restart too) applies the same one. If the stored policy cannot be read or is malformed, or the database
-  cannot be read, the run is refused before the CLI starts: a session that has a sandbox runs in it or not at all.
+- **Fail closed.** No `sandbox`, `null`, or one that fails validation (a missing part, a non-string, a list over 400 entries, a `scratchDir` that is not absolute or is over
+  64 characters, or a part that opens more than the rules below allow): 400 `SANDBOX_REQUIRED` / `SANDBOX_INVALID` and **nothing starts**.
+- **Recorded before the first run.** The policy is stored with the session by a write that must succeed and is then read back the way the session's runs read it; a failed
+  write or a policy that does not read back exactly as sent is a 500 `SANDBOX_NOT_RECORDED` and nothing runs. Every later run (a message, after a restart too) reads the
+  stored policy afresh and validates it with the current rules.
+- **Which runs fail closed.** Every run the bridge dispatches for a sandboxed session is marked as Foreman's (`foremanSandbox: true` in the turn's options). A stored policy
+  applies to every run of its session, marked or not; one that is malformed or fails today's rules refuses every run. With no stored policy a marked run is refused and any
+  other runs as before. When the database cannot be read, the policy this process last read or wrote for the session applies; without one a marked run is refused and an
+  unmarked one runs as before, so an unreadable state table never stops the owner's own sessions. **Residual risk:** a person typing into a worker session in the UI while
+  the table is unreadable and nothing is remembered runs that one turn without the sandbox.
 - **Do not deny `Edit`/`Write` on `.git/**`.** The CLI turns every Edit/Write deny rule into a read-only mount in the sandbox, so a deny of the checkout's `.git/**` leaves git unable to write its index, objects and refs:
   `git commit` fails with `Unable to create '.../index.lock': Read-only file system` (measured, real CLI; the old builder's template has exactly these rules). Deny only what must stay protected: `.git/hooks/**` and `.git/config`.
 - **A git worktree works if its git directory is opened.** A worktree's git directory is the main repository's `.git`, outside the checkout. Put it in `allowWrite` and `allowRead` (the old builder's `writeDirs`), keep `hooks` and `config` of it
   in `denyWrite` and denied for Edit/Write (writes to them fail with `Read-only file system`, measured), and allow `Read(//<git dir>/**)` for the file tools. `git add` by name and `git commit` then work; `git add -A` does not (the CLI's placeholder files).
-- cloudcli forces on, whatever the policy says: `enabled`, `failIfUnavailable`, `autoAllowBashIfSandboxed`, `allowUnsandboxedCommands: false` (so `dangerouslyDisableSandbox` is ignored), and
-  `network.strictAllowlist` (an unlisted host is a deterministic deny, never a prompt). A hostile policy can narrow a session, never widen it.
+- **Forced**, whatever the policy says: `enabled`, `failIfUnavailable`, `autoAllowBashIfSandboxed`, `allowUnsandboxedCommands: false` (so `dangerouslyDisableSandbox` is ignored),
+  `network.strictAllowlist` (an unlisted host is a deterministic deny, never a prompt), and `AskUserQuestion` and `ExitPlanMode` in the denied tools.
+- **Permission modes.** A sandboxed session runs in `default`, `acceptEdits` or `plan`; `bypassPermissions` and `auto` are refused (`PERMISSION_MODE_FORBIDDEN`), because the
+  sandbox covers Bash only and the file tools rely on the prompts those modes skip. The runtime holds every sandboxed run to this whatever its options say: another mode becomes
+  `default`, the UI's "skip permissions" setting is ignored, plan mode allows no reads or web tools outright, and a mode stored before this rule is not resumed.
+- **Validated** (400 `SANDBOX_INVALID`, naming the field), the parts that open something up:
+  - `env`: only `TMPDIR`, `CLAUDE_CODE_TMPDIR`, `CI`, `NODE_ENV`, `TZ`, `LANG`, `LC_ALL`, `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME`, `GIT_COMMITTER_EMAIL`;
+    the two temp directories inside `scratchDir`. (The session's routing is cloudcli's: no `ANTHROPIC_*`, `NODE_OPTIONS`, `LD_PRELOAD`.)
+  - `network.allowedDomains`: each `host:port` with a port, no wildcards, not `localhost`, and never cloudcli's port (`SERVER_PORT`, and 3001) or claude-cap's, on any host
+    (a name can resolve to this machine).
+  - `filesystem.allowRead`, `filesystem.allowWrite` and `scratchDir`: absolute, normalised (no `..`), no patterns, at least three components (not `/`, `/mnt`, `/mnt/dev`,
+    `/home/<user>`), not the home directory or above it; a writable one (`allowWrite`, `scratchDir`) never has a `.claude` or `.ssh` component nor reaches into `.git/hooks` or `.git/config`.
+  - `permissions.allow`: `Bash` (or `Bash(*)`), `TodoWrite`, `mcp__infigraph` (or one of its tools), and `Read`/`Edit`/`Write`/`NotebookEdit` rules on an absolute `//path`
+    that does not start with a wildcard; the write rules are held to the writable-path checks above. Nothing else (bare `Read`/`Edit`/`Write`, `WebFetch`, `WebSearch`, narrower `Bash(...)`).
+  - Not checked beyond shape and size: the lists that only close things (`denyRead`, `denyWrite`, `permissions.deny`, `disallowedTools`, `credentials`) and `allowAllUnixSockets`.
 - A prompt the rules do not settle becomes a `permission_request` event; `AskUserQuestion` and `ExitPlanMode` are denied at once. A prompt nobody answers within `approvalTimeoutMs` is denied with a
   message that says it was a timeout, not a decision.
 - The old regex guard (`guard` in the start body, `guarded` flags, the PreToolUse guard hook) no longer exists.

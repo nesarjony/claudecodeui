@@ -8,10 +8,23 @@ import type { ForemanSessionState, ForemanSessionStatePatch, ForemanSessionState
 import type { ForemanBilling } from '@/shared/types.js';
 import { AppError, clipText, isSandboxedPermissionMode, SANDBOXED_PERMISSION_MODES, summarizeToolInput } from '@/shared/utils.js';
 
+/** The options of a turn the bridge dispatches: the settings the UI sends with every turn, and the mark of a sandboxed session's run. */
+type ForemanTurnOptions = {
+  model?: string;
+  effort?: string;
+  permissionMode?: string;
+  sessionSummary: string;
+  /**
+   * Set on every run of a sandboxed session. The Claude runtime passes it to the sandbox provider as `required`: such a run is refused
+   * when its sandbox cannot be found, while a run without it (a person typing in the UI) is never refused for that.
+   */
+  foremanSandbox?: true;
+};
+
 type StartTurnInput = {
   sessionId: string;
   content: string;
-  options: Record<string, unknown>;
+  options: ForemanTurnOptions;
   interruptActiveRun?: boolean;
 };
 
@@ -112,7 +125,7 @@ export function createForemanSessionsService(deps: ForemanSessionsDependencies) 
     } catch (error) {
       throw notRecorded(`the write failed: ${error instanceof Error ? error.message : String(error)}`);
     }
-    const readBack = deps.state.sandboxOf(sessionId);
+    const readBack = deps.state.sandboxOf(sessionId, { required: true });
     if (!readBack || !('policy' in readBack) || !isDeepStrictEqual(readBack.policy, patch.sandbox)) {
       throw notRecorded('what is stored does not read back as the policy that was sent');
     }
@@ -175,7 +188,8 @@ export function createForemanSessionsService(deps: ForemanSessionsDependencies) 
     if (state.supervision === 'adopted' && options.permissionMode) {
       throw new AppError('A session handed over keeps its owner\'s permission mode: permissionMode cannot be set.', { code: 'PERMISSION_MODE_LOCKED', statusCode: 400 });
     }
-    if (isSandboxed(state)) {
+    const sandboxed = isSandboxed(state);
+    if (sandboxed) {
       requireSandboxedMode(options.permissionMode);
     }
     const processing = deps.runs.isProcessing(sessionId);
@@ -207,6 +221,7 @@ export function createForemanSessionsService(deps: ForemanSessionsDependencies) 
         effort: session.effort ?? undefined,
         permissionMode,
         sessionSummary: clipText(text, MAX_SUMMARY_LENGTH),
+        ...(sandboxed ? { foremanSandbox: true as const } : {}),
       },
     });
     return { interrupted };
@@ -271,6 +286,7 @@ export function createForemanSessionsService(deps: ForemanSessionsDependencies) 
           effort: input.effort,
           permissionMode: input.permissionMode,
           sessionSummary: clipText(input.title ?? input.prompt, MAX_SUMMARY_LENGTH),
+          foremanSandbox: true,
         },
       });
 

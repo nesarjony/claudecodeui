@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { startBody, withBridge, type World } from './foreman-routes-support.js';
+import { startBody, tick, withBridge, type World } from './foreman-routes-support.js';
 import { samplePolicy } from './foreman-sandbox-support.js';
 
 /**
@@ -41,5 +41,22 @@ test('a start whose sandbox is written but reads back as something else fails to
 
     world.stateStore.upsert = () => undefined;
     refusedAsNotRecorded(await call('POST', '/sessions', startBody()), world);
+  });
+});
+
+test('every turn of a session Foreman started is marked as sandboxed; a turn of a session handed over is not', async () => {
+  await withBridge(async ({ call, world }) => {
+    const started = await call('POST', '/sessions', startBody());
+    const sessionId = started.body.data.sessionId as string;
+    await tick();
+    await call('POST', `/sessions/${sessionId}/message`, { text: 'go on' });
+    await tick();
+    await call('POST', `/sessions/${sessionId}/compact`, {});
+    assert.deepEqual(world.startedTurns.map((turn) => turn.options.foremanSandbox), [true, true, true]);
+
+    world.addOwnerSession('owner');
+    assert.equal((await call('POST', '/sessions/owner/adopt', {})).status, 200);
+    assert.equal((await call('POST', '/sessions/owner/message', { text: 'hello' })).status, 202);
+    assert.equal('foremanSandbox' in (world.startedTurns.at(-1)?.options ?? {}), false, 'the owner\'s session runs as the owner set it up');
   });
 });
