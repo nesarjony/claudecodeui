@@ -1,6 +1,7 @@
 import {
   appConfigDb,
   foremanEventsDb,
+  foremanHandoverGrantsDb,
   foremanIdempotencyDb,
   foremanSessionStateDb,
   projectsDb,
@@ -18,7 +19,7 @@ import { createForemanEventPusher } from '@/modules/foreman/foreman-event-push.s
 import { createForemanEventRecorder } from '@/modules/foreman/foreman-event-recorder.service.js';
 import { createForemanEventStore } from '@/modules/foreman/foreman-event-store.service.js';
 import { createForemanGitService } from '@/modules/foreman/foreman-git.service.js';
-import { createForemanHandoverService } from '@/modules/foreman/foreman-handover.service.js';
+import { createForemanHandoverService, type ForemanHandoverService } from '@/modules/foreman/foreman-handover.service.js';
 import { createForemanIdempotency } from '@/modules/foreman/foreman-idempotency.service.js';
 import { createManagedSessionStore } from '@/modules/foreman/foreman-managed-sessions.service.js';
 import { createForemanRuntimeHooks } from '@/modules/foreman/foreman-runtime-hooks.service.js';
@@ -88,7 +89,8 @@ function readLiveContextUsage(raw: unknown): LiveContextUsage | null {
  * Subscribing here (rather than from the runtime) keeps the dependency one-way: the Claude runtime publishes generic lifecycle events
  * and knows nothing about Foreman.
  */
-// Consumed by the server entrypoint: it mounts `router` at /api/foreman and calls `resumeEventPush` once the database is ready.
+// Consumed by the server entrypoint: it mounts `router` at /api/foreman, hands `state` and `handover` to the UI module, and calls `resumeEventPush`
+// once the database is ready.
 export function createForemanModule() {
   const tokenFile = resolveBridgeTokenFile();
   const debugEnabled = Boolean(process.env.FOREMAN_BRIDGE_DEBUG);
@@ -229,6 +231,7 @@ export function createForemanModule() {
     headOf,
     settleEvents: () => recorder.whenIdle(),
     taskIds,
+    grants: foremanHandoverGrantsDb,
   });
 
   const router = createForemanRouter({
@@ -266,6 +269,8 @@ export function createForemanModule() {
     router,
     /** The sessions Foreman supervises, for the logged-in UI. */
     state: sessionState,
+    /** The hand-over, whose grants the logged-in owner records through the UI router. */
+    handover,
     /** Pushes the events a previous process stored and never saw acknowledged. Called once the database is initialised. */
     resumeEventPush: () => void pusher.kick(),
   };
@@ -273,13 +278,14 @@ export function createForemanModule() {
 
 /**
  * The user-facing half of the suggestion card: the pending suggestion for a session and the user's feedback,
- * proxied to Foreman with the bridge token (kept server-side), and which sessions Foreman supervises. Mounted at `/api/foreman-suggestions` behind the
- * normal cloudcli login, unlike the bridge router.
+ * proxied to Foreman with the bridge token (kept server-side), which sessions Foreman supervises, and the owner's hand-over grants. Mounted at
+ * `/api/foreman-suggestions` behind the normal cloudcli login, unlike the bridge router.
  */
-// Consumed by the server entrypoint, which mounts the returned router.
-export function createForemanUiModule(state: ForemanSessionStateService) {
+// Consumed by the server entrypoint, which mounts the returned router, and by the delegation integration test.
+export function createForemanUiModule(bridge: { state: ForemanSessionStateService; handover: ForemanHandoverService }) {
   return createForemanUiRouter({
     client: createForemanSuggestionsClient({ tokenFile: resolveBridgeTokenFile() }),
-    state,
+    state: bridge.state,
+    handover: bridge.handover,
   });
 }

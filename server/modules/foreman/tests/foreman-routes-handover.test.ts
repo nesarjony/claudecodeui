@@ -172,9 +172,10 @@ test('GET /sessions/:id/events validates `after` and `limit` and the session', a
 // ---------------------------------------------------------------------------------------------
 
 test('adopt takes over a session of the owner as it is: model, billing and settings are untouched, no sandbox, the start is recorded', async () => {
-  await withBridge(async ({ call, world }) => {
+  await withBridge(async ({ call, world, handOver }) => {
     addOwner(world);
     assert.equal(world.state.get('owner'), null);
+    await handOver('owner');
 
     const response = await call('POST', '/sessions/owner/adopt', { taskId: 'task-3' });
     assert.equal(response.status, 200);
@@ -214,9 +215,10 @@ test('adopt takes over a session of the owner as it is: model, billing and setti
 });
 
 test('adopting a session that has a cap model keeps its billing, and one that is mid-run is reported as running', async () => {
-  await withBridge(async ({ call, world }) => {
+  await withBridge(async ({ call, world, handOver }) => {
     world.addOwnerSession('capped', { model: 'claude-sonnet-5-5@cap' });
     world.processing.add('capped');
+    await handOver('capped');
     const response = await call('POST', '/sessions/capped/adopt', {});
     assert.equal(response.status, 200);
     assert.deepEqual([response.body.data.status, response.body.data.billing, response.body.data.model], ['running', 'cap', 'claude-sonnet-5-5']);
@@ -226,17 +228,19 @@ test('adopting a session that has a cap model keeps its billing, and one that is
 });
 
 test('adopting a project that has no commit still adopts the session', async () => {
-  await withBridge(async ({ call, world }) => {
+  await withBridge(async ({ call, world, handOver }) => {
     addOwner(world);
     world.head = null;
+    await handOver('owner');
     assert.equal((await call('POST', '/sessions/owner/adopt', {})).status, 200);
     assert.equal(world.state.get('owner')?.baseHead, null);
   });
 });
 
 test('adopting twice is a 409 ALREADY_SUPERVISED, unless it is the same call repeated, which gets the same answer', async () => {
-  await withBridge(async ({ call, world }) => {
+  await withBridge(async ({ call, world, handOver }) => {
     addOwner(world);
+    await handOver('owner');
     const first = await call('POST', '/sessions/owner/adopt', { idempotencyKey: 'adopt:owner:1' });
     assert.equal(first.status, 200);
 
@@ -255,9 +259,10 @@ test('adopting twice is a 409 ALREADY_SUPERVISED, unless it is the same call rep
   });
 });
 
-test('adopt validates the session and the task id, and a refused adopt changes nothing', async () => {
-  await withBridge(async ({ call, world }) => {
+test('adopt validates the session and the task id, and a refused adopt changes nothing, not even the grant', async () => {
+  await withBridge(async ({ call, world, handOver }) => {
     addOwner(world);
+    await handOver('owner');
     world.rows.set('codex', row({ session_id: 'codex', provider: 'codex' }));
     const unknown = await call('POST', '/sessions/nope/adopt', {});
     assert.equal(unknown.status, 404);
@@ -268,6 +273,7 @@ test('adopt validates the session and the task id, and a refused adopt changes n
     assert.equal(world.state.get('owner'), null);
     assert.deepEqual(world.headCalls, []);
     assert.equal(world.idempotencyStorage.rows.size, 0, 'no refused call burned its key');
+    assert.equal(world.grantRows.has('owner'), true, 'nor the owner\'s grant');
   });
 });
 
@@ -276,7 +282,7 @@ test('adopt validates the session and the task id, and a refused adopt changes n
 // ---------------------------------------------------------------------------------------------
 
 test('before the hand-over every call that drives an owner session is a 409 NOT_SUPERVISED and does nothing, and the same calls work after it', async () => {
-  await withBridge(async ({ call, world }) => {
+  await withBridge(async ({ call, world, handOver }) => {
     addOwner(world);
     world.live.add('owner');
     world.processing.add('owner');
@@ -310,6 +316,7 @@ test('before the hand-over every call that drives an owner session is a 409 NOT_
     assert.equal((await call('GET', '/sessions/owner/state')).status, 200);
 
     // Once the owner hands it over the very same calls go through.
+    await handOver('owner');
     assert.equal((await call('POST', '/sessions/owner/adopt', {})).status, 200);
     world.processing.clear();
     const bodyOf = (label: string) => calls.find(([name]) => name === label)?.[2] ?? {};
@@ -344,8 +351,9 @@ test('an owner session that is not Foreman\'s answers NOT_SUPERVISED before anyt
 // ---------------------------------------------------------------------------------------------
 
 test('on an adopted session a message runs with the session\'s own model and settings and no permission mode of Foreman\'s', async () => {
-  await withBridge(async ({ call, world }) => {
+  await withBridge(async ({ call, world, handOver }) => {
     addOwner(world);
+    await handOver('owner');
     await call('POST', '/sessions/owner/adopt', {});
 
     const response = await call('POST', '/sessions/owner/message', { text: 'Carry on with the migration' });
@@ -369,8 +377,9 @@ test('on an adopted session a message runs with the session\'s own model and set
 });
 
 test('on an adopted session a permission mode is refused with PERMISSION_MODE_LOCKED, for a message and for a compact', async () => {
-  await withBridge(async ({ call, world }) => {
+  await withBridge(async ({ call, world, handOver }) => {
     addOwner(world);
+    await handOver('owner');
     await call('POST', '/sessions/owner/adopt', {});
 
     for (const permissionMode of ['bypassPermissions', 'acceptEdits', 'default']) {
@@ -394,8 +403,9 @@ test('on an adopted session a permission mode is refused with PERMISSION_MODE_LO
 });
 
 test('on an adopted session a model change is refused with MODEL_LOCKED, live or idle, and the model stays the owner\'s', async () => {
-  await withBridge(async ({ call, world }) => {
+  await withBridge(async ({ call, world, handOver }) => {
     addOwner(world);
+    await handOver('owner');
     await call('POST', '/sessions/owner/adopt', {});
     for (const live of [false, true]) {
       if (live) world.live.add('owner');
@@ -414,8 +424,9 @@ test('on an adopted session a model change is refused with MODEL_LOCKED, live or
 });
 
 test('on an adopted session a permission answer and an interrupt work', async () => {
-  await withBridge(async ({ call, world }) => {
+  await withBridge(async ({ call, world, handOver }) => {
     addOwner(world);
+    await handOver('owner');
     await call('POST', '/sessions/owner/adopt', {});
     world.processing.add('owner');
     world.live.add('owner');
@@ -455,8 +466,9 @@ test('release is only for an adopted session: a started one or one that was neve
 });
 
 test('release waits until the stored events have settled before it lets go, then the session is the owner\'s again', async () => {
-  await withBridge(async ({ call, world }) => {
+  await withBridge(async ({ call, world, handOver }) => {
     addOwner(world);
+    await handOver('owner');
     await call('POST', '/sessions/owner/adopt', { taskId: 'task-3' });
     const during: Array<string | undefined> = [];
     world.onSettle = async () => {
@@ -482,9 +494,10 @@ test('release waits until the stored events have settled before it lets go, then
 });
 
 test('after release Foreman can no longer drive the session', async () => {
-  await withBridge(async ({ call, world }) => {
+  await withBridge(async ({ call, world, handOver }) => {
     addOwner(world);
     world.live.add('owner');
+    await handOver('owner');
     await call('POST', '/sessions/owner/adopt', {});
     assert.equal((await call('POST', '/sessions/owner/release', {})).status, 200);
     world.processing.add('owner');
@@ -516,8 +529,9 @@ test('after release Foreman can no longer drive the session', async () => {
 });
 
 test('a repeated release call answers as the first did and waits for the events only once', async () => {
-  await withBridge(async ({ call, world }) => {
+  await withBridge(async ({ call, world, handOver }) => {
     addOwner(world);
+    await handOver('owner');
     await call('POST', '/sessions/owner/adopt', {});
     const first = await call('POST', '/sessions/owner/release', { idempotencyKey: 'release:owner:1' });
     const repeat = await call('POST', '/sessions/owner/release', { idempotencyKey: 'release:owner:1' });
@@ -528,8 +542,9 @@ test('a repeated release call answers as the first did and waits for the events 
 });
 
 test('a released session can be adopted again, and counts from where it stands then', async () => {
-  await withBridge(async ({ call, world }) => {
+  await withBridge(async ({ call, world, handOver }) => {
     addOwner(world);
+    await handOver('owner');
     await call('POST', '/sessions/owner/adopt', {});
     assert.equal(world.state.get('owner')?.baseSequence, 0);
 
@@ -538,6 +553,9 @@ test('a released session can be adopted again, and counts from where it stands t
     assert.equal((await call('POST', '/sessions/owner/release', {})).body.data.lastSequence, 3);
     world.head = 'b'.repeat(40);
 
+    // The first grant was used up: taking the session again needs a new one.
+    assert.equal((await call('POST', '/sessions/owner/adopt', {})).body.error.code, 'HANDOVER_NOT_GRANTED');
+    await handOver('owner');
     const again = await call('POST', '/sessions/owner/adopt', {});
     assert.equal(again.status, 200);
     assert.deepEqual([again.body.data.supervision, again.body.data.lastSequence], ['adopted', 3]);

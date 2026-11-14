@@ -21,10 +21,12 @@ function addBusySession(world: World, sessionId = 's1') {
 // ---------------------------------------------------------------------------------------------
 
 test('every call that changes a session needs a well formed idempotencyKey, and without one nothing happens', async () => {
-  await withBridge(async ({ call, world }) => {
+  await withBridge(async ({ call, world, handOver }) => {
     addBusySession(world);
     world.addOwnerSession('owner');
     world.addOwnerSession('handed-over');
+    await handOver('owner');
+    await handOver('handed-over');
     assert.equal((await call('POST', '/sessions/handed-over/adopt', {})).status, 200);
     const keysBefore = world.idempotencyStorage.rows.size;
     const settledBefore = world.settleCalls;
@@ -56,14 +58,16 @@ test('every call that changes a session needs a well formed idempotencyKey, and 
     assert.deepEqual(world.modelChanges, []);
     assert.equal(world.settleCalls, settledBefore);
     assert.equal(world.state.get('owner'), null, 'the owner\'s session was not adopted');
+    assert.equal(world.grantRows.has('owner'), true, 'and its grant is still there to use');
     assert.equal(world.state.get('handed-over')?.supervision, 'adopted', 'and the adopted one was not released');
     assert.equal(world.idempotencyStorage.rows.size, keysBefore);
   });
 });
 
 test('a key may use letters, digits and . _ : - up to 200 characters', async () => {
-  await withBridge(async ({ call, world }) => {
+  await withBridge(async ({ call, world, handOver }) => {
     world.addOwnerSession('owner');
+    await handOver('owner');
     for (const idempotencyKey of ['start:run-1:1', 'A.b_c-d:e', 'x'.repeat(200)]) {
       const response = await call('POST', '/sessions/owner/adopt', { idempotencyKey });
       assert.ok(response.status === 200 || response.status === 409, `${idempotencyKey.slice(0, 20)} -> ${response.status}`);

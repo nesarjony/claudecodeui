@@ -12,6 +12,8 @@ export { foremanEventsDb } from '@/modules/database/repositories/foreman-events.
 export type { ForemanEventRow } from '@/modules/database/repositories/foreman-events.db.js';
 export { foremanIdempotencyDb } from '@/modules/database/repositories/foreman-idempotency.db.js';
 export type { ForemanIdempotencyRow } from '@/modules/database/repositories/foreman-idempotency.db.js';
+// foremanHandoverGrantsDb: used by the Foreman bridge's hand-over, which adopts a session only with an unused, unexpired grant of its owner.
+export { foremanHandoverGrantsDb } from '@/modules/database/repositories/foreman-handover-grants.db.js';
 export { githubTokensDb } from '@/modules/database/repositories/github-tokens.js';
 export { notificationChannelEndpointsDb } from '@/modules/database/repositories/notification-channel-endpoints.js';
 export { notificationPreferencesDb } from '@/modules/database/repositories/notification-preferences.js';

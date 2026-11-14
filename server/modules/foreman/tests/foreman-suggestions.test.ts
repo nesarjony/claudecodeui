@@ -226,6 +226,8 @@ async function withUiRouter(
   app.use('/api/foreman-suggestions', createForemanUiRouter({
     client: createForemanSuggestionsClient({ tokenFile, baseUrl: 'http://foreman.test:4111', fetchImpl }),
     state: options.state ?? { listSupervised: () => [] },
+    // The hand-over grants have their own tests (foreman-routes-handover-grant.test.ts); these never reach them.
+    handover: { grant: () => assert.fail('no grant here'), revoke: () => assert.fail('no grant here') },
   }));
   const server = app.listen(0, '127.0.0.1');
   await once(server, 'listening');

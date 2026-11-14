@@ -45,7 +45,7 @@ test('a start whose sandbox is written but reads back as something else fails to
 });
 
 test('every turn of a session Foreman started is marked as sandboxed; a turn of a session handed over is not', async () => {
-  await withBridge(async ({ call, world }) => {
+  await withBridge(async ({ call, world, handOver }) => {
     const started = await call('POST', '/sessions', startBody());
     const sessionId = started.body.data.sessionId as string;
     await tick();
@@ -55,6 +55,7 @@ test('every turn of a session Foreman started is marked as sandboxed; a turn of 
     assert.deepEqual(world.startedTurns.map((turn) => turn.options.foremanSandbox), [true, true, true]);
 
     world.addOwnerSession('owner');
+    await handOver('owner');
     assert.equal((await call('POST', '/sessions/owner/adopt', {})).status, 200);
     assert.equal((await call('POST', '/sessions/owner/message', { text: 'hello' })).status, 202);
     assert.equal('foremanSandbox' in (world.startedTurns.at(-1)?.options ?? {}), false, 'the owner\'s session runs as the owner set it up');

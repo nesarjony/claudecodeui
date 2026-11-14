@@ -129,10 +129,12 @@ test('GET /sessions lists claude sessions with status, billing, activity and bac
 });
 
 test('GET /sessions says which sessions Foreman supervises and which sit in a sandbox', async () => {
-  await withBridge(async ({ call, world }) => {
+  await withBridge(async ({ call, world, handOver }) => {
     world.addOwnerSession('owner');
     world.addOwnerSession('handed-over');
     world.addOwnerSession('given-back');
+    await handOver('handed-over');
+    await handOver('given-back');
     assert.equal((await call('POST', '/sessions/handed-over/adopt', {})).status, 200);
     assert.equal((await call('POST', '/sessions/given-back/adopt', {})).status, 200);
     assert.equal((await call('POST', '/sessions/given-back/release', {})).status, 200);

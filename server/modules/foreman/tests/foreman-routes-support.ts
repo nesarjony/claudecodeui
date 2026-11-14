@@ -19,7 +19,9 @@ import {
 } from '@/modules/foreman/foreman-session-reads.service.js';
 import { createForemanSessionStateService, type ForemanSessionStateStore } from '@/modules/foreman/foreman-session-state.service.js';
 import { createForemanSessionsService, type ForemanSessionsDependencies } from '@/modules/foreman/foreman-sessions.service.js';
+import { createForemanSuggestionsClient } from '@/modules/foreman/foreman-suggestions.service.js';
 import { createTaskIdStore } from '@/modules/foreman/foreman-task-ids.service.js';
+import { createForemanUiRouter } from '@/modules/foreman/foreman-ui.routes.js';
 import { createForemanRouter } from '@/modules/foreman/foreman.routes.js';
 
 import { createMemoryEventStorage } from './foreman-pipeline-support.js';
@@ -42,6 +44,7 @@ export function createBridgeServices(deps: BridgeDependencies) {
 }
 
 export type SessionRow = NonNullable<ReturnType<BridgeDependencies['sessionsDb']['getSessionById']>>;
+type GrantRow = Parameters<BridgeDependencies['grants']['put']>[0];
 export type StartTurnInput = Parameters<BridgeDependencies['startTurn']>[0];
 type ProjectRow = NonNullable<ReturnType<BridgeDependencies['projectsDb']['getProjectPath']>>;
 
@@ -133,6 +136,21 @@ export function createWorld() {
         .flatMap((stateRow) => (stateRow.supervision === 'started' || stateRow.supervision === 'adopted' ? [{ session_id: stateRow.session_id, supervision: stateRow.supervision, task_id: stateRow.task_id }] : [])),
   };
   const eventStorage = createMemoryEventStorage();
+  // The grants table in memory, with the repository's rules: a newer grant replaces the older one, and only an unexpired one can be used.
+  const grantRows = new Map<string, GrantRow>();
+  const grants: BridgeDependencies['grants'] = {
+    put: (grant) => void grantRows.set(grant.session_id, { ...grant }),
+    consume: (sessionId, nowIso) => {
+      const grant = grantRows.get(sessionId);
+      return Boolean(grant && grant.expires_at > nowIso && grantRows.delete(sessionId));
+    },
+    revoke: (sessionId) => grantRows.delete(sessionId),
+    purgeExpired: (nowIso) => {
+      const expired = [...grantRows.values()].filter((grant) => grant.expires_at <= nowIso);
+      expired.forEach((grant) => grantRows.delete(grant.session_id));
+      return expired.length;
+    },
+  };
 
   const rows = new SessionRows((sessionId) => {
     // A row added to the world is a session Foreman started, unless the state already knows it better (an adopted one).
@@ -146,6 +164,11 @@ export function createWorld() {
     events: createForemanEventStore({ storage: eventStorage }),
     eventStorage,
     idempotencyStorage: createMemoryIdempotencyStorage(),
+    grantRows,
+    /** The time the hand-over issues and checks grants at; tests move it. */
+    clock: new Date('2026-11-14T09:00:00.000Z'),
+    /** Who the fake login puts on the UI routes' requests; null for a request nobody logged in to. */
+    loggedIn: { id: 1, username: 'nesar' } as { id?: unknown; username?: unknown } | null,
     resolvedPermissions: [] as Array<{ requestId: string; decision: { allow: boolean; message?: string } }>,
     rows,
     /** A session its owner owns: nothing in the bridge's state, so Foreman neither started nor adopted it. */
@@ -274,6 +297,8 @@ export function createWorld() {
       set: (key, value) => void taskStore.set(key, value),
     }),
     managed: { mark: (sessionId) => void managedMarks.push(sessionId) },
+    grants,
+    now: () => world.clock,
     announceSession: async (sessionId) => {
       world.announced.push(sessionId);
     },
@@ -288,6 +313,7 @@ export function createWorld() {
 export type World = ReturnType<typeof createWorld>['world'];
 
 export type Call = (method: string, pathname: string, body?: unknown, token?: string | null) => Promise<{ status: number; body: any }>;
+type UiCall = (method: string, pathname: string, body?: unknown) => Promise<{ status: number; body: any }>;
 
 // Every POST that changes a session carries an idempotency key; the tests that look at the key itself pass their own.
 const SESSION_CHANGING = /^\/sessions(\/[^/?]+\/(message|interrupt|model|compact|permission|adopt|release))?(\?.*)?$/;
@@ -299,6 +325,10 @@ export async function withBridge(
     world: World;
     tokenFile: string;
     call: Call;
+    /** The logged-in UI routes (`/api/foreman-suggestions`), as `world.loggedIn`. */
+    ui: UiCall;
+    /** The owner hands the session over: the logged-in grant through the UI route, which adopt needs. */
+    handOver: (sessionId: string) => Promise<void>;
     /** A real directory registered as the known project `<projectDir>`; `deps` for building a second ("restarted") service. */
     projectDir: string;
     deps: BridgeDependencies;
@@ -314,11 +344,21 @@ export async function withBridge(
   world.claudeProjectsRoot = path.join(directory, 'projects');
   await mkdir(world.claudeProjectsRoot, { recursive: true });
 
+  const services = createBridgeServices(deps);
   const app = express();
   app.use(express.json({ limit: '5mb' }));
+  // Stands in for cloudcli's login (`authenticateToken`): it puts the logged-in user on the request, or nobody.
+  app.use('/api/foreman-suggestions', (request, _response, next) => {
+    if (world.loggedIn) Object.assign(request, { user: world.loggedIn });
+    next();
+  }, createForemanUiRouter({
+    client: createForemanSuggestionsClient({ tokenFile, baseUrl: 'http://foreman.invalid', fetchImpl: (async () => { throw new Error('Foreman is not part of these tests'); }) as typeof fetch }),
+    state: world.state,
+    handover: services.handover,
+  }));
   app.use('/api/foreman', createForemanRouter({
     authMiddleware: createBridgeAuthMiddleware({ tokenFile }),
-    ...createBridgeServices(deps),
+    ...services,
     idempotency: createForemanIdempotency({ storage: world.idempotencyStorage }),
     git: createForemanGitService({
       projectsDb: {
@@ -347,8 +387,21 @@ export async function withBridge(
     return { status: response.status, body: await response.json() };
   };
 
+  const ui: UiCall = async (method, pathname, body) => {
+    const response = await fetch(`${baseUrl}/api/foreman-suggestions${pathname}`, {
+      method,
+      headers: body !== undefined ? { 'content-type': 'application/json' } : {},
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
+    return { status: response.status, body: await response.json() };
+  };
+  const handOver = async (sessionId: string) => {
+    const granted = await ui('POST', `/handover/${encodeURIComponent(sessionId)}`);
+    if (granted.status !== 201) throw new Error(`the grant for ${sessionId} was refused: ${JSON.stringify(granted.body)}`);
+  };
+
   try {
-    await run({ baseUrl, world, tokenFile, call, projectDir, deps });
+    await run({ baseUrl, world, tokenFile, call, ui, handOver, projectDir, deps });
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await rm(directory, { recursive: true, force: true });

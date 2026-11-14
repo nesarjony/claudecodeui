@@ -3,6 +3,7 @@ import { Database } from 'better-sqlite3';
 import {
   APP_CONFIG_TABLE_SCHEMA_SQL,
   FOREMAN_EVENTS_TABLE_SCHEMA_SQL,
+  FOREMAN_HANDOVER_GRANTS_TABLE_SCHEMA_SQL,
   FOREMAN_IDEMPOTENCY_TABLE_SCHEMA_SQL,
   FOREMAN_SESSION_STATE_TABLE_SCHEMA_SQL,
   LAST_SCANNED_AT_SQL,
@@ -535,6 +536,7 @@ export const runMigrations = (db: Database) => {
     migrateForemanSessionStateColumns(db);
     db.exec(FOREMAN_EVENTS_TABLE_SCHEMA_SQL);
     db.exec(FOREMAN_IDEMPOTENCY_TABLE_SCHEMA_SQL);
+    db.exec(FOREMAN_HANDOVER_GRANTS_TABLE_SCHEMA_SQL);
     addSupersededTranscriptPathColumn(db);
 
     db.exec(PROJECTS_TABLE_SCHEMA_SQL);

@@ -1,8 +1,31 @@
 import express, { type NextFunction, type Request, type Response } from 'express';
 
+import type { ForemanHandoverService } from '@/modules/foreman/foreman-handover.service.js';
 import type { ForemanSuggestionsClient } from '@/modules/foreman/foreman-suggestions.service.js';
 import type { ForemanSessionStateService } from '@/modules/foreman/foreman-session-state.service.js';
 import { AppError, asyncHandler, createApiSuccessResponse } from '@/shared/utils.js';
+
+const SESSION_ID_PATTERN = /^[a-zA-Z0-9._-]{1,120}$/;
+
+/** The request after cloudcli's login (`authenticateToken`), which puts the logged-in user's row on it. */
+type AuthenticatedRequest = Request & { user?: { id?: unknown; username?: unknown } };
+
+function readSessionId(value: unknown): string {
+  if (typeof value !== 'string' || !SESSION_ID_PATTERN.test(value)) {
+    throw new AppError('Invalid session id.', { code: 'INVALID_SESSION_ID', statusCode: 400 });
+  }
+  return value;
+}
+
+/** Who is asking: the logged-in user's name, or their id. With nobody logged in (a router mounted without the login) nothing is handed over. */
+function readLoggedInUser(request: Request): string {
+  const user = (request as AuthenticatedRequest).user;
+  const name = typeof user?.username === 'string' && user.username ? user.username : typeof user?.id === 'number' || typeof user?.id === 'string' ? String(user.id) : '';
+  if (!name) {
+    throw new AppError('Only the logged-in owner can hand a session over.', { code: 'AUTH_REQUIRED', statusCode: 401 });
+  }
+  return name;
+}
 
 /**
  * Builds the user-facing Foreman suggestions router, mounted at `/api/foreman-suggestions` behind the normal cloudcli
@@ -16,10 +39,17 @@ import { AppError, asyncHandler, createApiSuccessResponse } from '@/shared/utils
  * - `GET  /notes?sessionId=`    the latest task notes for a session, `{ notes: { content, version, turn, createdAt } | null }`
  * - `GET  /supervised`         the sessions Foreman supervises now, `{ sessions: [{ sessionId, supervision: 'started' | 'adopted', taskId }] }`,
  *                               so the sidebar can mark the ones the owner handed over
+ * - `POST /handover/:sessionId` the owner lets Foreman adopt the session once within five minutes: 201 `{ sessionId, expiresAt }`. Only
+ *                               here, behind the login: the bridge token alone can never hand a session over.
+ * - `DELETE /handover/:sessionId` withdraws a grant Foreman has not used: `{ sessionId, revoked }`
  */
 // Consumed by foreman.module.ts, which mounts it on the server entrypoint, and by the route tests.
-export function createForemanUiRouter(options: { client: ForemanSuggestionsClient; state: Pick<ForemanSessionStateService, 'listSupervised'> }) {
-  const { client, state } = options;
+export function createForemanUiRouter(options: {
+  client: ForemanSuggestionsClient;
+  state: Pick<ForemanSessionStateService, 'listSupervised'>;
+  handover: Pick<ForemanHandoverService, 'grant' | 'revoke'>;
+}) {
+  const { client, state, handover } = options;
   const router = express.Router();
 
   router.use((_request: Request, response: Response, next: NextFunction) => {
@@ -37,6 +67,17 @@ export function createForemanUiRouter(options: { client: ForemanSuggestionsClien
 
   router.get('/supervised', (_request, response) => {
     response.json(createApiSuccessResponse({ sessions: state.listSupervised() }));
+  });
+
+  // Ahead of `/:id/execute` and `/:id/feedback`, which would otherwise take the grant of a session named `execute` or `feedback`.
+  router.post('/handover/:sessionId', (request, response) => {
+    const grantedBy = readLoggedInUser(request);
+    response.status(201).json(createApiSuccessResponse(handover.grant(readSessionId(request.params.sessionId), grantedBy)));
+  });
+
+  router.delete('/handover/:sessionId', (request, response) => {
+    readLoggedInUser(request);
+    response.json(createApiSuccessResponse(handover.revoke(readSessionId(request.params.sessionId))));
   });
 
   router.get('/notes', asyncHandler(async (request, response) => {

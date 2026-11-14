@@ -143,6 +143,7 @@ let logFile = '';
 let projectDir = '';
 let scratchDir = '';
 let baseUrl = '';
+let appUrl = '';
 let server: http.Server;
 let foremanServer: http.Server;
 let database: typeof import('@/modules/database/index.js');
@@ -214,13 +215,19 @@ before(async () => {
 
   const { sessionsService } = await import('@/modules/providers/index.js');
   createOwnerSession = (message) => sessionsService.createAppSession('claude', projectDir, message).sessionId;
-  const { createForemanModule } = await import('@/modules/foreman/index.js');
+  const { authenticateToken, authRoutes } = await import('@/modules/auth/index.js');
+  const { createForemanModule, createForemanUiModule } = await import('@/modules/foreman/index.js');
+  const bridge = createForemanModule();
   const app = express();
   app.use(express.json());
-  app.use('/api/foreman', createForemanModule().router);
+  app.use('/api/auth', authRoutes);
+  app.use('/api/foreman', bridge.router);
+  // As the server entrypoint mounts it: behind cloudcli's own login.
+  app.use('/api/foreman-suggestions', authenticateToken, createForemanUiModule(bridge));
   server = app.listen(0, '127.0.0.1');
   await once(server, 'listening');
-  baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/foreman`;
+  appUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  baseUrl = `${appUrl}/api/foreman`;
 });
 
 after(async () => {
@@ -415,8 +422,24 @@ test('what a run did is stored as numbered events for Foreman and pushed to its 
   assert.deepEqual([...new Set(pushedWith)], [`Bearer ${INTAKE_TOKEN}`], 'the intake got its own token, never the bridge token');
 });
 
+/** The owner's grant through the real login: the token cloudcli's own registration hands out. */
+async function grantAs(token: string, sessionId: string): Promise<number> {
+  const response = await fetch(`${appUrl}/api/foreman-suggestions/handover/${sessionId}`, { method: 'POST', headers: { authorization: `Bearer ${token}` } });
+  return response.status;
+}
+
 test('an adopted session runs as its owner set it up: no sandbox, none of the worker\'s subagents and rules, and Foreman still gets its events', async () => {
   const sessionId = createOwnerSession('My own work');
+  // The bridge token is no login: it cannot grant, and without the owner's grant Foreman cannot adopt.
+  assert.equal(await grantAs(TOKEN, sessionId), 401);
+  assert.equal((await api('POST', `/sessions/${sessionId}/adopt`, {})).body.error.code, 'HANDOVER_NOT_GRANTED');
+  const registered = await fetch(`${appUrl}/api/auth/register`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ username: 'owner', password: 'owner-password' }),
+  });
+  assert.equal(await grantAs(((await registered.json()) as { token: string }).token, sessionId), 201);
+
   const mark = (await fakeLog()).length;
   const adopted = await api('POST', `/sessions/${sessionId}/adopt`, {});
   assert.equal(adopted.status, 200, JSON.stringify(adopted.body));

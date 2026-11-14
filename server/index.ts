@@ -103,7 +103,7 @@ const agentRoutes = createAgentModule({
 });
 // Foreman bridge: token-protected control API, the event log of the sessions it drives and its push to the Foreman service.
 const foremanBridge = createForemanModule();
-const foremanUiRoutes = createForemanUiModule(foremanBridge.state);
+const foremanUiRoutes = createForemanUiModule(foremanBridge);
 const foremanTabRoutes = createForemanTabModule();
 
 // Single WebSocket server that handles chat, shell, and plugin proxy paths.
@@ -199,7 +199,7 @@ app.use('/api/browser-use-mcp', browserUseMcpRoutes);
 
 // Foreman bridge API (bridge-token protected; deliberately not behind the user login)
 app.use('/api/foreman', foremanBridge.router);
-// Foreman suggestion card: the logged-in user's view of the bridge (pending suggestion, feedback)
+// Foreman suggestion card and hand-over grants: the logged-in user's view of the bridge (pending suggestion, feedback, handing a session over)
 app.use('/api/foreman-suggestions', authenticateToken, foremanUiRoutes);
 // Foreman tab: the logged-in user's allowlisted view of Foreman (overview, decisions, spend, settings, tasks, inbox, lessons)
 app.use('/api/foreman-tab', authenticateToken, foremanTabRoutes);

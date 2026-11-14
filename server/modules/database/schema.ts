@@ -340,6 +340,20 @@ CREATE TABLE IF NOT EXISTS foreman_idempotency (
 );
 `;
 
+/**
+ * The owner's leave for Foreman to take over one of their sessions, recorded by the logged-in owner (never by the bridge). One per session:
+ * a newer grant replaces an older one, the hand-over uses it up, and after `expires_at` it is worth nothing.
+ */
+export const FOREMAN_HANDOVER_GRANTS_TABLE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS foreman_handover_grants (
+    session_id TEXT PRIMARY KEY NOT NULL,
+    -- The cloudcli user who granted it.
+    granted_by TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+);
+`;
+
 export const INIT_SCHEMA_SQL = `
 -- Initialize authentication database
 PRAGMA foreign_keys = ON;
@@ -399,4 +413,6 @@ ${FOREMAN_SESSION_STATE_TABLE_SCHEMA_SQL}
 ${FOREMAN_EVENTS_TABLE_SCHEMA_SQL}
 
 ${FOREMAN_IDEMPOTENCY_TABLE_SCHEMA_SQL}
+
+${FOREMAN_HANDOVER_GRANTS_TABLE_SCHEMA_SQL}
 `;
