@@ -467,7 +467,11 @@
       "pause_batch": "pause batch",
       "take_over": "take over",
       "hand_back": "hand back",
-      "answered": "answered"
+      "hand_over": "hand over",
+      "release": "release",
+      "answered": "answered",
+      "planned": "planned",
+      "idle": "idle"
     },
     "worker": "Worker",
     "session": "Session",
