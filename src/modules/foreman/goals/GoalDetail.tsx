@@ -14,7 +14,7 @@ import { formatDateTime, goalActions, isActiveGoal, isOverdue, nextLine } from '
 import type { GoalDetail, GoalListItem, GoalTaskView } from '@/modules/foreman/goals/types';
 import { TaskDetailView } from '@/modules/foreman/sections/TasksSection';
 import { usePolledResource } from '@/modules/foreman/usePolledResource';
-import { useNow } from '@/modules/foreman/useNow';
+import { useNow } from '@/shared/hooks/useNow';
 
 const HEADING = 'm-0 text-xs font-semibold text-foreground/80';
 const TIMELINE_SHOWN = 8;
