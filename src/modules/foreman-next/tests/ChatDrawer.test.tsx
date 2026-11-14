@@ -54,7 +54,20 @@ describe('the chat drawer', () => {
     expect((within(drawer).getByLabelText('about:') as HTMLSelectElement).value).toBe('g-inbox');
   });
 
-  it('sends the screen as context with the message, and the goal as the thread', async () => {
+  it('asks Foreman for the thread of the screen\'s subject once, and not the goal, run or decision itself', async () => {
+    const api = quickApi();
+    const thread = vi.spyOn(api, 'chatThread');
+    const goal = vi.spyOn(api, 'goal');
+    const decision = vi.spyOn(api, 'decision');
+    renderForemanApp('/foreman/work/runs/run-t2', api);
+    const drawer = await openDrawer();
+    await within(drawer).findByText('Looking at: t2-layout');
+    expect(thread).toHaveBeenCalledWith({ kind: 'run', id: 'run-t2' });
+    expect(goal).not.toHaveBeenCalled();
+    expect(decision).not.toHaveBeenCalled();
+  });
+
+  it('sends the screen as the subject of the message', async () => {
     const api = quickApi();
     const send = vi.spyOn(api, 'sendChat');
     renderForemanApp('/foreman/work/runs/run-t2', api);
@@ -63,7 +76,7 @@ describe('the chat drawer', () => {
     fireEvent.change(within(drawer).getByLabelText('Message Foreman...'), { target: { value: 'Pause after this' } });
     fireEvent.click(within(drawer).getByRole('button', { name: 'Send' }));
     await waitFor(() => expect(send).toHaveBeenCalled());
-    expect(send).toHaveBeenCalledWith({ goalId: 'g-inbox', subject: { kind: 'run', id: 'run-t2' }, text: 'Pause after this', delivery: 'next-safe-point' });
+    expect(send).toHaveBeenCalledWith({ subject: { kind: 'run', id: 'run-t2' }, text: 'Pause after this', delivery: 'next-safe-point' });
   });
 
   it('lets the owner pick another goal and shows its conversation', async () => {

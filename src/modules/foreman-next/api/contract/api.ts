@@ -1,5 +1,5 @@
 import type { AlertItem, ForemanStatus } from '@/modules/foreman-next/api/contract/status';
-import type { ChatMessage, ChatSendRequest, ChatThread } from '@/modules/foreman-next/api/contract/chat';
+import type { ChatMessage, ChatSendRequest, ChatSubjectRef, ChatThread } from '@/modules/foreman-next/api/contract/chat';
 import type { DecisionFeedback, DecisionRecord, HistoryEntry, OwnerQuestion, QuestionAnswer, ReviewItem } from '@/modules/foreman-next/api/contract/decide';
 import type { DelegationKind } from '@/modules/foreman-next/api/contract/foundation';
 import type { SessionSupervision } from '@/modules/foreman-next/api/contract/session';
@@ -39,7 +39,7 @@ export type ForemanApi = {
   takeOverRun: (id: string) => Promise<RunDetail>;
   handBackRun: (id: string) => Promise<RunDetail>;
   replayRun: (id: string, fromStep: RunStageId) => Promise<RunDetail>;
-  chatThread: (goalId: string | null) => Promise<ChatThread>;
+  chatThread: (subject: ChatSubjectRef) => Promise<ChatThread>;
   sendChat: (request: ChatSendRequest) => Promise<ChatMessage[]>;
   undoChatActions: (actionsId: string) => Promise<ChatMessage>;
   rememberChatMessage: (messageId: string) => Promise<ChatMessage>;

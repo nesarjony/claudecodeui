@@ -1,6 +1,6 @@
 export type IsoTime = string;
 
-// Mirrors `decisionKindSchema` and `ledgerChoiceSchema` in foreman-next `src/ledger/kinds.ts` (branch slice/2-spine); the UI cannot import Foreman's code.
+// Mirrors `decisionKindSchema` and `ledgerChoiceSchema` in foreman-next `src/ledger/kinds.ts` on `main`; the UI cannot import Foreman's code.
 export type DecisionKind =
   | 'routine-turn'
   | 'worker-question'

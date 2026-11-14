@@ -1,7 +1,7 @@
 import type { EntityRef, IsoTime, RememberScope } from '@/modules/foreman-next/api/contract/foundation';
 
 export type ChatSubjectKind = 'general' | 'goal' | 'run' | 'decision';
-// What the owner is looking at when they write: it travels with each message as context, while the thread belongs to a goal.
+// What the conversation is about: the screen the owner is on, or a goal they picked. Each goal has one thread.
 export type ChatSubjectRef = { kind: ChatSubjectKind; id: string | null };
 
 export const CHAT_DELIVERIES = ['next-safe-point', 'after-batch'] as const;
@@ -20,5 +20,6 @@ export type ChatMessage = {
   remembered: RememberScope | null;
 };
 export type ChatGoal = { id: string; label: string };
-export type ChatThread = { goalId: string | null; goals: ChatGoal[]; messages: ChatMessage[] };
-export type ChatSendRequest = { goalId: string | null; subject: ChatSubjectRef; text: string; delivery: ChatDelivery };
+// Foreman maps the subject to the goal whose conversation holds it, and names the subject.
+export type ChatThread = { goalId: string | null; label: string | null; goals: ChatGoal[]; messages: ChatMessage[] };
+export type ChatSendRequest = { subject: ChatSubjectRef; text: string; delivery: ChatDelivery };

@@ -4,10 +4,10 @@ import { useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import type { KeyboardEvent, RefObject } from 'react';
 
-import type { ChatDelivery } from '@/modules/foreman-next/api/contract';
+import type { ChatDelivery, ChatSubjectRef } from '@/modules/foreman-next/api/contract';
 import { ChatComposer } from '@/modules/foreman-next/chat/ChatComposer';
 import { ChatMessageItem } from '@/modules/foreman-next/chat/ChatMessageItem';
-import { chatContextOf, subjectFromPath } from '@/modules/foreman-next/chat/chatSubject';
+import { subjectFromPath } from '@/modules/foreman-next/chat/chatSubject';
 import { InlineError } from '@/modules/foreman-next/components/InlineError';
 import { NativeSelect } from '@/modules/foreman-next/components/NativeSelect';
 import { ResourceView } from '@/modules/foreman-next/components/ResourceView';
@@ -32,18 +32,10 @@ export function ChatDrawer({ returnFocusTo, onClose }: ChatDrawerProps) {
   const drawerRef = useRef<HTMLElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const endRef = useRef<HTMLLIElement>(null);
-  // The goal the owner picked from the list; it applies only to the screen it was picked on, so moving on goes back to the goal of that screen.
-  const [picked, setPicked] = useState<{ path: string; goalId: string | null } | null>(null);
-  const subject = subjectFromPath(pathname);
-  const pickedGoal = picked?.path === pathname ? picked : null;
-  const view = useForemanResource(
-    async (foreman) => {
-      const context = await chatContextOf(foreman, subject);
-      const goalId = pickedGoal ? pickedGoal.goalId : context.goalId;
-      return { context, goalId, thread: await foreman.chatThread(goalId) };
-    },
-    { key: `${subject.kind}:${subject.id}:${pickedGoal ? (pickedGoal.goalId ?? '') : '-'}` },
-  );
+  // The goal the owner picked from the list, as the subject of the conversation; it applies only to the screen it was picked on, so moving on goes back to that screen's subject.
+  const [picked, setPicked] = useState<{ path: string; subject: ChatSubjectRef } | null>(null);
+  const subject = picked?.path === pathname ? picked.subject : subjectFromPath(pathname);
+  const thread = useForemanResource((foreman) => foreman.chatThread(subject), { key: `${subject.kind}:${subject.id}` });
   useFocusTrap(drawerRef, narrow);
 
   useEffect(() => {
@@ -52,15 +44,12 @@ export function ChatDrawer({ returnFocusTo, onClose }: ChatDrawerProps) {
     return () => target?.focus();
   }, [returnFocusTo]);
 
-  const messageCount = view.data?.thread.messages.length ?? 0;
+  const messageCount = thread.data?.messages.length ?? 0;
   useEffect(() => {
     endRef.current?.scrollIntoView?.({ block: 'end' });
   }, [messageCount]);
 
-  const send = async (text: string, delivery: ChatDelivery) => {
-    const goalId = view.data?.goalId ?? null;
-    return (await run(() => api.sendChat({ goalId, subject, text, delivery }))).ok;
-  };
+  const send = async (text: string, delivery: ChatDelivery) => (await run(() => api.sendChat({ subject, text, delivery }))).ok;
 
   const onKeyDown = (event: KeyboardEvent) => {
     if (event.key === 'Escape') onClose();
@@ -81,12 +70,12 @@ export function ChatDrawer({ returnFocusTo, onClose }: ChatDrawerProps) {
           </label>
           <NativeSelect
             id="foreman-chat-goal"
-            value={view.data?.goalId ?? ''}
-            onChange={(event) => setPicked({ path: pathname, goalId: event.target.value || null })}
+            value={thread.data?.goalId ?? ''}
+            onChange={(event) => setPicked({ path: pathname, subject: event.target.value ? { kind: 'goal', id: event.target.value } : { kind: 'general', id: null } })}
             className="min-w-0 flex-1 py-1"
           >
             <option value="">{t('chat.general')}</option>
-            {(view.data?.thread.goals ?? []).map((goal) => (
+            {(thread.data?.goals ?? []).map((goal) => (
               <option key={goal.id} value={goal.id}>
                 {goal.label}
               </option>
@@ -96,13 +85,13 @@ export function ChatDrawer({ returnFocusTo, onClose }: ChatDrawerProps) {
             <X />
           </Button>
         </div>
-        {view.data?.context.label ? <p className="text-xs text-muted-foreground">{t('chat.looking', { label: view.data.context.label })}</p> : null}
+        {thread.data?.label ? <p className="text-xs text-muted-foreground">{t('chat.looking', { label: thread.data.label })}</p> : null}
       </header>
       <div className="min-h-0 flex-1 overflow-y-auto p-3">
-        <ResourceView resource={view} isEmpty={(data) => data.thread.messages.length === 0} empty={<p className="text-sm text-muted-foreground">{t('chat.empty')}</p>}>
+        <ResourceView resource={thread} isEmpty={(data) => data.messages.length === 0} empty={<p className="text-sm text-muted-foreground">{t('chat.empty')}</p>}>
           {(data) => (
             <ul role="log" aria-label={t('chat.conversation')} aria-live="polite" className="space-y-4">
-              {data.thread.messages.map((message) => (
+              {data.messages.map((message) => (
                 <ChatMessageItem key={message.id} message={message} />
               ))}
               <li ref={endRef} aria-hidden />

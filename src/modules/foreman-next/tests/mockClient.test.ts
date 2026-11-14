@@ -46,15 +46,25 @@ describe('the mock client, default scenario', () => {
     expect((await api.history()).every((entry) => entry.goalId === 'g-inbox')).toBe(true);
   });
 
-  it('keeps one conversation per goal, with the screen as context, and remembers an answer', async () => {
+  it('keeps one conversation per goal: Foreman maps the subject to its goal and names it', async () => {
     const api = quickApi();
-    expect((await api.chatThread('g-inbox')).messages.length).toBeGreaterThan(0);
-    expect((await api.chatThread(null)).messages).toEqual([]);
-    const [, reply] = await api.sendChat({ goalId: null, subject: { kind: 'run', id: 'run-t2' }, text: 'status?', delivery: 'next-safe-point' });
-    expect((await api.chatThread(null)).messages).toHaveLength(2);
-    expect((await api.chatThread('g-inbox')).messages.some((message) => message.id === reply?.id)).toBe(false);
-    const remembered = await api.rememberChatMessage(reply?.id ?? '');
-    expect(remembered.remembered).toBe('global');
+    const byGoal = await api.chatThread({ kind: 'goal', id: 'g-inbox' });
+    expect(byGoal).toMatchObject({ goalId: 'g-inbox', label: 'desk · Inbox at 100% Libredesk parity' });
+    expect(byGoal.messages.length).toBeGreaterThan(0);
+    expect(await api.chatThread({ kind: 'run', id: 'run-t2' })).toMatchObject({ goalId: 'g-inbox', label: 't2-layout', messages: byGoal.messages });
+    expect(await api.chatThread({ kind: 'decision', id: 'dec-steer-9' })).toMatchObject({ goalId: 'g-inbox', label: 'Steer at turn 9 · t2-layout' });
+    expect(await api.chatThread({ kind: 'general', id: null })).toMatchObject({ goalId: null, label: null, messages: [] });
+  });
+
+  it('files a message under the goal of its subject, and remembers an answer', async () => {
+    const api = quickApi();
+    const general = { kind: 'general', id: null } as const;
+    const [, reply] = await api.sendChat({ subject: general, text: 'status?', delivery: 'next-safe-point' });
+    expect((await api.chatThread(general)).messages).toHaveLength(2);
+    expect((await api.chatThread({ kind: 'goal', id: 'g-inbox' })).messages.some((message) => message.id === reply?.id)).toBe(false);
+    await api.sendChat({ subject: { kind: 'run', id: 'run-t2' }, text: 'pause after this', delivery: 'after-batch' });
+    expect((await api.chatThread({ kind: 'goal', id: 'g-inbox' })).messages.at(-2)?.text).toBe('pause after this');
+    expect((await api.rememberChatMessage(reply?.id ?? '')).remembered).toBe('global');
     expect((await api.rememberChatMessage('m2')).remembered).toBe('goal');
   });
 

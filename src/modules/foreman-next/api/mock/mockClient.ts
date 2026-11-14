@@ -1,5 +1,5 @@
 import { ApiRequestError } from '@/shared/api';
-import type { ChatMessage, DelegationRule, ForemanApi, GoalDetail, RunDetail, RunStageId, SessionSupervision } from '@/modules/foreman-next/api/contract';
+import type { ChatMessage, ChatSubjectRef, DelegationRule, ForemanApi, GoalDetail, RunDetail, RunStageId, SessionSupervision } from '@/modules/foreman-next/api/contract';
 import { clone, find, firstStrategy, isLiveHandOver, newGoalDetail, newHandedOverRun, notFound, studySteps, summaryOf } from '@/modules/foreman-next/api/mock/mockHelpers';
 import { createMockStore } from '@/modules/foreman-next/api/mock/mockStore';
 import type { MockStore } from '@/modules/foreman-next/api/mock/mockStore';
@@ -65,6 +65,17 @@ export function createMockApi({ scenario = 'default', latencyMs = 150, studyMs =
   };
   const findMessage = (predicate: (message: ChatMessage) => boolean): ChatMessage | undefined => Object.values(store.threads).flat().find(predicate);
   const threadOf = (goalId: string | null): ChatMessage[] => store.threads[goalId ?? ''] ?? [];
+
+  const scopeOf = (subject: ChatSubjectRef): { goalId: string | null; label: string | null } => {
+    if (subject.id === null) return { goalId: null, label: null };
+    if (subject.kind === 'goal') return { goalId: subject.id, label: goal(subject.id).title };
+    if (subject.kind === 'run') {
+      const target = run(subject.id);
+      return { goalId: target.goalId, label: target.batch };
+    }
+    const decision = find(store.decisions, subject.id, 'decision');
+    return { goalId: decision.goalId, label: decision.title };
+  };
 
   const replyTo = (text: string, delivery: string): ChatMessage => ({
     id: `reply-${(messageCount += 1)}`,
@@ -179,9 +190,14 @@ export function createMockApi({ scenario = 'default', latencyMs = 150, studyMs =
           target.stages = STAGE_ORDER.map((stage, position) => ({ id: stage, state: position < from ? 'done' : position === from ? 'running' : 'pending' }));
         }),
       ),
-    chatThread: (goalId) => respond('chatThread', () => ({ goalId, goals: store.chatGoals, messages: threadOf(goalId) })),
-    sendChat: ({ goalId, text, delivery }) =>
+    chatThread: (subject) =>
+      respond('chatThread', () => {
+        const scope = scopeOf(subject);
+        return { ...scope, goals: store.chatGoals, messages: threadOf(scope.goalId) };
+      }),
+    sendChat: ({ subject, text, delivery }) =>
       respond('sendChat', () => {
+        const { goalId } = scopeOf(subject);
         const owner: ChatMessage = { id: `owner-${(messageCount += 1)}`, role: 'owner', at: at(Date.now(), 0), text, evidence: [], actions: null, remembered: null };
         const reply = replyTo(text, delivery);
         store.threads[goalId ?? ''] = [...threadOf(goalId), owner, reply];
