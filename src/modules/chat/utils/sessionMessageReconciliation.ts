@@ -103,7 +103,10 @@ export function removeOptimisticUserEchoes(
   const claimedServerIds = new Set<string>();
 
   return realtimeMessages.filter((message) => {
-    if (!message.id.startsWith('local_')) {
+    // Only the composer's echoes are retired here, and those always carry a
+    // `local_` id. A row without a string id is left alone rather than read,
+    // because a throw here fails the whole merge for the session.
+    if (typeof message.id !== 'string' || !message.id.startsWith('local_')) {
       return true;
     }
 

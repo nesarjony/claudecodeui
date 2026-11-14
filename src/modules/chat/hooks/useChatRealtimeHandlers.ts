@@ -3,6 +3,7 @@ import type { Dispatch, MutableRefObject, SetStateAction } from 'react';
 
 import type { ServerEvent,MarkSessionIdle,MarkSessionProcessing,PendingPermissionRequest,ProjectSession,LLMProvider,NormalizedMessage } from '@/shared/types';
 import { showCompletionTitleIndicator } from '@/modules/chat/utils/pageTitleNotification';
+import { isTranscriptRowKind } from '@/modules/chat/utils/realtimeTranscriptRows';
 import { playChatCompletionSound, playNotificationSound } from '@/shared/utils';
 import type { SessionStore } from '@/modules/chat/hooks/useSessionStore';
 
@@ -177,6 +178,12 @@ export function useChatRealtimeHandlers({
         case 'loading_progress':
           return;
 
+        // Broadcast to every chat socket by the Foreman bridge. The suggestion
+        // card (useForemanSuggestion) and the Foreman tab subscribe to the same
+        // socket and own it; it is not a row of the conversation.
+        case 'foreman_suggestion':
+          return;
+
         default:
           break;
       }
@@ -220,15 +227,12 @@ export function useChatRealtimeHandlers({
         return;
       }
 
-      // --- All other messages: route to store ---
-      const shouldPersist =
-        msg.kind !== 'complete'
-        && msg.kind !== 'status'
-        && msg.kind !== 'permission_request'
-        && msg.kind !== 'permission_resolved'
-        && msg.kind !== 'permission_cancelled';
-
-      if (sid && shouldPersist) {
+      // --- Conversation rows: route to store ---
+      // Only kinds that are rows of the conversation are appended. Anything
+      // else here is a control or app event with its own consumer; appending
+      // every unrecognised kind is what let Foreman's id-less suggestion frame
+      // into the merge, where it broke every later send in the session.
+      if (sid && isTranscriptRowKind(msg.kind)) {
         sessionStore.appendRealtime(sid, msg as unknown as NormalizedMessage);
       }
 

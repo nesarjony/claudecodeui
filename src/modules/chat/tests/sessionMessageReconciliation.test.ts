@@ -99,3 +99,17 @@ test('a replacement echo survives a kept turn that repeats its text', () => {
   const persisted = [...kept, userRow('persisted', 'continue', '2026-01-01T00:00:25.000Z')];
   assert.deepEqual(removeOptimisticUserEchoes(persisted, [echo]), []);
 });
+
+test('passes over a live row without an id instead of throwing', () => {
+  // Foreman's suggestion frame reached the live rows this way: a `kind` and a
+  // `sessionId` but no `id`. Reading `id.startsWith` on it failed the merge.
+  const idless = {
+    kind: 'foreman_suggestion',
+    sessionId: 'session-1',
+    timestamp: '2026-11-14T15:09:54.000Z',
+  } as unknown as NormalizedMessage;
+  const local = createUserMessage('local_send', '2026-11-14T15:12:07.000Z', { content: 'yes continue' });
+  const persisted = createUserMessage('claude_send', '2026-11-14T15:12:08.000Z', { content: 'yes continue' });
+
+  assert.deepEqual(removeOptimisticUserEchoes([persisted], [idless, local]), [idless]);
+});

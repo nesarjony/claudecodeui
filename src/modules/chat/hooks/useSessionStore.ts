@@ -12,6 +12,7 @@ import { useCallback, useMemo, useRef, useState } from 'react';
 import { api } from '@/shared/api';
 import type { LLMProvider, NormalizedMessage } from '@/shared/types';
 import { removeOptimisticUserEchoes } from '@/modules/chat/utils/sessionMessageReconciliation';
+import { withRealtimeRowId } from '@/modules/chat/utils/realtimeTranscriptRows';
 import {
   hasReachedCachedTailTimeBoundary,
   mergeLatestServerPage,
@@ -381,9 +382,39 @@ function recomputeMergedIfNeeded(slot: SessionSlot): boolean {
   if (slot.serverMessages === slot._lastServerRef && slot.realtimeMessages === slot._lastRealtimeRef) {
     return false;
   }
+  // Merge before moving the cache keys: a merge that throws then leaves them
+  // on the last good inputs, so the next call retries instead of treating the
+  // stale `merged` as current.
+  slot.merged = computeMerged(slot.serverMessages, slot.realtimeMessages);
   slot._lastServerRef = slot.serverMessages;
   slot._lastRealtimeRef = slot.realtimeMessages;
-  slot.merged = computeMerged(slot.serverMessages, slot.realtimeMessages);
+  return true;
+}
+
+/**
+ * Replaces a slot's live rows only once their merged view has been computed.
+ *
+ * A merge that throws leaves the slot exactly as it was. Committing the rows
+ * first kept the row that broke the merge in the slot, so every later append
+ * for the session threw on it again — the composer's echo included, which
+ * runs before the send is written to the socket.
+ */
+function commitRealtimeMessages(
+  sessionId: string,
+  slot: SessionSlot,
+  nextRealtime: NormalizedMessage[],
+): boolean {
+  let merged: NormalizedMessage[];
+  try {
+    merged = computeMerged(slot.serverMessages, nextRealtime);
+  } catch (error) {
+    console.error(`[SessionStore] Could not merge a live row for ${sessionId}; it was not added.`, error);
+    return false;
+  }
+  slot.realtimeMessages = nextRealtime;
+  slot.merged = merged;
+  slot._lastServerRef = slot.serverMessages;
+  slot._lastRealtimeRef = nextRealtime;
   return true;
 }
 
@@ -749,18 +780,20 @@ export function useSessionStore() {
   }, [notify]);
 
   const appendRealtime = useCallback((sessionId: string, msg: NormalizedMessage) => {
+    const row = withRealtimeRowId(
+      sessionId,
+      msg.sessionId === sessionId ? msg : { ...msg, sessionId },
+    );
+    if (!row) return;
+
     const slot = getSlot(sessionId);
-    const normalizedMessage =
-      msg.sessionId === sessionId
-        ? msg
-        : { ...msg, sessionId };
-    let updated = [...slot.realtimeMessages, normalizedMessage];
+    let updated = [...slot.realtimeMessages, row];
     if (updated.length > MAX_REALTIME_MESSAGES) {
       updated = updated.slice(-MAX_REALTIME_MESSAGES);
     }
-    slot.realtimeMessages = updated;
-    recomputeMergedIfNeeded(slot);
-    notify(sessionId);
+    if (commitRealtimeMessages(sessionId, slot, updated)) {
+      notify(sessionId);
+    }
   }, [getSlot, notify]);
 
   /**
