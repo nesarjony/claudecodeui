@@ -395,6 +395,8 @@ database and every copy.
 
 - **Tokens:** the bridge token (`FOREMAN_BRIDGE_TOKEN_FILE`, what Foreman presents) and the events token (`FOREMAN_EVENTS_TOKEN_FILE`, what cloudcli presents to Foreman's
   intake), two different values, each in a file of mode 600.
+- **`FOREMAN_URL`:** the new Foreman's origin, `http://127.0.0.1:4211`. The suggestions client, the runtime hooks and the Foreman tab call the origin in `FOREMAN_URL`, else the origin of
+  `FOREMAN_EVENTS_URL`, else the old Foreman's `http://127.0.0.1:4111`. Set it explicitly: with neither it nor `FOREMAN_EVENTS_URL` set, the UI keeps calling the old Foreman.
 - **`FOREMAN_EVENTS_URL`:** the new Foreman's intake. `FOREMAN_EVENTS_TOKEN_FILE` has no default: without it nothing is pushed (events are still stored and `eventsSince`
   serves them).
 - **claude-cap:** the `foreman-worker` profile enabled and reachable as `<CLAUDE_CAP_URL>/profile/foreman-worker`, with its caps (MiniMax: 70% of the five-hour and 80% of the
@@ -404,19 +406,22 @@ database and every copy.
 ### Cutover checklist
 
 1. Drain the old Foreman: stop new starts, then let the running batches finish or interrupt them. They are not resumed: after the migration their sessions are `released`.
-2. Stop the live instance. Back up `auth.db` and `chmod 600` it and its copies (above).
-3. Stop the old Foreman (:4111).
-4. Deploy the branch build as the live instance with the configuration above, and start it; it migrates the database on start. (The owner's decision and action; nothing
+2. Archive the old Foreman's worker sessions, in the live instance's UI: deleting a session there archives one that ran, and its transcript stays readable. They are the rows of
+   `foreman_session_state` (`sqlite3 ~/.cloudcli/auth.db 'SELECT session_id, task_id, status FROM foreman_session_state'`). The migration marks every one `released`, so nothing
+   supervises or reports on them afterwards, and unarchived they would stay in their projects' session lists beside live work. Do it before the deploy, while the live instance still runs.
+3. Stop the live instance. Back up `auth.db` and `chmod 600` it and its copies (above).
+4. Stop the old Foreman (:4111).
+5. Deploy the branch build as the live instance with the configuration above, and start it; it migrates the database on start. (The owner's decision and action; nothing
    here deploys anything.)
-5. Start the new Foreman with the bridge token, the events token and its intake at `FOREMAN_EVENTS_URL`.
-6. Check:
+6. Start the new Foreman with the bridge token, the events token and its intake at `FOREMAN_EVENTS_URL`.
+7. Check:
    - `GET /api/foreman/health` with `Authorization: Bearer <bridge token>` answers 200, and 401 without it;
    - platform mode is off: no `VITE_IS_PLATFORM=true` in the instance's environment (`/proc/<pid>/environ`);
    - both token files are mode 600 (`stat -c %a`), and the boot log has no warning about them;
    - claude-cap's profile is there: `GET http://127.0.0.1:34817/state` lists `foreman-worker`, enabled, with its caps;
    - the sandbox battery passes against the deployed build's test twin (the test instance at the same commit):
      `node --import tsx scripts/foreman-battery/attack-battery.mts`, verdict CONTAINED.
-7. Rollback: stop the instance, restore the `auth.db` backup, start the previous build and the old Foreman. The migration renamed a column, so the previous build does not run
+8. Rollback: stop the instance, restore the `auth.db` backup, start the previous build and the old Foreman. The migration renamed a column, so the previous build does not run
    on the migrated database; what was recorded after the cutover is lost with the restore.
 
 ## What differs from Foreman's slice-2 `Bridge` interface and the simulator
