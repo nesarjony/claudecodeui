@@ -307,6 +307,7 @@
       "active": "active",
       "queued": "queued",
       "paused": "paused",
+      "read-only": "read-only",
       "done": "done",
       "studying": "studying"
     },
@@ -319,7 +320,8 @@
       "days_one": "{{count}} day",
       "days_other": "{{count}} days",
       "handedOverLine": "turn {{turn}} · {{minutes}}m",
-      "studying": "Foreman studies the repo"
+      "studying": "Foreman studies the repo",
+      "readOnly": "read-only: waits for workers on {{repo}}"
     },
     "list": {
       "goal": "Goal",
@@ -334,6 +336,15 @@
     "doneWhen": "Done when: {{text}}",
     "progress": "Progress",
     "progressLabel": "{{done}} of {{total}} rows done",
+    "readOnly": {
+      "title": "Read-only repo",
+      "waits": "No worker runs on this goal until you turn workers on for {{repo}}; its rows are done when your own pipeline judges them.",
+      "settings": "Settings → Repos",
+      "notRead": "The repo has not been read for this goal yet.",
+      "history": "What the repo says of the rows",
+      "point": "{{day}} · {{done}} of {{planned}} rows done · commit {{head}}",
+      "complete": "every row is done"
+    },
     "counts": {
       "done": "DONE {{count}}",
       "built": "BUILT {{count}}",
@@ -556,7 +567,7 @@
     }
   },
   "facts": {
-    "title": "Budget, models and repos",
+    "title": "Budget and models",
     "budget": "Budget",
     "budgetLine": "API {{monthly}} a month (owner only) · pace about {{pace}} a day",
     "share": "goal share: {{goal}} {{usd}}",
@@ -565,12 +576,29 @@
     "minimaxStay": "stop desk workers at {{pct}}% of the 5-hour or weekly window; the rest stays yours",
     "models": "Models",
     "roles": "Roles",
-    "editor": "Editor",
-    "repo": "Repo {{name}}",
+    "editor": "Editor"
+  },
+  "repos": {
+    "title": "Repos",
+    "none": "No repo is registered yet. Foreman works only on the repos you add here.",
+    "readOnly": "read-only",
+    "adapterLine": "{{adapter}} adapter · branch {{branch}}",
     "checks": "checks: {{command}}",
     "protected_one": "{{count}} protected path",
     "protected_other": "{{count}} protected paths",
+    "pinned_one": "{{count}} setup file pinned",
+    "pinned_other": "{{count}} setup files pinned",
     "indexed": "infigraph ✓ indexed {{clock}}",
-    "notIndexed": "infigraph not indexed"
+    "notIndexed": "infigraph not indexed",
+    "workersFor": "Workers may start on {{name}} (its adapter makes it read-only; this is your switch alone)",
+    "workersAlways": "Workers may start on {{name}} (its adapter allows them)",
+    "changeButton": "Change",
+    "add": "Add a repo",
+    "change": "Change {{name}}",
+    "name": "Name",
+    "directory": "Directory (absolute path)",
+    "adapter": "Adapter",
+    "branch": "Base branch (the checked-out one when empty)",
+    "addButton": "Add repo"
   }
 }

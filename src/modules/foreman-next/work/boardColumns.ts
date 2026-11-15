@@ -15,7 +15,7 @@ type BoardColumns = {
 export function boardColumns(goals: GoalSummary[], handedOver: RunSummary[]): BoardColumns {
   return {
     waiting: goals.filter((goal) => goal.state !== 'done' && goal.waitsOnYou.decisions > 0),
-    active: goals.filter((goal) => goal.state === 'studying' || goal.state === 'active' || goal.state === 'paused'),
+    active: goals.filter((goal) => goal.state === 'studying' || goal.state === 'active' || goal.state === 'paused' || goal.state === 'read-only'),
     queued: goals.filter((goal) => goal.state === 'queued'),
     done: goals.filter((goal) => goal.state === 'done'),
     handedOver,

@@ -1,6 +1,6 @@
 import type { LedgerChoice, IsoTime, Maker } from '@/modules/foreman-next/api/contract/foundation';
 
-export const GOAL_STATES = ['studying', 'active', 'queued', 'paused', 'done'] as const;
+export const GOAL_STATES = ['studying', 'active', 'queued', 'paused', 'read-only', 'done'] as const;
 export type GoalState = (typeof GOAL_STATES)[number];
 
 export const FORECAST_CERTAINTIES = ['likely', 'uncertain'] as const;
@@ -26,6 +26,12 @@ export type RunSummary = {
   turnsWithoutCommit: number | null;
 };
 
+/**
+ * A goal planned on a read-only repo (desk) waits for the owner's switch for that repo in Settings → Repos, and nothing runs on it: its rows are
+ * done when his own pipeline judges them, and the repo says so (`RepoProgressPoint`). `repo` is the name the repo is registered under.
+ */
+export type ReadOnlyWait = { repo: string };
+
 export type GoalSummary = {
   id: string;
   repo: string;
@@ -38,6 +44,7 @@ export type GoalSummary = {
   batch: { current: number; total: number } | null;
   queuedAfter: string | null;
   hasStrategy: boolean;
+  readOnly: ReadOnlyWait | null;
   spentUsd: number;
   daysTaken: number | null;
 };
@@ -74,6 +81,8 @@ export type BatchEntry = {
   waitsOn: { questionId: string; title: string } | null;
   runId: string | null;
 };
+/** What a repo says of a goal's rows when it was read at one of its commits: how many of the plan's rows it judges done. */
+export type RepoProgressPoint = { repoHead: string; rowsDone: number; rowsPlanned: number; complete: boolean; recordedAt: IsoTime };
 export type GoalDetail = GoalSummary & {
   title: string;
   doneWhen: string;
@@ -82,6 +91,8 @@ export type GoalDetail = GoalSummary & {
   study: StudyStep[] | null;
   strategy: Strategy | null;
   batches: BatchEntry[];
+  /** Oldest first; empty until the repo has been read for the goal. */
+  repoProgress: RepoProgressPoint[];
 };
 
 export const RUN_FAILURE_NEXT = ['retry', 'replan', 'ask-owner'] as const;

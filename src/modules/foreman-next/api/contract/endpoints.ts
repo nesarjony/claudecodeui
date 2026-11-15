@@ -2,7 +2,7 @@ import type { ForemanApi } from '@/modules/foreman-next/api/contract/api';
 
 export type EndpointSpec = { method: 'GET' | 'POST' | 'PUT'; path: string };
 
-// Paths are relative to the Foreman API base on cloudcli's origin; `:id`, `:kind` and `:step` are path parameters. cloudcli proxies to Foreman and wraps every answer: `{ success: true, data }`, or `{ success: false, error: { code, message } }`.
+// Paths are relative to the Foreman API base on cloudcli's origin; `:id`, `:kind`, `:name` and `:step` are path parameters. cloudcli proxies to Foreman and wraps every answer: `{ success: true, data }`, or `{ success: false, error: { code, message } }`.
 export const FOREMAN_NEXT_API_BASE = '/api/foreman-next';
 
 export const ENDPOINTS = {
@@ -21,7 +21,6 @@ export const ENDPOINTS = {
   history: { method: 'GET', path: '/decide/history' },
   decision: { method: 'GET', path: '/decisions/:id' },
   rateDecision: { method: 'POST', path: '/decisions/:id/feedback' },
-  repos: { method: 'GET', path: '/repos' },
   goals: { method: 'GET', path: '/work/goals' },
   goal: { method: 'GET', path: '/work/goals/:id' },
   createGoal: { method: 'POST', path: '/work/goals' },
@@ -50,4 +49,7 @@ export const ENDPOINTS = {
   attention: { method: 'GET', path: '/settings/attention' },
   setAttention: { method: 'PUT', path: '/settings/attention' },
   settings: { method: 'GET', path: '/settings' },
+  repos: { method: 'GET', path: '/settings/repos' },
+  setRepo: { method: 'PUT', path: '/settings/repos/:name' },
+  setRepoWorkers: { method: 'PUT', path: '/settings/repos/:name/workers' },
 } as const satisfies Record<keyof ForemanApi, EndpointSpec>;

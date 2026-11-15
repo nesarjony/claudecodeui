@@ -9,7 +9,12 @@ describe('boardColumns', () => {
 
   it('puts a goal with decisions holding it in Waiting on you and also in its own column', () => {
     expect(columns.waiting.map((goal) => goal.name)).toEqual(['Inbox']);
-    expect(columns.active.map((goal) => goal.name)).toEqual(['Inbox']);
+    expect(columns.active.map((goal) => goal.name)).toEqual(['Inbox', 'Reports']);
+  });
+
+  it('keeps a goal that waits for workers on a read-only repo among the active work, and out of Waiting on you: it waits for no decision', () => {
+    expect(columns.active.find((goal) => goal.state === 'read-only')?.readOnly).toEqual({ repo: 'desk' });
+    expect(columns.waiting.map((goal) => goal.state)).not.toContain('read-only');
   });
 
   it('puts queued and finished goals in their own columns only', () => {

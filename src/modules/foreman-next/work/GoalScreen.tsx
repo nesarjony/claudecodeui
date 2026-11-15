@@ -7,6 +7,7 @@ import { foremanPath } from '@/modules/foreman-next/utils/foremanPaths';
 import { BatchList } from '@/modules/foreman-next/work/BatchList';
 import { GoalHeader } from '@/modules/foreman-next/work/GoalHeader';
 import { GoalProgress } from '@/modules/foreman-next/work/GoalProgress';
+import { ReadOnlyPanel } from '@/modules/foreman-next/work/ReadOnlyPanel';
 import { StrategyPanel } from '@/modules/foreman-next/work/StrategyPanel';
 import { StudyPanel } from '@/modules/foreman-next/work/StudyPanel';
 
@@ -26,6 +27,7 @@ export function GoalScreen() {
           <>
             <GoalHeader goal={data} />
             {data.study ? <StudyPanel steps={data.study} /> : <GoalProgress goal={data} />}
+            {data.readOnly || data.repoProgress.length > 0 ? <ReadOnlyPanel goal={data} /> : null}
             {data.strategy ? <StrategyPanel goalId={data.id} strategy={data.strategy} compareOnOpen={params.get('compare') === 'previous'} /> : null}
             {data.batches.length > 0 ? <BatchList batches={data.batches} /> : null}
           </>

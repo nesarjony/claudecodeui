@@ -12,6 +12,7 @@ function GoalStatus({ goal }: { goal: GoalSummary }) {
   if (goal.state === 'queued') return <span>○ {goal.queuedAfter ? t('today.queuedAfter', { goal: goal.queuedAfter }) : t('today.queued')}</span>;
   if (goal.state === 'paused') return <span>◌ {t('today.paused')}</span>;
   if (goal.state === 'studying') return <span>◌ {t('work.card.studying')}</span>;
+  if (goal.state === 'read-only') return <span>◌ {t('work.card.readOnly', { repo: goal.readOnly?.repo ?? goal.repo })}</span>;
   if (!goal.forecast) return null;
   const { certainty, doneBy, usdToGo } = goal.forecast;
   return (

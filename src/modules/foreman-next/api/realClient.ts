@@ -81,5 +81,7 @@ export function createRealApi(): ForemanApi {
     attention: () => call(ENDPOINTS.attention),
     setAttention: (policy) => call(ENDPOINTS.setAttention, { body: policy }),
     settings: () => call(ENDPOINTS.settings),
+    setRepo: (name, change) => call(ENDPOINTS.setRepo, { params: { name }, body: change }),
+    setRepoWorkers: (name, workers) => call(ENDPOINTS.setRepoWorkers, { params: { name }, body: { workers } }),
   };
 }

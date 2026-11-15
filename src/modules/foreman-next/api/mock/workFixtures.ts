@@ -1,4 +1,5 @@
 import type { BatchEntry, GoalDetail, RunDetail } from '@/modules/foreman-next/api/contract';
+import { readOnlyGoalFixture } from '@/modules/foreman-next/api/mock/readOnlyFixtures';
 import { at, DAY_MS, HOUR_MS } from '@/modules/foreman-next/api/mock/time';
 
 const BATCH_NAMES = [
@@ -58,6 +59,7 @@ export const goalsFixture = (now: number): GoalDetail[] => [
     batch: { current: 4, total: 13 },
     queuedAfter: null,
     hasStrategy: true,
+    readOnly: null,
     spentUsd: 12.4,
     daysTaken: null,
     spent: { usd: 12.4, shareUsd: 40, firstPassYield: 91, usdPerRow: 0.38 },
@@ -69,6 +71,7 @@ export const goalsFixture = (now: number): GoalDetail[] => [
       previous: { version: 1, steps: ['Layout first, then components', 'Contract batch before integration', 'Fix batch last'] },
     },
     batches: inboxBatches(),
+    repoProgress: [],
   },
   {
     id: 'g-contacts',
@@ -85,12 +88,14 @@ export const goalsFixture = (now: number): GoalDetail[] => [
     batch: null,
     queuedAfter: 'Inbox',
     hasStrategy: false,
+    readOnly: null,
     spentUsd: 0,
     daysTaken: null,
     spent: { usd: 0, shareUsd: 30, firstPassYield: 0, usdPerRow: 0 },
     study: null,
     strategy: null,
     batches: [],
+    repoProgress: [],
   },
   {
     id: 'g-conversation',
@@ -107,12 +112,14 @@ export const goalsFixture = (now: number): GoalDetail[] => [
     batch: null,
     queuedAfter: 'Contacts',
     hasStrategy: false,
+    readOnly: null,
     spentUsd: 0,
     daysTaken: null,
     spent: { usd: 0, shareUsd: 45, firstPassYield: 0, usdPerRow: 0 },
     study: null,
     strategy: null,
     batches: [],
+    repoProgress: [],
   },
   {
     id: 'g-demo',
@@ -129,13 +136,16 @@ export const goalsFixture = (now: number): GoalDetail[] => [
     batch: null,
     queuedAfter: null,
     hasStrategy: true,
+    readOnly: null,
     spentUsd: 3.1,
     daysTaken: 2,
     spent: { usd: 3.1, shareUsd: 5, firstPassYield: 83, usdPerRow: 0.26 },
     study: null,
     strategy: { version: 1, replannedAt: at(now, -6 * DAY_MS), reason: 'first plan', status: 'approved', steps: ['Build the 12 rows in two batches'], risks: [], previous: null },
     batches: [],
+    repoProgress: [],
   },
+  readOnlyGoalFixture(now),
 ];
 
 const STAGES_AT_WORKER: RunDetail['stages'] = [

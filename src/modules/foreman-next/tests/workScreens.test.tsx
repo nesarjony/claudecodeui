@@ -15,7 +15,9 @@ describe('Work', () => {
     expect(within(active).getByText('batch 4 of 13')).toBeTruthy();
     expect(within(active).getByText('desk boss')).toBeTruthy();
     expect(within(active).getByText('handed over')).toBeTruthy();
-    expect(within(active).getByRole('heading', { name: 'Active (2)' })).toBeTruthy();
+    expect(within(active).getByRole('heading', { name: 'Active (3)' })).toBeTruthy();
+    expect(within(active).getByText('18/40')).toBeTruthy();
+    expect(within(active).getByText('read-only: waits for workers on desk')).toBeTruthy();
     const queued = screen.getByRole('region', { name: 'Queued' });
     expect(within(queued).getAllByText('no strategy yet')).toHaveLength(2);
     expect(within(queued).getByText('queued after Inbox')).toBeTruthy();
@@ -29,7 +31,7 @@ describe('Work', () => {
     await screen.findByRole('region', { name: 'Queued' });
     fireEvent.click(screen.getByLabelText('List'));
     const table = await screen.findByRole('table');
-    expect(within(table).getAllByRole('row')).toHaveLength(1 + 4 + 1);
+    expect(within(table).getAllByRole('row')).toHaveLength(1 + 5 + 1);
     expect(within(table).getByRole('link', { name: 'desk boss' })).toBeTruthy();
   });
 
@@ -100,6 +102,17 @@ describe('Work', () => {
     expect(within(strategy).getByText(/Risk: realtime rows wait on your transport decision/)).toBeTruthy();
     fireEvent.click(within(strategy).getByRole('button', { name: 'Compare v1' }));
     expect(within(strategy).getByText('Fix batch last')).toBeTruthy();
+  });
+
+  it('shows a goal on a read-only repo as waiting for the repo\'s switch, with what the repo says of its rows, and no Pause', async () => {
+    renderForemanApp('/foreman/work/g-reports');
+    const panel = await screen.findByRole('region', { name: 'Read-only repo' });
+    expect(within(panel).getByText(/No worker runs on this goal until you turn workers on for desk/)).toBeTruthy();
+    expect(within(panel).getByRole('link', { name: 'Settings → Repos' }).getAttribute('href')).toBe('/foreman/settings');
+    const history = within(panel).getByRole('list', { name: 'What the repo says of the rows' });
+    expect(within(history).getAllByRole('listitem').map((row) => row.textContent?.replace(/^.*? · /, ''))).toEqual(['11 of 40 rows done · commit a1b2c3d', '14 of 40 rows done · commit e4f5a6b', '18 of 40 rows done · commit 9c8d7e6']);
+    expect(screen.getAllByText('read-only').length).toBeGreaterThan(0);
+    expect(screen.queryByRole('button', { name: 'Pause' })).toBeNull();
   });
 
   it('lists the batches that matter, links a waiting batch to its decision, and expands to all of them', async () => {

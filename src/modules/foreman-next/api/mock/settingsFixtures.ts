@@ -42,6 +42,6 @@ export const settingsFixture = (): ForemanSettings => ({
 
 /** Used by the mock store as the repos Foreman works on. */
 export const reposFixture = (now: number): RepoSettings[] => [
-  { name: 'desk', checks: 'pnpm verify', protectedPaths: 7, indexedAt: at(now, -75 * MINUTE_MS) },
-  { name: 'scratch', checks: 'npm test', protectedPaths: 2, indexedAt: null },
+  { name: 'desk', directory: '/mnt/dev/moveon/desk', adapter: 'desk', baseBranch: 'feature/scaffold', mode: 'read-only', workers: false, pinned: 1, checks: 'pnpm verify', protectedPaths: 7, indexedAt: at(now, -75 * MINUTE_MS) },
+  { name: 'scratch', directory: '/mnt/dev/practice/scratch', adapter: 'scratch', baseBranch: 'main', mode: 'workers', workers: false, pinned: 0, checks: 'npm test', protectedPaths: 2, indexedAt: null },
 ];

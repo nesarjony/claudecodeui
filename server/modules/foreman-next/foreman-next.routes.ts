@@ -27,7 +27,6 @@ export const FOREMAN_NEXT_ROUTES: readonly ForemanNextRoute[] = [
   { method: 'GET', path: '/decide/history', body: false },
   { method: 'GET', path: '/decisions/:id', body: false },
   { method: 'POST', path: '/decisions/:id/feedback', body: true },
-  { method: 'GET', path: '/repos', body: false },
   { method: 'GET', path: '/work/goals', body: false },
   { method: 'GET', path: '/work/goals/:id', body: false },
   { method: 'POST', path: '/work/goals', body: true },
@@ -56,4 +55,7 @@ export const FOREMAN_NEXT_ROUTES: readonly ForemanNextRoute[] = [
   { method: 'GET', path: '/settings/attention', body: false },
   { method: 'PUT', path: '/settings/attention', body: true },
   { method: 'GET', path: '/settings', body: false },
+  { method: 'GET', path: '/settings/repos', body: false },
+  { method: 'PUT', path: '/settings/repos/:name', body: true },
+  { method: 'PUT', path: '/settings/repos/:name/workers', body: true },
 ];

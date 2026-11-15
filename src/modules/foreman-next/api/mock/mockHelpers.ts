@@ -52,12 +52,14 @@ export function newGoalDetail(request: { repo: string; goal: string }, id: strin
     batch: null,
     queuedAfter: null,
     hasStrategy: false,
+    readOnly: null,
     spentUsd: 0,
     daysTaken: null,
     spent: { usd: 0, shareUsd: 25, firstPassYield: 0, usdPerRow: 0 },
     study: studySteps(0),
     strategy: null,
     batches: [],
+    repoProgress: [],
   };
 }
 

@@ -22,6 +22,16 @@ function CardLines({ goal, column }: { goal: GoalSummary; column: BoardColumnId 
     );
   }
   if (column === 'active' && goal.state === 'studying') return <p>{t('work.card.studying')}</p>;
+  if (column === 'active' && goal.state === 'read-only') {
+    return (
+      <>
+        <p>
+          {goal.done}/{goal.total}
+        </p>
+        <p>{t('work.card.readOnly', { repo: goal.readOnly?.repo ?? goal.repo })}</p>
+      </>
+    );
+  }
   if (column === 'active') {
     return (
       <>

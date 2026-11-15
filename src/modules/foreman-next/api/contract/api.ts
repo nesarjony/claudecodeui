@@ -3,7 +3,7 @@ import type { ChatMessage, ChatSendRequest, ChatSubjectRef, ChatThread } from '@
 import type { DecisionFeedback, DecisionRecord, HistoryEntry, OwnerQuestion, QuestionAnswer, ReviewItem } from '@/modules/foreman-next/api/contract/decide';
 import type { DelegationKind } from '@/modules/foreman-next/api/contract/foundation';
 import type { SessionSupervision } from '@/modules/foreman-next/api/contract/session';
-import type { AttentionPolicy, DelegationChange, DelegationRule, ForemanSettings, RepoSettings } from '@/modules/foreman-next/api/contract/settings';
+import type { AttentionPolicy, DelegationChange, DelegationRule, ForemanSettings, RepoChange, RepoSettings } from '@/modules/foreman-next/api/contract/settings';
 import type { TodaySnapshot } from '@/modules/foreman-next/api/contract/today';
 import type { GoalDetail, GoalSummary, GoalsOverview, NewGoalRequest, RunDetail, RunStageId } from '@/modules/foreman-next/api/contract/work';
 
@@ -52,4 +52,6 @@ export type ForemanApi = {
   attention: () => Promise<AttentionPolicy>;
   setAttention: (policy: AttentionPolicy) => Promise<AttentionPolicy>;
   settings: () => Promise<ForemanSettings>;
+  setRepo: (name: string, change: RepoChange) => Promise<RepoSettings>;
+  setRepoWorkers: (name: string, workers: boolean) => Promise<RepoSettings>;
 };

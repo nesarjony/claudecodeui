@@ -1,5 +1,5 @@
 import { ApiRequestError } from '@/shared/api';
-import type { ChatMessage, ChatSubjectRef, DelegationRule, ForemanApi, GoalDetail, RunDetail, RunStageId, SessionSupervision } from '@/modules/foreman-next/api/contract';
+import type { ChatMessage, ChatSubjectRef, DelegationRule, ForemanApi, GoalDetail, RepoSettings, RunDetail, RunStageId, SessionSupervision } from '@/modules/foreman-next/api/contract';
 import { clone, find, firstStrategy, isLiveHandOver, newGoalDetail, newHandedOverRun, notFound, studySteps, summaryOf } from '@/modules/foreman-next/api/mock/mockHelpers';
 import { createMockStore } from '@/modules/foreman-next/api/mock/mockStore';
 import type { MockStore } from '@/modules/foreman-next/api/mock/mockStore';
@@ -259,5 +259,20 @@ export function createMockApi({ scenario = 'default', latencyMs = 150, studyMs =
     attention: () => respond('attention', () => store.attention),
     setAttention: (policy) => respond('setAttention', () => Object.assign(store.attention, policy)),
     settings: () => respond('settings', () => store.settings),
+    setRepo: (name, change) =>
+      respond('setRepo', (): RepoSettings => {
+        const known = store.repos.find((candidate) => candidate.name === name);
+        if (store.goals.some((goal) => goal.repo === name && goal.state !== 'done')) throw new ApiRequestError('Goals are open on this repo', { code: 'conflict', status: 409 });
+        const adapter = change.adapter === 'desk' ? 'read-only' : 'workers';
+        const entry: RepoSettings = { ...(known ?? { workers: false, pinned: 0, checks: 'npm test', protectedPaths: 0, indexedAt: null }), name, directory: change.directory, adapter: change.adapter, baseBranch: change.baseBranch ?? 'main', mode: adapter };
+        store.repos = known ? store.repos.map((candidate) => (candidate.name === name ? entry : candidate)) : [...store.repos, entry];
+        return entry;
+      }),
+    setRepoWorkers: (name, workers) =>
+      respond('setRepoWorkers', () => {
+        const target = store.repos.find((candidate) => candidate.name === name);
+        if (!target) throw notFound('repo');
+        return Object.assign(target, { workers });
+      }),
   };
 }

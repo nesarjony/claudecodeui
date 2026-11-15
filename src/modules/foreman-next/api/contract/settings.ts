@@ -24,4 +24,20 @@ export type ForemanSettings = {
   models: { foremanRoles: string; workers: string; sideRuns: string };
   roles: { name: string; version: number }[];
 };
-export type RepoSettings = { name: string; checks: string; protectedPaths: number; indexedAt: IsoTime | null };
+// The registry of the repos Foreman works on (the Charter's `repos`), as the owner registered them and as each repo's adapter, which is code, says of them.
+export type RepoSettings = {
+  name: string;
+  directory: string;
+  adapter: string;
+  baseBranch: string;
+  /** What the adapter says: a read-only repo (desk) is studied and planned, and gets workers only when the owner turns them on. */
+  mode: 'workers' | 'read-only';
+  workers: boolean;
+  /** The worker-setup files the owner has pinned, which the injection guard does not screen. */
+  pinned: number;
+  checks: string;
+  protectedPaths: number;
+  indexedAt: IsoTime | null;
+};
+/** Adding a repo or changing one: where it is, which adapter reads it, and the branch work is measured from (the one it has checked out when none is named). */
+export type RepoChange = { directory: string; adapter: string; baseBranch: string | null };

@@ -1,10 +1,10 @@
 import { useTranslation } from 'react-i18next';
 
-import type { ForemanSettings, RepoSettings } from '@/modules/foreman-next/api/contract';
+import type { ForemanSettings } from '@/modules/foreman-next/api/contract';
 import { Panel } from '@/modules/foreman-next/components/Panel';
-import { formatClock, formatUsd } from '@/modules/foreman-next/utils/foremanFormat';
+import { formatUsd } from '@/modules/foreman-next/utils/foremanFormat';
 
-type SettingsFactsProps = { settings: ForemanSettings; repos: RepoSettings[]; editorUrl: string | null };
+type SettingsFactsProps = { settings: ForemanSettings; editorUrl: string | null };
 
 function Fact({ label, children }: { label: string; children: string }) {
   return (
@@ -15,8 +15,8 @@ function Fact({ label, children }: { label: string; children: string }) {
   );
 }
 
-/** Used by the Settings screen for the lines the owner reads but does not change here (wireframes §11): budget, MiniMax, models, roles and repos. */
-export function SettingsFacts({ settings, repos, editorUrl }: SettingsFactsProps) {
+/** Used by the Settings screen for the lines the owner reads but does not change here (wireframes §11): budget, MiniMax, models and roles. */
+export function SettingsFacts({ settings, editorUrl }: SettingsFactsProps) {
   const { t } = useTranslation('foremanNext');
   const { budget, minimax, models, roles } = settings;
   return (
@@ -38,11 +38,6 @@ export function SettingsFacts({ settings, repos, editorUrl }: SettingsFactsProps
             ) : null}
           </dd>
         </div>
-        {repos.map((repo) => (
-          <Fact key={repo.name} label={t('facts.repo', { name: repo.name })}>
-            {[t('facts.checks', { command: repo.checks }), t('facts.protected', { count: repo.protectedPaths }), repo.indexedAt ? t('facts.indexed', { clock: formatClock(repo.indexedAt) }) : t('facts.notIndexed')].join(' · ')}
-          </Fact>
-        ))}
       </dl>
     </Panel>
   );

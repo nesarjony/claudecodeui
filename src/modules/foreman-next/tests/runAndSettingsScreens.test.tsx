@@ -2,6 +2,7 @@ import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
 import { quickApi, renderForemanApp } from '@/modules/foreman-next/tests/testHelpers';
+import { ApiRequestError } from '@/shared/api';
 
 describe('the run view', () => {
   it('shows a live run: stages, Foreman\'s decisions with the card behind a steer, the worker, and the pending verdict', async () => {
@@ -104,17 +105,72 @@ describe('Settings', () => {
     expect(within(attention).getByText('Quiet hours hold everything except stop events.')).toBeTruthy();
   });
 
-  it('shows the read-only lines: budget, MiniMax, models, roles with the editor, and each repo', async () => {
+  it('shows the read-only lines: budget, MiniMax, models and roles with the editor', async () => {
     renderForemanApp('/foreman/settings');
-    const facts = await screen.findByRole('region', { name: 'Budget, models and repos' });
+    const facts = await screen.findByRole('region', { name: 'Budget and models' });
     expect(within(facts).getByText('API $200 a month (owner only) · pace about $6.50 a day · goal share: Inbox $40')).toBeTruthy();
     expect(within(facts).getByText('stop desk workers at 80% of the 5-hour or weekly window; the rest stays yours; auto-resume')).toBeTruthy();
     expect(within(facts).getByText('Opus (API credit) · desk workers MiniMax-M3 only · side runs MiniMax')).toBeTruthy();
     expect(within(facts).getByText(/Strategist v3 · Supervisor v3 · Judge v4 · Coach v1/)).toBeTruthy();
     expect(within(facts).getByRole('link', { name: /Editor/ }).getAttribute('href')).toBe('http://127.0.0.1:4111');
-    expect(within(facts).getByText(/checks: pnpm verify · 7 protected paths · infigraph ✓ indexed \d{2}:\d{2}/)).toBeTruthy();
-    expect(within(facts).getByText('checks: npm test · 2 protected paths · infigraph not indexed')).toBeTruthy();
     expect(within(facts).queryByRole('button')).toBeNull();
+  });
+
+  it('lists the registry: each repo as registered, what its adapter says of it, and the switch for workers on a read-only one', async () => {
+    renderForemanApp('/foreman/settings');
+    const repos = await screen.findByRole('region', { name: 'Repos' });
+    expect(await within(repos).findByText('/mnt/dev/moveon/desk')).toBeTruthy();
+    expect(within(repos).getByText('desk adapter · branch feature/scaffold · checks: pnpm verify · 7 protected paths · 1 setup file pinned', { exact: false })).toBeTruthy();
+    expect(within(repos).getByText('scratch adapter · branch main · checks: npm test · 2 protected paths · 0 setup files pinned · infigraph not indexed')).toBeTruthy();
+    expect((within(repos).getByLabelText(/Workers may start on desk \(its adapter makes it read-only/) as HTMLInputElement).checked).toBe(false);
+    const scratch = within(repos).getByLabelText('Workers may start on scratch (its adapter allows them)') as HTMLInputElement;
+    expect([scratch.checked, scratch.disabled]).toEqual([true, true]);
+  });
+
+  it('turns workers on for a read-only repo, and shows it after it saved', async () => {
+    const api = quickApi();
+    const turn = vi.spyOn(api, 'setRepoWorkers');
+    renderForemanApp('/foreman/settings', api);
+    const repos = await screen.findByRole('region', { name: 'Repos' });
+    fireEvent.click(await within(repos).findByLabelText(/Workers may start on desk \(its adapter makes it read-only/));
+    await waitFor(() => expect(turn).toHaveBeenCalledWith('desk', true));
+    await waitFor(() => expect((within(repos).getByLabelText(/Workers may start on desk/) as HTMLInputElement).checked).toBe(true));
+  });
+
+  it('adds a repo with the owner\'s words, and shows Foreman\'s own reason when it refuses one', async () => {
+    const api = quickApi();
+    const add = vi.spyOn(api, 'setRepo');
+    renderForemanApp('/foreman/settings', api);
+    const form = await screen.findByRole('form', { name: 'Add a repo' });
+    const submit = within(form).getByRole('button', { name: 'Add repo' }) as HTMLButtonElement;
+    expect(submit.disabled).toBe(true);
+    fireEvent.change(within(form).getByLabelText('Name'), { target: { value: 'portal' } });
+    fireEvent.change(within(form).getByLabelText('Directory (absolute path)'), { target: { value: '/mnt/dev/portal' } });
+    fireEvent.change(within(form).getByLabelText('Adapter'), { target: { value: 'scratch' } });
+    fireEvent.click(submit);
+    await waitFor(() => expect(add).toHaveBeenCalledWith('portal', { directory: '/mnt/dev/portal', adapter: 'scratch', baseBranch: null }));
+    expect(await screen.findByText('/mnt/dev/portal')).toBeTruthy();
+
+    add.mockRejectedValueOnce(new ApiRequestError('Foreman has no adapter named nope: it has scratch, desk', { code: 'invalid', status: 400 }));
+    fireEvent.change(within(form).getByLabelText('Name'), { target: { value: 'other' } });
+    fireEvent.change(within(form).getByLabelText('Directory (absolute path)'), { target: { value: '/mnt/dev/other' } });
+    fireEvent.change(within(form).getByLabelText('Adapter'), { target: { value: 'nope' } });
+    fireEvent.click(within(form).getByRole('button', { name: 'Add repo' }));
+    expect((await within(form).findByRole('alert')).textContent).toBe('Foreman has no adapter named nope: it has scratch, desk');
+  });
+
+  it('changes a repo in place, starting from what is registered, and shows the refusal while goals are open on it', async () => {
+    const api = quickApi();
+    const change = vi.spyOn(api, 'setRepo');
+    renderForemanApp('/foreman/settings', api);
+    const repos = await screen.findByRole('region', { name: 'Repos' });
+    fireEvent.click((await within(repos).findAllByRole('button', { name: 'Change' }))[0] as HTMLElement);
+    const form = within(repos).getByRole('form', { name: 'Change desk' });
+    expect((within(form).getByLabelText('Directory (absolute path)') as HTMLInputElement).value).toBe('/mnt/dev/moveon/desk');
+    fireEvent.change(within(form).getByLabelText(/Base branch/), { target: { value: 'main' } });
+    fireEvent.click(within(form).getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(change).toHaveBeenCalledWith('desk', { directory: '/mnt/dev/moveon/desk', adapter: 'desk', baseBranch: 'main' }));
+    expect((await within(form).findByRole('alert')).textContent).toBe('Goals are open on this repo');
   });
 
   it('saves an edited attention policy', async () => {
