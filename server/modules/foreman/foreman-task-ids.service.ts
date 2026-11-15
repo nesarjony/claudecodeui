@@ -4,6 +4,7 @@ const TASK_ID_KEY_PREFIX = 'foreman.taskId:';
 export type TaskIdBacking = {
   get(key: string): string | null;
   set(key: string, value: string): void;
+  delete(key: string): void;
 };
 
 /**
@@ -25,6 +26,15 @@ export function createTaskIdStore(backing: TaskIdBacking) {
         backing.set(`${TASK_ID_KEY_PREFIX}${sessionId}`, taskId);
       } catch {
         // Persistence is best effort; the in-memory link above still serves this process.
+      }
+    },
+    /** Drops the link of a session whose start failed. */
+    forget(sessionId: string): void {
+      remembered.delete(sessionId);
+      try {
+        backing.delete(`${TASK_ID_KEY_PREFIX}${sessionId}`);
+      } catch {
+        // Persistence is best effort, like `set`.
       }
     },
     get(sessionId: string): string | null {

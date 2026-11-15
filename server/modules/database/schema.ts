@@ -282,7 +282,7 @@ CREATE TABLE IF NOT EXISTS superseded_provider_sessions (
 
 /**
  * What the Foreman bridge remembers about the sessions it started or drives, so a cloudcli restart does not forget
- * their status, permission mode or risky-action guard. Keyed by the app session id. No foreign key to `sessions`:
+ * their status, permission mode, sandbox or whether Foreman still supervises them. Keyed by the app session id. No foreign key to `sessions`:
  * the sessions table can be rebuilt by migrations, and a rebuild must not cascade-delete these rows.
  */
 export const FOREMAN_SESSION_STATE_TABLE_SCHEMA_SQL = `
@@ -294,9 +294,82 @@ CREATE TABLE IF NOT EXISTS foreman_session_state (
     permission_mode TEXT,
     -- api-key | subscription | cap
     billing TEXT,
-    -- The guard (pattern lists, repoRoot) a Foreman-started session runs under; NULL when it has none.
-    guard_json TEXT,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    -- The sandbox policy Foreman sent when it started the session, as JSON; every run of the session applies it.
+    sandbox_json TEXT,
+    -- started: Foreman started it. adopted: the owner handed it over. released: no longer supervised, nothing is recorded or driven.
+    supervision TEXT NOT NULL DEFAULT 'started',
+    -- The project's HEAD and the session's last event sequence when supervision began: what the session commits and reports counts from there.
+    base_head TEXT,
+    base_sequence INTEGER NOT NULL DEFAULT 0,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    -- Where the session works (project path and shared git directory), as JSON: the scope its sandbox policy was checked against.
+    sandbox_scope_json TEXT,
+    -- For a session handed over: the owner's tool lists at adoption and when it was adopted, as JSON ({ allowedTools, disallowedTools, adoptedAt }).
+    owner_tools_json TEXT
+);
+`;
+
+/**
+ * Every event of a Foreman-driven session, numbered per session from 1 without gaps. An event stays here after Foreman
+ * acknowledged it: `acked_at` only says whether the push is still owed, and the history answers Foreman's reconciliation.
+ */
+export const FOREMAN_EVENTS_TABLE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS foreman_events (
+    session_id TEXT NOT NULL,
+    sequence INTEGER NOT NULL,
+    id TEXT NOT NULL UNIQUE,
+    kind TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    acked_at TEXT,
+    PRIMARY KEY (session_id, sequence)
+);
+CREATE INDEX IF NOT EXISTS idx_foreman_events_unacked ON foreman_events(session_id, sequence) WHERE acked_at IS NULL;
+`;
+
+/**
+ * The calls of the Foreman bridge that changed a session, by the idempotency key Foreman sent. A `pending` row is a call
+ * that began and has no answer yet; a `done` row holds the answer a repeat of the key gets back.
+ */
+export const FOREMAN_IDEMPOTENCY_TABLE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS foreman_idempotency (
+    key TEXT PRIMARY KEY NOT NULL,
+    operation TEXT NOT NULL,
+    -- Hash of what the call asked for, so a key reused for a different call is refused.
+    fingerprint TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('pending', 'done')),
+    status_code INTEGER,
+    response_json TEXT,
+    created_at TEXT NOT NULL
+);
+`;
+
+/**
+ * The owner's leave for Foreman to take over one of their sessions, recorded by the logged-in owner (never by the bridge). One per session:
+ * a newer grant replaces an older one, the hand-over uses it up, and after `expires_at` it is worth nothing.
+ */
+export const FOREMAN_HANDOVER_GRANTS_TABLE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS foreman_handover_grants (
+    session_id TEXT PRIMARY KEY NOT NULL,
+    -- The cloudcli user who granted it.
+    granted_by TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+);
+`;
+
+/**
+ * The permission mode and tool lists the owner's last run of each Claude session started with, before any hand-over too, so a session handed
+ * over to Foreman runs Foreman's turns with no more than its owner's. One row per session, rewritten at every run start that is not the
+ * bridge's own.
+ */
+export const FOREMAN_RUN_MODES_TABLE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS foreman_run_modes (
+    session_id TEXT PRIMARY KEY NOT NULL,
+    permission_mode TEXT NOT NULL,
+    seen_at TEXT NOT NULL,
+    -- The run's tool lists as JSON ({ allowedTools, disallowedTools }); NULL for a row recorded before they were.
+    tools_json TEXT
 );
 `;
 
@@ -355,4 +428,12 @@ ${SESSION_DRAFTS_TABLE_SCHEMA_SQL}
 ${SUPERSEDED_PROVIDER_SESSIONS_TABLE_SCHEMA_SQL}
 
 ${FOREMAN_SESSION_STATE_TABLE_SCHEMA_SQL}
+
+${FOREMAN_EVENTS_TABLE_SCHEMA_SQL}
+
+${FOREMAN_IDEMPOTENCY_TABLE_SCHEMA_SQL}
+
+${FOREMAN_HANDOVER_GRANTS_TABLE_SCHEMA_SQL}
+
+${FOREMAN_RUN_MODES_TABLE_SCHEMA_SQL}
 `;

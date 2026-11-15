@@ -1366,42 +1366,73 @@ export type SandboxCommandService = {
 export type ForemanBilling = 'api-key' | 'subscription' | 'cap';
 
 /**
- * Event kinds cloudcli pushes to the Foreman service. The list is the wire contract
- * documented in Foreman's `docs/BRIDGE.md`; adding a kind is additive, renaming one is not.
+ * Where a session Foreman starts works, as cloudcli resolved it at the start: the project the session runs in and the git directory that
+ * project's worktrees share (`git rev-parse --git-common-dir`; null when the project is no repository). A sandbox policy may make writable
+ * only these and its own scratch directory. Stored with the policy, so every run of the session checks the policy against the same scope and
+ * keeps the same project's git and agent files read-only.
+ *
+ * Used by the Foreman bridge: the sessions service resolves it at a start, the sandbox services check a policy against it and read the
+ * paths every run forces read-only from it, and the session state stores it next to the policy.
  */
-export type ForemanEventType =
-  | 'turn_end'
-  | 'permission_request'
-  | 'error'
-  | 'refusal'
-  | 'compact_boundary'
-  | 'session_started'
-  | 'session_ended';
+export type ForemanSandboxScope = { projectPath: string; gitCommonDir: string | null };
 
 /**
- * Body POSTed to Foreman's events endpoint for every observed Claude session event.
+ * What a run of a session started with as far as permissions go: the mode the CLI really got (`default` when none; the UI's "skip
+ * permissions" is `bypassPermissions`) and the tool lists of its options (the UI's `toolsSettings.allowedTools` and `disallowedTools`, as
+ * sent). Recorded for the owner's runs of every Claude session; a session handed over to Foreman runs Foreman's turns with its owner's.
  *
- * `sessionId` is always the stable cloudcli app session id (never the provider-native id),
- * `projectPath` is the run's project directory (empty only if it could not be determined),
- * `ts` is an ISO-8601 timestamp taken when the runtime observed the event, and `data` holds the
- * per-type payload (kept small: long text is clipped before it is placed here). Every `data` also
- * carries `billing` (null only if the session row cannot be found) and `title`, plus `taskId` for
- * sessions that Foreman started with a `taskId`. The envelope is exactly these five keys so a
- * receiver that validates the top level strictly keeps working as the payloads grow.
+ * Used by the Foreman bridge: the run modes service records it, the hand-over stores it at adoption and the sessions service passes the
+ * narrower of the stored and the owner's latest to every turn of an adopted session.
  */
-export type ForemanEvent = {
-  type: ForemanEventType;
-  sessionId: string;
-  projectPath: string;
-  ts: string;
-  data: Record<string, unknown>;
-};
+export type ForemanOwnerSettings = { permissionMode: string; allowedTools: string[]; disallowedTools: string[] };
+
+/**
+ * What a Foreman-driven session did, in the form Foreman's inbox stores (the contract in `docs/foreman-bridge.md`).
+ *
+ * `kind` and `payload` are what the bridge derives from one runtime observation. Only the kinds cloudcli emits are listed:
+ * Foreman also accepts `question` and a `completed` session end, which a sandboxed worker never produces (it cannot be
+ * asked anything, and a run that ends normally is just idle). `model`, `usage` and `headSha` of a `turn_end` are additions to what Foreman's
+ * schema lists; a reader that does not know them ignores them.
+ */
+export type ForemanBridgeEventBody =
+  | {
+      kind: 'turn_end';
+      payload: {
+        text: string;
+        commitCount: number;
+        /** The project's `HEAD` when the turn ended, read from the repository (not from what the worker says); null when the project has no commit or is no repository. */
+        headSha: string | null;
+        claimsDone: boolean;
+        /** The model that answered the turn (what the upstream reported), so Foreman can tell a worker that left its route; null when none was seen. */
+        model: string | null;
+        /** Main-loop token usage of the turn (subagent and compaction calls are not included); null for what the result did not report. */
+        usage: { inputTokens: number | null; outputTokens: number | null; cacheReadTokens: number | null; cacheCreationTokens: number | null };
+      };
+    }
+  | { kind: 'permission_request'; payload: { requestId: string; tool: string; detail: string } }
+  | { kind: 'refusal'; payload: { text: string } }
+  | { kind: 'error'; payload: { message: string } }
+  /**
+   * The worker's requests were refused with a 429 and the turn gave up: for a worker behind claude-cap, its profile has used its share of the plan
+   * (or the upstream limits it). Not a failure. It says nothing about when to resume: Foreman reads claude-cap's usage windows for that.
+   */
+  | { kind: 'quota'; payload: { message: string } }
+  | { kind: 'session_end'; payload: { reason: 'stopped' | 'crashed' } };
+
+/**
+ * An event as stored, pushed and returned by `eventsSince`. `id` is unique across sessions (`<sessionId>:<sequence>`),
+ * `sequence` counts the session's events from 1 without gaps, so a receiver can drop a repeat and restore the order.
+ */
+export type ForemanBridgeEvent = { id: string; sessionId: string; sequence: number } & ForemanBridgeEventBody;
+
+/** A session as Foreman's bridge interface sees it: `ended` once it was stopped or crashed and nothing runs since. */
+export type ForemanBridgeSessionStatus = 'running' | 'idle' | 'ended';
 
 /**
  * Lifecycle events the Claude runtime publishes to in-process subscribers.
  *
  * The runtime knows nothing about Foreman: it emits these raw observations (carrying the SDK
- * message where one exists) and the Foreman bridge translates them into `ForemanEvent`s.
+ * message where one exists) and the Foreman bridge translates them into `ForemanBridgeEvent`s.
  * `sessionId` is the app session id; `projectPath` is the run's working directory when known.
  * Subscribers run synchronously inside the runtime loop and must return immediately.
  */
@@ -1412,7 +1443,13 @@ export type ClaudeRuntimeEvent = { sessionId: string; projectPath: string | null
       resumed: boolean;
       /** Model as selected for the session, including the `@api` / `@cap` billing marker when present. */
       model: string | null;
+      /** The mode the run starts in, as the SDK gets it (`default` when it sets none), whatever the turn asked for. */
       permissionMode: string | null;
+      /** The tools the run's options allow and deny (the UI's `toolsSettings`, as sent; empty without one). */
+      allowedTools: string[];
+      disallowedTools: string[];
+      /** True for a run the Foreman bridge dispatched (`foremanDispatch: true` in its options): never one of the owner's own. */
+      foremanDispatch: boolean;
     }
   | { kind: 'run_ended'; reason: 'completed' | 'aborted' | 'error' }
   | { kind: 'run_error'; message: string }
@@ -1425,17 +1462,15 @@ export type ClaudeRuntimeEvent = { sessionId: string; projectPath: string | null
   | { kind: 'system_message'; message: Record<string, unknown> }
   /** An SDK `assistant` message whose stop reason is `refusal`. */
   | { kind: 'assistant_refusal'; message: Record<string, unknown> }
+  /** An SDK `assistant` message that reports the CLI gave up on a request: `error` is the SDK's classification (`rate_limit` for a 429) and `text` the sentence it carries. */
+  | { kind: 'assistant_error'; error: string; text: string }
   | {
       kind: 'permission_request';
       requestId: string;
       toolName: string;
       input: unknown;
-      /** Set when the run's tool policy (the Foreman guard) judged the call risky and sent it to a prompt. */
-      guarded?: boolean;
-      /** Why the guarded call was risky: `command`, `secret` or `outside_repo`. */
-      category?: string | null;
-      /** True when the guard that held the call has an allowlist of plain-file write directories (so a scratch-looking write held anyway was held for a reason). */
-      allowlist?: boolean;
+      /** True when the session runs in a Foreman sandbox: the prompt is one its rules did not settle, so whoever drives the session answers it. */
+      sandboxed?: boolean;
     }
   /** A permission prompt ended: answered by a client or the bridge, timed out, or cancelled by an abort. */
   | { kind: 'permission_resolved'; requestId: string }

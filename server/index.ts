@@ -55,6 +55,7 @@ import { quickCommandsRoutes } from './modules/quick-commands/index.js';
 import { agentsRoutes } from './modules/agents/index.js';
 import { createForemanModule, createForemanUiModule } from './modules/foreman/index.js';
 import { createForemanTabModule } from './modules/foreman/foreman-tab.module.js';
+import { createForemanNextModule } from './modules/foreman-next/index.js';
 import browserUseMcpRoutes from './modules/browser-use/browser-use-mcp.routes.js';
 import { browserUseService } from './modules/browser-use/browser-use.service.js';
 import { initializeDatabase, sessionsDb } from './modules/database/index.js';
@@ -101,10 +102,11 @@ const agentRoutes = createAgentModule({
     queryCodex,
     queryOpenCode,
 });
-// Foreman bridge: token-protected control API plus the event push to the Foreman service.
-const foremanRoutes = createForemanModule();
-const foremanUiRoutes = createForemanUiModule();
+// Foreman bridge: token-protected control API, the event log of the sessions it drives and its push to the Foreman service.
+const foremanBridge = createForemanModule();
+const foremanUiRoutes = createForemanUiModule(foremanBridge);
 const foremanTabRoutes = createForemanTabModule();
+const foremanNextRoutes = createForemanNextModule();
 
 // Single WebSocket server that handles chat, shell, and plugin proxy paths.
 createWebSocketServer(server, {
@@ -198,11 +200,14 @@ app.use('/api/plugins', authenticateToken, pluginsRoutes);
 app.use('/api/browser-use-mcp', browserUseMcpRoutes);
 
 // Foreman bridge API (bridge-token protected; deliberately not behind the user login)
-app.use('/api/foreman', foremanRoutes);
-// Foreman suggestion card: the logged-in user's view of the bridge (pending suggestion, feedback)
+app.use('/api/foreman', foremanBridge.router);
+// Foreman suggestion card and hand-over grants: the logged-in user's view of the bridge (pending suggestion, feedback, handing a session over)
 app.use('/api/foreman-suggestions', authenticateToken, foremanUiRoutes);
 // Foreman tab: the logged-in user's allowlisted view of Foreman (overview, decisions, spend, settings, tasks, inbox, lessons)
 app.use('/api/foreman-tab', authenticateToken, foremanTabRoutes);
+
+// The rebuilt Foreman's control API: the logged-in owner's proxy to Foreman's own API (slice 4b).
+app.use('/api/foreman-next', authenticateToken, foremanNextRoutes);
 
 // Browser API Routes (protected)
 app.use('/api/browser-use', authenticateToken, browserUseRoutes);
@@ -346,6 +351,7 @@ async function startServer() {
     try {
         // Initialize authentication database
         await initializeDatabase();
+        foremanBridge.resumeEventPush();
 
         // Configure Web Push (VAPID keys)
         configureWebPush();

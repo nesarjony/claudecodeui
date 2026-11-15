@@ -1,7 +1,8 @@
 import { Settings, AlertTriangle } from 'lucide-react';
-import { SessionSelectionBar, useSessionSelection } from '@/modules/sidebar/SessionSelection';
 import type { TFunction } from 'i18next';
 
+import { ForemanSidebarEntry } from '@/modules/foreman-next';
+import { SessionSelectionBar, useSessionSelection } from '@/modules/sidebar/SessionSelection';
 import type { ReleaseInfo } from '@/shared/types';
 
 type SidebarFooterProps = {
@@ -41,6 +42,8 @@ export default function SidebarFooter({
           </div>
         </>
       )}
+
+      <ForemanSidebarEntry />
 
       {/* Settings */}
       <div className="nav-divider" />

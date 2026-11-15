@@ -236,8 +236,7 @@ const hasBashTool = (tools: readonly string[]) =>
  * does not do this by itself: a `Bash(npm test:*)` entry in an agent's `tools` did not stop that agent from running
  * `touch file` (Claude Code 2.1.286). Only calls from inside a configured agent that has Bash are judged (the hook input's
  * `agent_type` names it); the main worker (no `agent_type`) and agents Foreman did not configure are left alone. An agent with
- * Bash but no allow-list may run nothing (fail closed). A refusal is a `deny`, which holds in every permission mode; the guard's
- * own hook still runs next to this one. Never throws.
+ * Bash but no allow-list may run nothing (fail closed). A refusal is a `deny`, which holds in every permission mode. Never throws.
  */
 function subagentBashHook(agents: Record<string, ForemanDelegatedAgent>): RuntimeHookCallback {
   const deny = (reason: string) => ({

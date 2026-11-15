@@ -31,6 +31,13 @@ import {
   CLAUDE_ULTRACODE_EFFORT
 } from '@/modules/providers/list/claude/claude-models.provider.js';
 import { applyCapBilling } from '@/modules/providers/list/claude/claude-cap-billing.js';
+import {
+  applyRuntimeSandboxAdditions,
+  approvalTimeoutMessage,
+  confineSandboxedPermissions,
+  resolveRuntimeSandbox,
+  withSandbox
+} from '@/modules/providers/list/claude/claude-runtime-sandbox.js';
 import { resolveClaudeCodeExecutablePath } from '@/shared/claude-cli-path.js';
 import {
   createNotificationEvent,
@@ -81,8 +88,8 @@ let runtimeAdditionsProvider = null;
 
 /**
  * What the provider may add to a run: extra SDK hooks, environment variables, subagents, the model to retry on after a refusal and
- * tools the run may never use.
- * @typedef {{ env?: Record<string, string>, hooks?: Record<string, unknown[]>, agents?: Record<string, { description: string, prompt: string, tools: string[], model: string, maxTurns?: number }>, fallbackModel?: string, disallowedTools?: string[] }} RuntimeAdditions
+ * tools the run may never use (and, for a sandboxed run, its sandbox; see claude-runtime-sandbox.ts).
+ * @typedef {import('@/modules/providers/list/claude/claude-runtime-sandbox.js').RuntimeAdditions} RuntimeAdditions
  */
 
 /**
@@ -200,7 +207,7 @@ const BG_SETTLE_GRACE_MS = 2 * 60 * 1000;
 
 const TOOLS_REQUIRING_INTERACTION = new Set(['AskUserQuestion', 'ExitPlanMode']);
 
-// What a guarded run is told when it uses a tool only a person can answer and its policy gave no reason of its own.
+// What a sandboxed (unattended) run is told when it uses a tool only a person can answer.
 const UNATTENDED_DENIAL_FALLBACK = 'No person is available to answer this tool call in this session, because it runs unattended. Do not use this tool: carry out the work directly.';
 
 // Ultracode is a session-scoped setting rather than an SDK effort level: it pairs xhigh
@@ -247,33 +254,6 @@ function createRequestId() {
     return crypto.randomUUID();
   }
   return crypto.randomBytes(16).toString('hex');
-}
-
-// Asks a host-supplied per-session tool policy (`options.toolPolicy`, set by the Foreman bridge) about one tool call.
-// It answers `{ decision: 'allow' }`, `{ decision: 'deny', message }` or `{ decision: 'ask', category, timeoutMs?, timeoutMessage? }`; null means no policy.
-// A throwing policy asks.
-function consultToolPolicy(policy, toolName, input) {
-  if (typeof policy !== 'function') return null;
-  try {
-    return policy(toolName, input) ?? null;
-  } catch (error) {
-    console.warn('Claude tool policy failed; asking instead:', error?.message || error);
-    return { decision: 'ask', category: null };
-  }
-}
-
-// The reason a guarded run gives the worker for refusing a tool that only a person can answer (AskUserQuestion, ExitPlanMode):
-// the policy's own `deny` message (the Foreman guard's), or a plain one when the policy gives none or fails.
-function unattendedDenialMessage(policy, toolName, input) {
-  const decision = consultToolPolicy(policy, toolName, input);
-  return decision?.decision === 'deny' && decision.message ? decision.message : UNATTENDED_DENIAL_FALLBACK;
-}
-
-// Adds host-supplied SDK hooks (`options.toolHooks`, event -> matchers) to the run's own; matchers are appended, none replaced.
-function mergeSdkHooks(base, extra) {
-  const merged = { ...base };
-  for (const [event, matchers] of Object.entries(extra)) merged[event] = [...(merged[event] || []), ...matchers];
-  return merged;
 }
 
 function waitForToolApproval(requestId, options = {}) {
@@ -1028,7 +1008,9 @@ async function loadMcpConfig(cwd) {
 /**
  * Executes a Claude query using the SDK
  * @param {string} command - User prompt/command
- * @param {Object} options - Query options
+ * @param {Object} options - Query options. `foremanSandbox: true` marks a run the Foreman bridge dispatched for a sandboxed session:
+ *   such a run is refused unless its sandbox is found (see `resolveRuntimeSandbox`). `foremanDispatch: true` marks every run the bridge
+ *   dispatches, reported on `run_started` so the bridge never counts it as the owner's.
  * @param {Object} ws - WebSocket connection
  * @param {Object} context - Provider-scoped model, session, and auth lookups
  * @returns {Promise<void>}
@@ -1223,7 +1205,20 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
 
     // Foreman-managed sessions get in-process PreCompact/SessionStart hooks (project and Foreman's own repos only) and,
     // when started through the bridge, the worker autocompact threshold. Appended to the hooks above, never replacing them.
-    const runtimeAdditions = await resolveRuntimeAdditions({ sessionId, projectPath: options.projectPath || options.cwd || null, model: sdkOptions.model });
+    const sandbox = resolveRuntimeSandbox(sessionId, { required: options.foremanSandbox === true });
+    // A session that has a sandbox runs in it or not at all (fail closed): there is no other guard.
+    if (sandbox && 'refuse' in sandbox) {
+      throw new Error(sandbox.refuse);
+    }
+    const baseAdditions = await resolveRuntimeAdditions({ sessionId, projectPath: options.projectPath || options.cwd || null, model: sdkOptions.model });
+    const runtimeAdditions = sandbox ? withSandbox(baseAdditions, sandbox) : baseAdditions;
+    const sandboxed = Boolean(runtimeAdditions.sandbox);
+    applyRuntimeSandboxAdditions(sdkOptions, runtimeAdditions);
+    // The sandbox covers Bash only, so a sandboxed run keeps its prompts: no bypass or auto mode and no tool the UI's settings allow,
+    // whoever sends the turn (a person typing into a worker's session included).
+    if (sandboxed) {
+      confineSandboxedPermissions(sdkOptions, { permissionMode: options.permissionMode });
+    }
     if (runtimeAdditions.env) {
       sdkOptions.env = { ...sdkOptions.env, ...runtimeAdditions.env };
     }
@@ -1243,34 +1238,25 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
     // (AskUserQuestion, ExitPlanMode) won't reach the UI — the classifier/bypass
     // auto-approves them and the model acts on a generated answer. Move these
     // tools to a PreToolUse hook (runs before the mode check) if we need them
-    // to work in those modes. A guarded run's own PreToolUse hook (options.toolHooks)
-    // already does that for it: it denies both tools in every mode, and the check
-    // below is its backstop.
+    // to work in those modes. A sandboxed run needs no hook: both tools are in its
+    // disallowedTools, which denies them in every mode, and the check below is the
+    // backstop.
     sdkOptions.canUseTool = async (toolName, input, context) => {
       const requiresInteraction = TOOLS_REQUIRING_INTERACTION.has(toolName);
-      // A guarded run (one with a tool policy) is unattended: nobody can answer a question or approve a plan, and the
-      // prompt below waits for them without any timeout. Refuse at once, with no prompt, event or notification.
-      if (requiresInteraction && typeof options.toolPolicy === 'function') {
-        return { behavior: 'deny', message: unattendedDenialMessage(options.toolPolicy, toolName, input) };
-      }
-      // A guarded run's policy allows safe calls outright and can refuse a call outright; risky ones fall through to the prompt below.
-      const policy = requiresInteraction ? null : consultToolPolicy(options.toolPolicy, toolName, input);
-      if (policy?.decision === 'allow') {
-        return { behavior: 'allow', updatedInput: input };
-      }
-      if (policy?.decision === 'deny') {
-        return { behavior: 'deny', message: policy.message || UNATTENDED_DENIAL_FALLBACK };
+      // A sandboxed run is unattended: nobody can answer a question or approve a plan, and the prompt below waits for them
+      // without any timeout. Refuse at once, with no prompt, event or notification. (The template denies these tools, so the
+      // model does not even see them; this is the backstop.)
+      if (requiresInteraction && sandboxed) {
+        return { behavior: 'deny', message: UNATTENDED_DENIAL_FALLBACK };
       }
 
       if (!requiresInteraction) {
-        // A call the guard policy holds goes to a person whatever else is configured: neither a bypass mode nor a stored
-        // allow rule (for example one a person ticked "always allow" on for an earlier call) may wave it through.
-        const heldByPolicy = policy?.decision === 'ask';
         // A tool Foreman denies its workers is refused first of all: not even a bypass mode lets it through.
         if (enforcedDisallowedTools.some(entry => matchesToolPermission(entry, toolName, input))) {
           return { behavior: 'deny', message: 'Tool disallowed by settings' };
         }
-        if (sdkOptions.permissionMode === 'bypassPermissions' && !heldByPolicy) {
+        // Not for a sandboxed run, whose mode was confined above: the sandbox covers Bash only, so its file tools must keep their prompts.
+        if (!sandboxed && sdkOptions.permissionMode === 'bypassPermissions') {
           return { behavior: 'allow', updatedInput: input };
         }
 
@@ -1284,14 +1270,14 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
         const isAllowed = (sdkOptions.allowedTools || []).some(entry =>
           matchesToolPermission(entry, toolName, input)
         );
-        if (isAllowed && !heldByPolicy) {
+        if (isAllowed) {
           return { behavior: 'allow', updatedInput: input };
         }
       }
 
       const requestId = createRequestId();
       ws.send(createNormalizedMessage({ kind: 'permission_request', requestId, toolName, input, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
-      emitRunEvent({ kind: 'permission_request', requestId, toolName, input, ...(policy ? { guarded: true, category: policy.category ?? null, ...(policy.allowlist === true ? { allowlist: true } : {}) } : {}) });
+      emitRunEvent({ kind: 'permission_request', requestId, toolName, input, ...(sandboxed ? { sandboxed: true } : {}) });
       emitNotification(createNotificationEvent({
         provider: 'claude',
         sessionId: sessionId || capturedSessionId || null,
@@ -1303,8 +1289,10 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
         dedupeKey: `claude:permission:${sessionId || capturedSessionId || 'none'}:${requestId}`
       }));
 
+      // The window a sandboxed prompt waits is the policy's; without one the prompt waits the default, and the timeout message names that.
+      const approvalWindowMs = requiresInteraction ? 0 : (sandboxed ? runtimeAdditions.approvalTimeoutMs : undefined);
       const decision = await waitForToolApproval(requestId, {
-        timeoutMs: requiresInteraction ? 0 : policy?.timeoutMs,
+        timeoutMs: approvalWindowMs,
         signal: context?.signal,
         metadata: {
           // Keyed by the app session id so `chat.subscribe` can look pending
@@ -1321,7 +1309,7 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
       // Cancelled prompts belong to a run that is being aborted, whose own end event follows.
       if (!decision?.cancelled) emitRunEvent({ kind: 'permission_resolved', requestId });
       if (!decision) {
-        return { behavior: 'deny', message: policy?.timeoutMessage ?? 'Permission request timed out' };
+        return { behavior: 'deny', message: sandboxed ? approvalTimeoutMessage(toolName, approvalWindowMs ?? TOOL_APPROVAL_TIMEOUT_MS) : 'Permission request timed out' };
       }
 
       if (decision.cancelled) {
@@ -1350,9 +1338,6 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
       return { behavior: 'deny', message: decision.message ?? 'User denied tool use' };
     };
 
-    // A guarded run's PreToolUse hook joins the hooks above. It routes risky calls the CLI would allow by itself to canUseTool.
-    if (options.toolHooks) sdkOptions.hooks = mergeSdkHooks(sdkOptions.hooks, options.toolHooks);
-
     let heldPrompt = createHeldPromptStream(promptMessages);
     releasePromptStream = heldPrompt.release;
     pushPromptMessages = heldPrompt.push;
@@ -1362,7 +1347,6 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
         options: sdkOptions
       });
     } catch (hookError) {
-      if (options.toolHooks) throw hookError; // a guarded run must not start without its guard hook
       // Older/newer SDK versions may not accept hook shapes yet.
       // Keep notification behavior operational via runtime events even if hook registration fails.
       console.warn('Failed to initialize Claude query with hooks, retrying without hooks:', hookError?.message || hookError);
@@ -1392,7 +1376,12 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
       kind: 'run_started',
       resumed: Boolean(providerSessionId),
       model: resolvedModel || options.model || null,
-      permissionMode: options.permissionMode || null
+      // The mode the run really starts in (after the UI's skip-permissions setting and a sandbox's confinement), not the one asked for,
+      // and the UI's tool lists as sent: a session handed over to Foreman runs Foreman's turns with no more than its owner's.
+      permissionMode: sdkOptions.permissionMode || 'default',
+      allowedTools: nonEmptyStrings(options.toolsSettings?.allowedTools),
+      disallowedTools: nonEmptyStrings(options.toolsSettings?.disallowedTools),
+      foremanDispatch: options.foremanDispatch === true
     });
     console.log('Starting async generator loop for session:', capturedSessionId || 'NEW');
     for await (const message of queryInstance) {
@@ -1451,6 +1440,10 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
       trackAgentTask(sessionKey(), message);
       if (message.type === 'assistant' && !message.parent_tool_use_id && message.message?.stop_reason === 'refusal') {
         emitRunEvent({ kind: 'assistant_refusal', message });
+      } else if (message.type === 'assistant' && !message.parent_tool_use_id && typeof message.error === 'string') {
+        // The CLI gave up on a request: `error` is the SDK's own classification (`rate_limit` for a 429, `authentication_failed`, `server_error`, ...).
+        const text = (Array.isArray(message.message?.content) ? message.message.content : []).find((block) => block?.type === 'text')?.text;
+        emitRunEvent({ kind: 'assistant_error', error: message.error, text: typeof text === 'string' ? text : '' });
       } else if (message.type === 'system' && OBSERVED_SYSTEM_SUBTYPES.has(message.subtype)) {
         emitRunEvent({ kind: 'system_message', message });
       }

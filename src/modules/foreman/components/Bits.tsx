@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 
 import { errorMessage } from '@/modules/foreman/api';
 import { formatAgo } from '@/modules/foreman/format';
-import { useNow } from '@/modules/foreman/useNow';
+import { useNow } from '@/shared/hooks/useNow';
 
 /** Opens the chat of a session. */
 export function SessionLink({ sessionId, onOpen }: { sessionId: string; onOpen: (sessionId: string) => void }) {

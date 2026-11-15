@@ -273,18 +273,27 @@ test('SessionStart does not even call Foreman for startup, clear or fork, and is
 
 test('the managed-session store remembers marks across a restart and survives a failing store', () => {
   const backing = new Map<string, string>();
-  const store = createManagedSessionStore({ get: (k) => backing.get(k) ?? null, set: (k, v) => void backing.set(k, v) });
+  const persisted = { get: (k: string) => backing.get(k) ?? null, set: (k: string, v: string) => void backing.set(k, v), delete: (k: string) => void backing.delete(k) };
+  const store = createManagedSessionStore(persisted);
   assert.equal(store.has('a'), false);
   store.mark('a');
   assert.equal(store.has('a'), true);
   assert.equal(store.has('b'), false);
-  const afterRestart = createManagedSessionStore({ get: (k) => backing.get(k) ?? null, set: (k, v) => void backing.set(k, v) });
+  const afterRestart = createManagedSessionStore(persisted);
   assert.equal(afterRestart.has('a'), true);
+  // A start that failed takes its mark off, in memory and in the backing store.
+  store.mark('z');
+  store.unmark('z');
+  assert.equal(store.has('z'), false);
+  assert.equal(createManagedSessionStore(persisted).has('z'), false);
   const broken = createManagedSessionStore({
     get: () => {
       throw new Error('db locked');
     },
     set: () => {
+      throw new Error('db locked');
+    },
+    delete: () => {
       throw new Error('db locked');
     },
   });

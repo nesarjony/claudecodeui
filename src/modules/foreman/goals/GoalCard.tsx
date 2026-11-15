@@ -7,7 +7,7 @@ import { repoLabel } from '@/modules/foreman/format';
 import { BudgetMeter, GoalStatusChip, TaskProgress } from '@/modules/foreman/goals/GoalBits';
 import { isOverdue, nextLine } from '@/modules/foreman/goals/goalView';
 import type { GoalListItem } from '@/modules/foreman/goals/types';
-import { useNow } from '@/modules/foreman/useNow';
+import { useNow } from '@/shared/hooks/useNow';
 
 /** One goal in the list: status, progress, spend against the budget and what comes next. Tap it for the detail. */
 export default function GoalCard({ goal, onOpen }: { goal: GoalListItem; onOpen: (id: string) => void }) {
