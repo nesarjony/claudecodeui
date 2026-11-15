@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# The Foreman test instance of cloudcli: this checkout, on 127.0.0.1:3011, apart from the live instance.
+# The Foreman test instance of cloudcli: this checkout, on 127.0.0.1:3011 (FOREMAN_TEST_PORT for a second one beside it), apart from the live instance.
 #
 #   scripts/foreman-test-instance.sh init           make the state directory, the tokens and the instance's home
-#   scripts/foreman-test-instance.sh start          start it (CLAUDE_CAP_URL=<url> start points its workers at another model endpoint)
+#   scripts/foreman-test-instance.sh start          start it (CLAUDE_CAP_URL=<url> start points its workers at another model endpoint;
+#                                                   FOREMAN_URL=<origin> start points the bridge's callers and the owner proxy at a Foreman other than :4211)
 #   scripts/foreman-test-instance.sh stop|status|restart
 #   scripts/foreman-test-instance.sh register-project <path>   make an existing directory a cloudcli project of the test instance (the bridge only drives known projects)
 #   scripts/foreman-test-instance.sh live-check     what the live instance and its plugins look like right now (run before and after)
@@ -11,12 +12,14 @@
 # (~/.claude-code-ui), the "local server" marker (~/.cloudcli/local-server.json), uploaded assets and Claude's transcripts
 # (~/.claude) under the home directory: a second instance with the same HOME would start the live instance's plugins and
 # overwrite its marker. The real HOME is never read or written by the instance.
+# The owner proxy (/api/foreman-next) reads Foreman's API token from CONFIG/next-api-token (mode 600), and sends it only to FOREMAN_NEXT_URL
+# (default: FOREMAN_URL): without these the proxy of a test instance would name the live Foreman on :4211.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 STATE="${FOREMAN_TEST_STATE:-$HOME/.local/share/foreman-next/cloudcli-test}"
 CONFIG="${FOREMAN_NEXT_CONFIG:-$HOME/.config/foreman-next}"
-PORT=3011
+PORT="${FOREMAN_TEST_PORT:-3011}"
 LIVE_PORT=3001
 PID_FILE="$STATE/instance.pid"
 LOG_FILE="$STATE/instance.log"
@@ -56,6 +59,8 @@ start() {
     CLAUDE_CAP_URL="${CLAUDE_CAP_URL:-http://127.0.0.1:34817}" CLAUDE_CAP_PROFILE="${CLAUDE_CAP_PROFILE:-foreman-worker}" \
     FOREMAN_BRIDGE_TOKEN_FILE="$CONFIG/bridge-token" FOREMAN_EVENTS_TOKEN_FILE="$CONFIG/intake-token" \
     FOREMAN_EVENTS_URL="${FOREMAN_EVENTS_URL:-}" FOREMAN_URL="${FOREMAN_URL:-http://127.0.0.1:4211}" \
+    FOREMAN_NEXT_URL="${FOREMAN_NEXT_URL:-${FOREMAN_URL:-http://127.0.0.1:4211}}" FOREMAN_NEXT_API_TOKEN_FILE="$CONFIG/next-api-token" \
+    ${FOREMAN_NEXT_LOG_FILE:+"FOREMAN_NEXT_LOG_FILE=$FOREMAN_NEXT_LOG_FILE"} \
     FOREMAN_WORKTREES_DIR="${FOREMAN_WORKTREES_DIR:-/mnt/dev/frontend/foreman-worktrees}" \
     TSX_TSCONFIG_PATH="$ROOT/server/tsconfig.json" \
     node --import tsx "$ROOT/server/index.ts" > "$LOG_FILE" 2>&1 < /dev/null &
