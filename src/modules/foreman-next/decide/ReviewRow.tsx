@@ -9,15 +9,19 @@ import { ReviewAcknowledgeButton } from '@/modules/foreman-next/decide/ReviewAck
 import { ReviewInspectLink } from '@/modules/foreman-next/decide/ReviewInspectLink';
 import { useAction } from '@/modules/foreman-next/hooks/useAction';
 import { useForemanApi } from '@/modules/foreman-next/hooks/useForemanApi';
+import { needsFullText } from '@/modules/foreman-next/utils/reviewItems';
 import { Button, Input } from '@/shared/ui';
 
-/** Used by the Review tab for one thing Foreman decided alone: its evidence, how long the owner can still veto it, and OK, Veto (with the reason that becomes a lesson), Details or the page it is about. */
-export function ReviewRow({ item }: { item: ReviewItem }) {
+/**
+ * Used by the Review tab for one thing Foreman decided alone: its evidence, how long the owner can still veto it, and OK, Veto (with the reason that becomes a lesson), Details or the page it is about.
+ * A lesson or a playbook can be OK'd only while its whole text or diff is shown, so `startOpen` is for the one a link names.
+ */
+export function ReviewRow({ item, startOpen = false }: { item: ReviewItem; startOpen?: boolean }) {
   const { t } = useTranslation('foremanNext');
   const api = useForemanApi();
   const { busy, failed, run } = useAction();
   // Whether the change itself is shown under the row.
-  const [showDetail, setShowDetail] = useState(false);
+  const [showDetail, setShowDetail] = useState(startOpen);
   // Whether the veto reason field is open, and what has been typed; a veto records why, so it cannot be one click.
   const [vetoing, setVetoing] = useState(false);
   const [reason, setReason] = useState('');
@@ -48,9 +52,10 @@ export function ReviewRow({ item }: { item: ReviewItem }) {
           <Button variant="outline" size="sm" disabled={busy} onClick={() => setVetoing(true)}>
             {t('review.veto')}
           </Button>
-          <ReviewAcknowledgeButton item={item} labelKey="review.ok" />
+          <ReviewAcknowledgeButton item={item} labelKey="review.ok" disabled={needsFullText(item) && !showDetail} />
         </div>
       </div>
+      {needsFullText(item) && !showDetail ? <p className="text-xs text-muted-foreground">{t('review.readFirst')}</p> : null}
       {showDetail ? <p className="rounded-md bg-muted/50 p-3 text-sm text-muted-foreground">{item.detail}</p> : null}
       {vetoing ? (
         <form onSubmit={confirmVeto} className="flex flex-wrap items-center gap-2">

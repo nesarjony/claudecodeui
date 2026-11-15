@@ -9,8 +9,13 @@ import { ReviewAcknowledgeButton } from '@/modules/foreman-next/decide/ReviewAck
 import { ReviewInspectLink } from '@/modules/foreman-next/decide/ReviewInspectLink';
 import type { Resource } from '@/modules/foreman-next/hooks/useForemanResource';
 import { foremanPath } from '@/modules/foreman-next/utils/foremanPaths';
+import { needsFullText } from '@/modules/foreman-next/utils/reviewItems';
+import { buttonVariants } from '@/shared/ui';
 
-/** Used by the Today screen to list what Foreman decided alone, each with its veto window, and to acknowledge it in one tap. */
+/**
+ * Used by the Today screen to list what Foreman decided alone, each with its veto window, and to acknowledge it in one tap. A lesson or a playbook is not acknowledged from its
+ * title: its button opens the Review card, where the whole text is shown first.
+ */
 export function ReviewPanel({ review }: { review: Resource<ReviewItem[]> }) {
   const { t } = useTranslation('foremanNext');
   return (
@@ -31,7 +36,13 @@ export function ReviewPanel({ review }: { review: Resource<ReviewItem[]> }) {
                   <p className="min-w-0 truncate text-sm font-medium">{item.title}</p>
                   <div className="flex shrink-0 items-center gap-1">
                     <ReviewInspectLink item={item} />
-                    <ReviewAcknowledgeButton item={item} labelKey="today.looksRight" />
+                    {needsFullText(item) ? (
+                      <Link to={foremanPath.reviewItem(item.id)} className={buttonVariants({ variant: 'outline', size: 'sm' })}>
+                        {t('today.readInFull')}
+                      </Link>
+                    ) : (
+                      <ReviewAcknowledgeButton item={item} labelKey="today.looksRight" />
+                    )}
                   </div>
                 </div>
                 <p className="text-xs">

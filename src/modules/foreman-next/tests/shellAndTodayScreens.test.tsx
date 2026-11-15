@@ -1,5 +1,5 @@
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { quickApi, renderForemanApp } from '@/modules/foreman-next/tests/testHelpers';
 
@@ -59,7 +59,9 @@ describe('Today', () => {
     expect(await within(needs).findByText('Bulk actions in v1?')).toBeTruthy();
     expect(within(needs).getAllByText(/holds \d+ rows · 2h/).map((row) => row.textContent)).toEqual(['holds 20 rows · 2h', 'holds 15 rows · 2h']);
     const review = screen.getByRole('region', { name: /^Review/ });
-    expect(await within(review).findAllByRole('button', { name: 'Looks right' })).toHaveLength(4);
+    // A re-plan and a delegated decision are acknowledged here; a rule and a lesson are read in the Review card first.
+    expect(await within(review).findAllByRole('button', { name: 'Looks right' })).toHaveLength(2);
+    expect(within(review).getAllByRole('link', { name: 'Read in full' }).map((link) => link.getAttribute('href'))).toEqual(['/foreman/decide/review?item=r-rule', '/foreman/decide/review?item=r-lesson']);
     expect(within(review).getAllByText(/^closes \d{2}:\d{2} · in /)).toHaveLength(4);
     expect(within(review).getByRole('link', { name: 'Diff' }).getAttribute('href')).toBe('/foreman/work/g-inbox?compare=previous');
     expect(within(review).getByRole('link', { name: 'Card' }).getAttribute('href')).toBe('/foreman/decisions/h-retry-1');
@@ -83,12 +85,30 @@ describe('Today', () => {
     expect(within(week).getByText('11 of 12 calls')).toBeTruthy();
   });
 
-  it('acknowledges a review item in one tap and drops it', async () => {
+  it('acknowledges a review item that has no text to read in one tap and drops it', async () => {
     const api = quickApi();
+    const acknowledge = vi.spyOn(api, 'acknowledgeReviewItem');
     renderForemanApp('/foreman', api);
     const review = await screen.findByRole('region', { name: /^Review/ });
     fireEvent.click((await within(review).findAllByRole('button', { name: 'Looks right' }))[0] as HTMLElement);
-    await waitFor(() => expect(within(review).getAllByRole('button', { name: 'Looks right' })).toHaveLength(3));
+    await waitFor(() => expect(within(review).getAllByRole('button', { name: 'Looks right' })).toHaveLength(1));
+    expect(acknowledge).toHaveBeenCalledWith('r-replan');
+  });
+
+  it('never OKs a lesson or a playbook from its title: Looks right is not offered for them, and Read in full opens the Review card with the whole text shown', async () => {
+    const api = quickApi();
+    const acknowledge = vi.spyOn(api, 'acknowledgeReviewItem');
+    renderForemanApp('/foreman', api);
+    const review = await screen.findByRole('region', { name: /^Review/ });
+    for (const title of ['Adopted rule hooks/state-reset in desk', 'New lesson: all UI copy comes from i18n']) {
+      const row = (await within(review).findByText(title)).closest('li') as HTMLElement;
+      expect(within(row).queryByRole('button', { name: 'Looks right' })).toBeNull();
+    }
+    fireEvent.click(within(review).getAllByRole('link', { name: 'Read in full' })[1] as HTMLElement);
+    expect(await screen.findByText(/Do: take every user-visible string from the i18n catalogue/)).toBeTruthy();
+    expect((screen.getAllByRole('button', { name: 'OK' })[1] as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getAllByRole('button', { name: 'OK' })[0] as HTMLButtonElement).disabled).toBe(true);
+    expect(acknowledge).not.toHaveBeenCalled();
   });
 
   it('asks the owner to give Foreman a goal when there are none, and opens the New goal flow', async () => {

@@ -49,6 +49,13 @@ describe('Decide', () => {
     expect(screen.queryByText('Re-planned desk · Inbox (strategy v2)')).toBeNull();
   });
 
+  it('opens the row a link named with its whole text shown, and keeps OK locked on the lessons and playbooks that are not', async () => {
+    renderForemanApp('/foreman/decide/review?item=r-lesson');
+    expect(await screen.findByText(/Do: take every user-visible string from the i18n catalogue/)).toBeTruthy();
+    expect(screen.getAllByRole('button', { name: 'OK' }).map((button) => (button as HTMLButtonElement).disabled)).toEqual([true, false, false, false]);
+    expect(screen.queryByText(/reset local state when the entity id changes/)).toBeNull();
+  });
+
   it('lists History and opens a decision card from it', async () => {
     renderForemanApp('/foreman/decide/history');
     expect(await screen.findByText('Which languages ship in v1?')).toBeTruthy();

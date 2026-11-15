@@ -8,6 +8,7 @@ export const foremanPath = {
   decide: `${ROOT}/decide`,
   needsYou: (questionId?: string) => `${ROOT}/decide/needs${questionId ? `/${questionId}` : ''}`,
   review: `${ROOT}/decide/review`,
+  reviewItem: (id: string) => `${ROOT}/decide/review?item=${encodeURIComponent(id)}`,
   history: `${ROOT}/decide/history`,
   decision: (id: string) => `${ROOT}/decisions/${id}`,
   work: `${ROOT}/work`,

@@ -37,10 +37,48 @@ describe('a Review row', () => {
   });
 
   it('closes the item early with OK', async () => {
-    const { api } = inList();
+    const { api } = inList(quickApi(), ofKind('delegated-decision'));
     const acknowledge = vi.spyOn(api, 'acknowledgeReviewItem');
     fireEvent.click(screen.getByRole('button', { name: 'OK' }));
-    await waitFor(() => expect(acknowledge).toHaveBeenCalledWith('r-rule'));
+    await waitFor(() => expect(acknowledge).toHaveBeenCalledWith('r-retry'));
+  });
+
+  it.each(['rule', 'lesson'] as const)('lets the owner OK a %s only while its whole text is shown, and says why until then', async (kind) => {
+    const target = ofKind(kind);
+    const { api } = inList(quickApi(), target);
+    const acknowledge = vi.spyOn(api, 'acknowledgeReviewItem');
+    const ok = screen.getByRole('button', { name: 'OK' }) as HTMLButtonElement;
+    expect(ok.disabled).toBe(true);
+    expect(screen.getByText(/Open Details and read all of it first/)).toBeTruthy();
+    fireEvent.click(ok);
+    expect(acknowledge).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Details' }));
+    expect(screen.getByText(target.detail)).toBeTruthy();
+    expect(ok.disabled).toBe(false);
+    expect(screen.queryByText(/Open Details and read all of it first/)).toBeNull();
+
+    // Hiding the text locks it again: the button follows what is on screen.
+    fireEvent.click(screen.getByRole('button', { name: 'Details' }));
+    expect(ok.disabled).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Details' }));
+    fireEvent.click(ok);
+    await waitFor(() => expect(acknowledge).toHaveBeenCalledWith(target.id));
+  });
+
+  it('opens with its text shown, and OK ready, when a link named it', () => {
+    renderWithForeman(
+      <ul>
+        <ReviewRow item={ofKind('lesson')} startOpen />
+      </ul>,
+    );
+    expect(screen.getByText(ofKind('lesson').detail)).toBeTruthy();
+    expect((screen.getByRole('button', { name: 'OK' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it.each(['replan', 'delegated-decision'] as const)('keeps OK ready for a %s, which has no text to read first', (kind) => {
+    inList(quickApi(), ofKind(kind));
+    expect((screen.getByRole('button', { name: 'OK' }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it('will not veto without a reason, then vetoes and records why', async () => {
