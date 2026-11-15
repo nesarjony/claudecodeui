@@ -326,7 +326,7 @@ test('the sandbox sent with the start reaches the CLI: the SDK sandbox option, t
     network: { ...policy.network, allowAllUnixSockets: true, strictAllowlist: true },
     filesystem: {
       ...policy.filesystem,
-      denyRead: [...new Set([...policy.filesystem.denyRead, '/run', '/tmp', '/var/tmp', '/home', '/mnt', '/media', '/srv'])],
+      denyRead: [...new Set([...policy.filesystem.denyRead, '/run', '/tmp', '/var/tmp', '/home', '/mnt', '/media', '/srv', '/var/snap'])],
       denyWrite: [...policy.filesystem.denyWrite, ...forced],
     },
     credentials: policy.credentials,

@@ -221,8 +221,8 @@ by cloudcli at the start. The same scope says which of git's and the CLI's files
 - **Forced**, whatever the policy says: `enabled`, `failIfUnavailable`, `autoAllowBashIfSandboxed`, `allowUnsandboxedCommands: false` (so `dangerouslyDisableSandbox` is ignored),
   `network.strictAllowlist` (an unlisted host is a deterministic deny, never a prompt), `AskUserQuestion` and `ExitPlanMode` in the denied tools, and git's and the CLI's own files read-only (above). Also
   `network.allowAllUnixSockets: true`: on this host the sandbox only starts with every unix socket allowed (AppArmor's `unpriv_bwrap` profile; the tested workaround), and
-  the constant flips once the owner fixes the profile. So the sockets stay out of sight, `/run`, `/tmp`, `/var/tmp`, `/home`, `/mnt`, `/media` and `/srv` are always joined
-  to `filesystem.denyRead`; the checkout and `scratchDir` stay reachable, because the sandbox mounts the allowed paths over a denied tree.
+  the constant flips once the owner fixes the profile. So the sockets stay out of sight, `/run`, `/tmp`, `/var/tmp`, `/home`, `/mnt`, `/media`, `/srv` and `/var/snap` (the CUPS socket) are always
+  joined to `filesystem.denyRead` (a test lists the unix sockets of the host that lie outside them); the checkout and `scratchDir` stay reachable, because the sandbox mounts the allowed paths over a denied tree.
 - **Permission modes.** A sandboxed session runs in `default`, `acceptEdits` or `plan`; `bypassPermissions` and `auto` are refused (`PERMISSION_MODE_FORBIDDEN`), because the
   sandbox covers Bash only and the file tools rely on the prompts those modes skip. The runtime holds every sandboxed run to this whatever its options say: another mode becomes
   `default`, the UI's "skip permissions" setting and allowed tools are ignored, plan mode allows no reads or web tools outright, and a mode stored before this rule is not resumed.
@@ -395,6 +395,8 @@ database and every copy.
 
 - **Tokens:** the bridge token (`FOREMAN_BRIDGE_TOKEN_FILE`, what Foreman presents) and the events token (`FOREMAN_EVENTS_TOKEN_FILE`, what cloudcli presents to Foreman's
   intake), two different values, each in a file of mode 600.
+- **`FOREMAN_URL`:** the new Foreman's origin, `http://127.0.0.1:4211`. The suggestions client, the runtime hooks and the Foreman tab call the origin in `FOREMAN_URL`, else the origin of
+  `FOREMAN_EVENTS_URL`, else the old Foreman's `http://127.0.0.1:4111`. Set it explicitly: with neither it nor `FOREMAN_EVENTS_URL` set, the UI keeps calling the old Foreman.
 - **`FOREMAN_EVENTS_URL`:** the new Foreman's intake. `FOREMAN_EVENTS_TOKEN_FILE` has no default: without it nothing is pushed (events are still stored and `eventsSince`
   serves them).
 - **claude-cap:** the `foreman-worker` profile enabled and reachable as `<CLAUDE_CAP_URL>/profile/foreman-worker`, with its caps (MiniMax: 70% of the five-hour and 80% of the
@@ -404,19 +406,28 @@ database and every copy.
 ### Cutover checklist
 
 1. Drain the old Foreman: stop new starts, then let the running batches finish or interrupt them. They are not resumed: after the migration their sessions are `released`.
-2. Stop the live instance. Back up `auth.db` and `chmod 600` it and its copies (above).
-3. Stop the old Foreman (:4111).
-4. Deploy the branch build as the live instance with the configuration above, and start it; it migrates the database on start. (The owner's decision and action; nothing
+2. Archive the old Foreman's worker sessions, in the live instance's UI, with a plain delete: it archives a session that ran and its transcript stays readable (a force delete removes the transcript: do not use it). They are the rows of
+   `foreman_session_state` (`sqlite3 ~/.cloudcli/auth.db 'SELECT session_id, task_id, status FROM foreman_session_state'`). The migration marks every one `released`, so nothing
+   supervises or reports on them afterwards, and unarchived they would stay in their projects' session lists beside live work. Do it before the deploy, while the live instance still runs.
+3. Stop the live instance. Back up `auth.db` and `chmod 600` it and its copies (above).
+4. Stop the old Foreman (:4111).
+5. Deploy the branch build as the live instance with the configuration above, and start it; it migrates the database on start. (The owner's decision and action; nothing
    here deploys anything.)
-5. Start the new Foreman with the bridge token, the events token and its intake at `FOREMAN_EVENTS_URL`.
-6. Check:
+6. Point the new Foreman at the live instance, then restart it. In the new Foreman's `~/.config/foreman/workers.env`: `CLOUDCLI_URL` is the live instance (`http://127.0.0.1:3001`; it
+   points at the test instance until now), and `CLOUDCLI_BRIDGE_TOKEN` and `CLOUDCLI_INTAKE_TOKEN` are the contents of the token files the live instance reads as
+   `FOREMAN_BRIDGE_TOKEN_FILE` and `FOREMAN_EVENTS_TOKEN_FILE` (the new Foreman's pair is `~/.config/foreman-next/bridge-token` and `intake-token`; without `FOREMAN_BRIDGE_TOKEN_FILE`
+   the live instance reads the old Foreman's `~/.config/foreman/bridge-token`). Then `systemctl --user restart foreman-next`, and check `/health`. Foreman's own runbook is
+   `docs/OPERATIONS.md` in its repository (`/mnt/dev/frontend/foreman-next`).
+7. Check:
    - `GET /api/foreman/health` with `Authorization: Bearer <bridge token>` answers 200, and 401 without it;
    - platform mode is off: no `VITE_IS_PLATFORM=true` in the instance's environment (`/proc/<pid>/environ`);
    - both token files are mode 600 (`stat -c %a`), and the boot log has no warning about them;
    - claude-cap's profile is there: `GET http://127.0.0.1:34817/state` lists `foreman-worker`, enabled, with its caps;
    - the sandbox battery passes against the deployed build's test twin (the test instance at the same commit):
-     `node --import tsx scripts/foreman-battery/attack-battery.mts`, verdict CONTAINED.
-7. Rollback: stop the instance, restore the `auth.db` backup, start the previous build and the old Foreman. The migration renamed a column, so the previous build does not run
+     `node --import tsx scripts/foreman-battery/attack-battery.mts`, verdict CONTAINED;
+   - every unix socket on the host lies under a hidden tree (`HIDDEN_TREES`; it tests the machine, so it is opt-in):
+     `CLOUDCLI_HOST_CHECKS=1 npx tsx --tsconfig server/tsconfig.json --test server/modules/foreman/tests/foreman-sandbox-sockets.test.ts`.
+8. Rollback: stop the instance, restore the `auth.db` backup, start the previous build and the old Foreman. The migration renamed a column, so the previous build does not run
    on the migrated database; what was recorded after the cutover is lost with the restore.
 
 ## What differs from Foreman's slice-2 `Bridge` interface and the simulator
