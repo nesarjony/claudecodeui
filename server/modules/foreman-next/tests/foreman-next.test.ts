@@ -1,16 +1,18 @@
 import assert from 'node:assert/strict';
-import { createServer, type IncomingMessage, type Server } from 'node:http';
+import { createServer, request as httpRequest, type IncomingMessage, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import test from 'node:test';
+import test, { mock } from 'node:test';
+import { format } from 'node:util';
 
 import express from 'express';
 
 import { assertLoopback, createForemanNextClient } from '@/modules/foreman-next/foreman-next.client.js';
 import { createForemanNextRouter } from '@/modules/foreman-next/foreman-next.module.js';
 import { FOREMAN_NEXT_ROUTES } from '@/modules/foreman-next/foreman-next.routes.js';
+import { readTokenFile } from '@/modules/foreman-next/foreman-next.token.js';
 
 const TOKEN = 'proxy-token-0123456789';
 
@@ -34,15 +36,49 @@ async function fakeForeman(answer: (request: Seen) => { status: number; body: un
   return { url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, seen, close: () => new Promise<void>((resolve) => server.close(() => resolve())) };
 }
 
-async function proxyOver(foremanUrl: string, token: string | undefined, serviceLogFile?: string) {
+/** The proxy over a fake Foreman; `received` holds each URL exactly as Express was given it. The token is a value, or a function that reads it. */
+async function proxyOver(foremanUrl: string, token: string | undefined | (() => Promise<string | null>), serviceLogFile?: string, fetchFn?: typeof fetch) {
   const app = express();
+  const received: string[] = [];
+  app.use((incoming, _response, next) => {
+    received.push(incoming.originalUrl);
+    next();
+  });
   app.use(express.json());
-  app.use('/api/foreman-next', createForemanNextRouter({ client: createForemanNextClient({ baseUrl: foremanUrl, token: async () => token ?? null }), serviceLogFile }));
+  const tokenSource = typeof token === 'function' ? token : async () => token ?? null;
+  app.use('/api/foreman-next', createForemanNextRouter({ client: createForemanNextClient({ baseUrl: foremanUrl, token: tokenSource }, fetchFn), serviceLogFile }));
   const server: Server = await new Promise((resolve) => {
     const listening = app.listen(0, '127.0.0.1', () => resolve(listening));
   });
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/foreman-next`;
-  return { base, close: () => new Promise<void>((resolve) => server.close(() => resolve())) };
+  return { base, received, close: () => new Promise<void>((resolve) => server.close(() => resolve())) };
+}
+
+/**
+ * One request with the path exactly as written, and its status. `fetch` normalises `/status/..` away before it is sent, so a probe of a path trick
+ * over `fetch` never reaches Express as the trick; `node:http` sends what it is given.
+ */
+function rawStatus(base: string, probe: string, method = 'GET'): Promise<number> {
+  const { hostname, port, pathname } = new URL(base);
+  return new Promise((resolve, reject) => {
+    const outgoing = httpRequest({ host: hostname, port, method, path: `${pathname}${probe}` }, (response) => {
+      response.resume();
+      response.on('end', () => resolve(response.statusCode ?? 0));
+    });
+    outgoing.on('error', reject);
+    outgoing.end();
+  });
+}
+
+/** Runs `body` with `console.error` recorded (and silent), and returns what it logged, one string per call. */
+async function withErrorLog<T>(body: () => Promise<T>): Promise<{ result: T; lines: string[] }> {
+  const spy = mock.method(console, 'error', () => undefined);
+  try {
+    const result = await body();
+    return { result, lines: spy.mock.calls.map((call) => format(...call.arguments)) };
+  } finally {
+    spy.mock.restore();
+  }
 }
 
 test('forwards a read with the API token and wraps Foreman\'s answer in the envelope', async () => {
@@ -94,11 +130,19 @@ test('reaches nothing of Foreman\'s outside the contract: no other path, no path
   const foreman = await fakeForeman(() => ({ status: 200, body: {} }));
   const proxy = await proxyOver(foreman.url, TOKEN);
   try {
-    for (const probe of ['/api/workflows', '/knowledge', '/status/../../api/workflows', '/decisions/..%2F..%2Fapi', '/decisions/a%20b']) {
-      const response = await fetch(`${proxy.base}${probe}`);
-      assert.ok([400, 404].includes(response.status), `${probe} answered ${response.status}`);
-    }
-    assert.equal((await fetch(`${proxy.base}/status`, { method: 'DELETE' })).status, 404);
+    // Raw HTTP, so each literal path reaches Express: a path that matches no route is a 404, and an id route with an id that is not one is a 400.
+    const probes: Array<[probe: string, status: number]> = [
+      ['/api/workflows', 404],
+      ['/knowledge', 404],
+      ['/status/../../api/workflows', 404],
+      ['/decisions/..%2F..%2Fapi', 400],
+      ['/decisions/a%20b', 400],
+    ];
+    for (const [probe, status] of probes) assert.equal(await rawStatus(proxy.base, probe), status, probe);
+    const wrongMethods: Array<[method: string, probe: string]> = [['DELETE', '/status'], ['POST', '/status'], ['GET', '/status/pause'], ['PUT', '/decisions/d1']];
+    for (const [method, probe] of wrongMethods) assert.equal(await rawStatus(proxy.base, probe, method), 404, `${method} ${probe}`);
+    const prefix = new URL(proxy.base).pathname;
+    assert.deepEqual(proxy.received.slice(0, probes.length), probes.map(([probe]) => `${prefix}${probe}`), 'the paths reached Express as they were written');
     assert.deepEqual(foreman.seen, []);
   } finally {
     await proxy.close();
@@ -120,10 +164,10 @@ test('refuses an id of dots, and a target that is not this machine, since the to
   const foreman = await fakeForeman(() => ({ status: 200, body: {} }));
   const proxy = await proxyOver(foreman.url, TOKEN);
   try {
-    for (const probe of ['/decisions/.', '/decisions/..']) {
-      const response = await fetch(`${proxy.base}${probe}`);
-      assert.ok([400, 404].includes(response.status), `${probe} answered ${response.status}`);
-    }
+    const probes = ['/decisions/.', '/decisions/..', '/decisions/%2e', '/decisions/%2e%2e'];
+    for (const probe of probes) assert.equal(await rawStatus(proxy.base, probe), 400, probe);
+    const prefix = new URL(proxy.base).pathname;
+    assert.deepEqual(proxy.received, probes.map((probe) => `${prefix}${probe}`), 'the paths reached Express as they were written');
     assert.deepEqual(foreman.seen, []);
   } finally {
     await proxy.close();
@@ -147,4 +191,63 @@ test('serves the tail of Foreman\'s service log itself, and an empty one when th
   await withLog.close();
   await without.close();
   await foreman.close();
+});
+
+test('answers a fixed 502 when the request to Foreman throws, and neither the answer nor the log holds the token', async () => {
+  const header = `Bearer ${TOKEN}`;
+  const failures: Array<[logged: string, failure: Error]> = [
+    ['TypeError', new TypeError(`Headers.append: "${header}" is an invalid header value.`)],
+    ['TypeError (ECONNREFUSED)', Object.assign(new TypeError(`fetch failed ${header}`), { cause: Object.assign(new Error(`connect ECONNREFUSED 127.0.0.1:4211 ${header}`), { code: 'ECONNREFUSED' }) })],
+    ['TimeoutError', new DOMException(`The operation timed out. ${header}`, 'TimeoutError')],
+  ];
+  for (const [logged, failure] of failures) {
+    const proxy = await proxyOver('http://127.0.0.1:9', TOKEN, undefined, async () => {
+      throw failure;
+    });
+    try {
+      const { result, lines } = await withErrorLog(async () => {
+        const response = await fetch(`${proxy.base}/status`);
+        return { status: response.status, text: await response.text() };
+      });
+      assert.equal(result.status, 502);
+      assert.equal(result.text, JSON.stringify({ success: false, error: { code: 'FOREMAN_UNREACHABLE', message: 'Foreman did not answer.' } }));
+      assert.equal(lines.length, 1, lines.join('\n'));
+      assert.ok(lines[0]?.startsWith('[Foreman next]'), lines[0]);
+      assert.ok(lines[0]?.endsWith(`: ${logged}`), `${lines[0]} should end with ${logged}`);
+      for (const text of [result.text, ...lines]) assert.ok(!text.includes(TOKEN) && !text.includes('Bearer'), 'the token must not be in the answer or the log');
+    } finally {
+      await proxy.close();
+    }
+  }
+});
+
+test('a token with a line break inside it never reaches Foreman: the file is refused as malformed, and a header that fetch itself refuses is a fixed 502', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'foreman-next-token-'));
+  const file = path.join(directory, 'next-api-token');
+  const lines = ['api-token-0123456789abc', 'second-line-0123456789'];
+  await writeFile(file, `${lines.join('\n')}\n`);
+  await chmod(file, 0o600);
+  const foreman = await fakeForeman(() => ({ status: 200, body: {} }));
+  const refusedFile = await proxyOver(foreman.url, () => readTokenFile(file));
+  // The same token handed to the client directly, as if the format check were not there: real `fetch` throws on the header and the answer stays fixed.
+  const refusedHeader = await proxyOver(foreman.url, async () => lines.join('\n'));
+  try {
+    const { result, lines: logged } = await withErrorLog(async () => {
+      const fromFile = await fetch(`${refusedFile.base}/status`);
+      const fromHeader = await fetch(`${refusedHeader.base}/status`);
+      return { fromFile: [fromFile.status, await fromFile.text()] as const, fromHeader: [fromHeader.status, await fromHeader.text()] as const };
+    });
+    assert.equal(result.fromFile[0], 503);
+    assert.equal((JSON.parse(result.fromFile[1]) as { error: { code: string } }).error.code, 'FOREMAN_NOT_CONFIGURED');
+    assert.equal(result.fromHeader[0], 502);
+    assert.equal(result.fromHeader[1], JSON.stringify({ success: false, error: { code: 'FOREMAN_UNREACHABLE', message: 'Foreman did not answer.' } }));
+    assert.deepEqual(foreman.seen, []);
+    assert.ok(logged.some((line) => line.includes(file)), 'the refusal names the file');
+    for (const text of [result.fromFile[1], result.fromHeader[1], ...logged]) for (const line of lines) assert.ok(!text.includes(line), 'no line of the token file may be in an answer or the log');
+  } finally {
+    await refusedFile.close();
+    await refusedHeader.close();
+    await foreman.close();
+    await rm(directory, { recursive: true, force: true });
+  }
 });

@@ -32,6 +32,15 @@ const asMessage = (value: unknown): { code: string; message: string } | undefine
   return typeof code === 'string' && typeof message === 'string' ? { code, message } : undefined;
 };
 
+/** What a failed request may say about itself: the error's name and its code (or its cause's), and never its message, which can carry the Authorization header. */
+function describeFailure(error: unknown): string {
+  if (error === null || typeof error !== 'object') return 'an error that is not an object';
+  const { name, code, cause } = error as { name?: unknown; code?: unknown; cause?: unknown };
+  const causeCode = cause !== null && typeof cause === 'object' ? (cause as { code?: unknown }).code : undefined;
+  const codes = [code, causeCode].filter((value): value is string => typeof value === 'string');
+  return `${typeof name === 'string' ? name : 'Error'}${codes.length > 0 ? ` (${codes.join(', ')})` : ''}`;
+}
+
 /** Foreman's path for a route: its own prefix, then the contract's path with the parameters filled in, each checked first. */
 export function targetOf(route: ForemanNextRoute, params: Record<string, string>): string {
   return `/foreman${route.path.replace(/:(\w+)/g, (_, name: string) => {
@@ -44,7 +53,7 @@ export function targetOf(route: ForemanNextRoute, params: Record<string, string>
 /**
  * The proxy's one way to Foreman: the contract's path under Foreman's `/foreman` prefix, with the API token, a timeout and nothing else.
  * An answer from Foreman is passed on as it is (cloudcli adds the envelope); a refusal keeps Foreman's code and message; Foreman not answering
- * is a 502 that says so, which the UI shows as "Foreman isn't responding".
+ * is a 502 that says so (and only that: see `describeFailure`), which the UI shows as "Foreman isn't responding".
  */
 export function createForemanNextClient(config: ForemanNextConfig, fetchFn: typeof fetch = fetch): ForemanNextClient {
   assertLoopback(config.baseUrl);
@@ -63,7 +72,9 @@ export function createForemanNextClient(config: ForemanNextConfig, fetchFn: type
       try {
         response = await fetchFn(url, { method: route.method, headers: { authorization: `Bearer ${token}`, ...(text === undefined ? {} : { 'content-type': 'application/json' }) }, body: text, signal: AbortSignal.timeout(FOREMAN_TIMEOUT_MS) });
       } catch (error) {
-        throw new AppError(`Foreman did not answer: ${error instanceof Error ? error.message : String(error)}`, { code: 'FOREMAN_UNREACHABLE', statusCode: 502 });
+        // The message of fetch's own error can hold the whole `Bearer <token>` header (undici's "invalid header value"), so it is neither answered nor logged.
+        console.error(`[Foreman next] ${route.method} ${route.path} did not reach Foreman: ${describeFailure(error)}`);
+        throw new AppError('Foreman did not answer.', { code: 'FOREMAN_UNREACHABLE', statusCode: 502 });
       }
       const payload: unknown = await response.json().catch(() => undefined);
       if (response.ok) return payload ?? null;
