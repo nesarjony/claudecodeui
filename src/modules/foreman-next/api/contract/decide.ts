@@ -26,7 +26,8 @@ export type QuestionAnswer = { optionId: string | null; reply: string | null; re
 export const REVIEW_KINDS = ['rule', 'lesson', 'replan', 'delegated-decision'] as const;
 export type ReviewKind = (typeof REVIEW_KINDS)[number];
 export type ReviewSubject = EntityRef | { kind: 'rule' | 'lesson'; id: string };
-export type ReviewItem = { id: string; kind: ReviewKind; subject: ReviewSubject; title: string; evidence: string; detail: string; closesAt: IsoTime };
+// `closesAt` is null for what only the owner closes: a lesson that needs a worker experiment has no window, and waits for his OK.
+export type ReviewItem = { id: string; kind: ReviewKind; subject: ReviewSubject; title: string; evidence: string; detail: string; closesAt: IsoTime | null };
 
 export const HISTORY_DECIDERS = ['owner', 'foreman'] as const;
 export type HistoryEntry = {

@@ -23,7 +23,9 @@ export type DecisionKind =
   | 'takeover'
   | 'handback'
   | 'handover'
-  | 'release';
+  | 'release'
+  | 'lesson-promotion'
+  | 'playbook-adoption';
 
 export const LEDGER_CHOICES = [
   'continue',
@@ -46,6 +48,9 @@ export const LEDGER_CHOICES = [
   'answered',
   'planned',
   'idle',
+  'promote',
+  'adopt',
+  'rollback',
 ] as const;
 export type LedgerChoice = (typeof LEDGER_CHOICES)[number];
 

@@ -10,7 +10,7 @@ const HOUR = 60 * 60_000;
 const MINUTE = 60_000;
 const START = new Date('2026-11-14T12:00:00Z');
 
-const show = (closesAt: string) =>
+const show = (closesAt: string | null) =>
   render(
     <I18nextProvider i18n={i18n}>
       <VetoCountdown closesAt={closesAt} />
@@ -49,5 +49,12 @@ describe('VetoCountdown', () => {
   it('is already closed for a time in the past', () => {
     show(new Date(START.getTime() - MINUTE).toISOString());
     expect(screen.getByText('window closed')).toBeTruthy();
+  });
+
+  it('has no time to count for what only the owner closes, and says it waits for his OK', () => {
+    show(null);
+    expect(screen.getByText('waits for your OK')).toBeTruthy();
+    expect(screen.queryByText(/closes/)).toBeNull();
+    expect(screen.queryByText('window closed')).toBeNull();
   });
 });
