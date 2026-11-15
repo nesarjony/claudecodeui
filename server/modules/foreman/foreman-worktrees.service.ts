@@ -17,7 +17,7 @@ import { AppError, normalizeProjectPath } from '@/shared/utils.js';
 
 const WORKTREE_KEY_PREFIX = 'foreman.worktree:';
 /** The folder next to the repository that holds its Foreman worktrees, unless `FOREMAN_WORKTREES_DIR` names another. */
-const DEFAULT_WORKTREES_FOLDER = '.foreman-worktrees';
+export const DEFAULT_WORKTREES_FOLDER = '.foreman-worktrees';
 // Long enough for `foreman/<task id>-<slug>` names, short enough that `<repo>-<branch>` stays one valid path component.
 export const MAX_WORKTREE_BRANCH_LENGTH = 120;
 const MAX_REPO_SLUG_LENGTH = 60;

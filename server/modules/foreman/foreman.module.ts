@@ -15,6 +15,7 @@ import {
   resolveEventsTokenFile,
   warnAboutTokenSetup,
 } from '@/modules/foreman/foreman-auth.service.js';
+import { hideClosedForemanWorktrees } from '@/modules/foreman/foreman-closed-worktrees.js';
 import { createForemanCommits } from '@/modules/foreman/foreman-commits.service.js';
 import { createForemanEventPusher } from '@/modules/foreman/foreman-event-push.service.js';
 import { createForemanEventRecorder } from '@/modules/foreman/foreman-event-recorder.service.js';
@@ -94,6 +95,8 @@ function readLiveContextUsage(raw: unknown): LiveContextUsage | null {
 // Consumed by the server entrypoint: it mounts `router` at /api/foreman, hands `state` and `handover` to the UI module, and calls `resumeEventPush`
 // once the database is ready.
 export function createForemanModule() {
+  // A batch's worktree is a project while its batch is open; once it closes, the sidebar leaves it out and the archive has it.
+  hideClosedForemanWorktrees();
   const tokenFile = resolveBridgeTokenFile();
   const debugEnabled = Boolean(process.env.FOREMAN_BRIDGE_DEBUG);
   // Task links live in cloudcli's app_config table, so they survive restarts without a schema change.

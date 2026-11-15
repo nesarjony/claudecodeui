@@ -3,6 +3,7 @@ import path from 'node:path';
 
 import { projectsDb, sessionsDb } from '@/modules/database/index.js';
 import { sessionSynchronizerService } from '@/modules/providers/index.js';
+import { closedProjectCheck } from '@/modules/projects/services/project-list-filters.js';
 import { WS_OPEN_STATE, connectedClients } from '@/modules/websocket/index.js';
 import type { RealtimeClientConnection } from '@/shared/types.js';
 import { closeSync, openSync, readSync } from 'node:fs';
@@ -299,7 +300,8 @@ function broadcastProgress(progress: ProgressUpdate) {
 }
 
 /**
- * Reads all projects from DB and returns normalized session summaries.
+ * Reads the open projects from DB and returns normalized session summaries. A project that a module has registered as over (a Foreman batch's
+ * worktree once its batch has closed, see `project-list-filters.ts`) is not listed: it is with the archived ones, where its sessions stay readable.
  */
 export async function getProjectsWithSessions(
   options: GetProjectsWithSessionsOptions = {}
@@ -308,12 +310,15 @@ export async function getProjectsWithSessions(
     await sessionSynchronizerService.synchronizeSessions();
   }
 
-  const projectRows = projectsDb.getProjectPaths() as Array<{
-    project_id: string;
-    project_path: string;
-    custom_project_name?: string | null;
-    isStarred?: number;
-  }>;
+  const isClosed = closedProjectCheck();
+  const projectRows = (
+    projectsDb.getProjectPaths() as Array<{
+      project_id: string;
+      project_path: string;
+      custom_project_name?: string | null;
+      isStarred?: number;
+    }>
+  ).filter((row) => !isClosed(row.project_path));
   const totalProjects = projectRows.length;
   const projects: ProjectListItem[] = [];
   let processedProjects = 0;
@@ -371,6 +376,7 @@ export async function getProjectsWithSessions(
  * Reads archived projects from DB and includes every session row for each
  * project path, because an archived workspace should surface all preserved
  * conversation history in the archive view regardless of each session's flag.
+ * A project registered as over is archived whatever its row says (see `getProjectsWithSessions`).
  */
 export async function getArchivedProjectsWithSessions(
   options: Pick<GetProjectsWithSessionsOptions, 'skipSynchronization'> = {},
@@ -379,7 +385,8 @@ export async function getArchivedProjectsWithSessions(
     await sessionSynchronizerService.synchronizeSessions();
   }
 
-  const projectRows = projectsDb.getArchivedProjectPaths() as Array<{
+  const isClosed = closedProjectCheck();
+  const projectRows = [...projectsDb.getArchivedProjectPaths(), ...projectsDb.getProjectPaths().filter((row) => isClosed(row.project_path))] as Array<{
     project_id: string;
     project_path: string;
     custom_project_name?: string | null;
