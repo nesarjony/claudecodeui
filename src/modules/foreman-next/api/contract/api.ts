@@ -5,7 +5,7 @@ import type { DelegationKind } from '@/modules/foreman-next/api/contract/foundat
 import type { SessionSupervision } from '@/modules/foreman-next/api/contract/session';
 import type { AttentionPolicy, DelegationChange, DelegationRule, ForemanSettings, RepoChange, RepoSettings } from '@/modules/foreman-next/api/contract/settings';
 import type { TodaySnapshot } from '@/modules/foreman-next/api/contract/today';
-import type { GoalDetail, GoalSummary, GoalsOverview, NewGoalRequest, RunDetail, RunStageId } from '@/modules/foreman-next/api/contract/work';
+import type { ExperimentStop, GoalDetail, GoalSummary, GoalsOverview, NewGoalRequest, RunDetail, RunStageId } from '@/modules/foreman-next/api/contract/work';
 
 export type ForemanApi = {
   status: () => Promise<ForemanStatus>;
@@ -39,6 +39,7 @@ export type ForemanApi = {
   takeOverRun: (id: string) => Promise<RunDetail>;
   handBackRun: (id: string) => Promise<RunDetail>;
   replayRun: (id: string, fromStep: RunStageId) => Promise<RunDetail>;
+  stopExperiment: (id: string) => Promise<ExperimentStop>;
   chatThread: (subject: ChatSubjectRef) => Promise<ChatThread>;
   sendChat: (request: ChatSendRequest) => Promise<ChatMessage[]>;
   confirmChatProposal: (proposalId: string) => Promise<ChatMessage>;

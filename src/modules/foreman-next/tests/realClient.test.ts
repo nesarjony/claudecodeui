@@ -38,6 +38,7 @@ const CASES: Case[] = [
   ['rememberChatMessage', (api) => api.rememberChatMessage('m 1'), 'POST', `${BASE}/chat/messages/m%201/remember`],
   ['confirmChatProposal', (api) => api.confirmChatProposal('p 1'), 'POST', `${BASE}/chat/proposals/p%201/confirm`],
   ['takeOverRun', (api) => api.takeOverRun('run-1'), 'POST', `${BASE}/work/runs/run-1/take-over`],
+  ['stopExperiment', (api) => api.stopExperiment('exp 1'), 'POST', `${BASE}/work/experiments/exp%201/stop`],
   ['sessionSupervision', (api) => api.sessionSupervision('s1'), 'GET', `${BASE}/sessions/s1/supervision`],
   ['handOverSession', (api) => api.handOverSession('s1', 'finish import'), 'POST', `${BASE}/sessions/s1/hand-over`, { goal: 'finish import' }],
   ['handOverSession', (api) => api.handOverSession('s1'), 'POST', `${BASE}/sessions/s1/hand-over`, { goal: null }],

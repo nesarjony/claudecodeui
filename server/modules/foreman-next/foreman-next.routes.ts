@@ -42,6 +42,7 @@ export const FOREMAN_NEXT_ROUTES: readonly ForemanNextRoute[] = [
   { method: 'POST', path: '/work/runs/:id/take-over', body: false },
   { method: 'POST', path: '/work/runs/:id/hand-back', body: false },
   { method: 'POST', path: '/work/runs/:id/replay/:step', body: false },
+  { method: 'POST', path: '/work/experiments/:id/stop', body: false },
   { method: 'GET', path: '/chat/thread', query: ['kind', 'id'], body: false },
   { method: 'POST', path: '/chat/messages', body: true },
   { method: 'POST', path: '/chat/proposals/:id/confirm', body: false },

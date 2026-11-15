@@ -192,6 +192,11 @@ export function createMockApi({ scenario = 'default', latencyMs = 150, studyMs =
           target.stages = STAGE_ORDER.map((stage, position) => ({ id: stage, state: position < from ? 'done' : position === from ? 'running' : 'pending' }));
         }),
       ),
+    // The mock has no experiments to stop: every one is unknown, as Foreman says of an id it does not have.
+    stopExperiment: () =>
+      respond('stopExperiment', () => {
+        throw notFound('experiment');
+      }),
     chatThread: (subject) =>
       respond('chatThread', () => {
         const scope = scopeOf(subject);

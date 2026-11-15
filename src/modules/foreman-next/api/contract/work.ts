@@ -95,6 +95,9 @@ export type GoalDetail = GoalSummary & {
   repoProgress: RepoProgressPoint[];
 };
 
+/** What the owner's stop of an experiment did (BR-6.4): its canary gives no batch the candidate from `stoppedAt`, and the experiment ends without a verdict. */
+export type ExperimentStop = { id: string; goalId: string; stoppedAt: IsoTime };
+
 export const RUN_FAILURE_NEXT = ['retry', 'replan', 'ask-owner'] as const;
 export type RunFailure = { stage: RunStageId; reason: string; next: (typeof RUN_FAILURE_NEXT)[number] };
 export type RunDecision = {

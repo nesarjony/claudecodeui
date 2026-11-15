@@ -65,6 +65,7 @@ export function createRealApi(): ForemanApi {
     takeOverRun: (id) => call(ENDPOINTS.takeOverRun, { params: { id } }),
     handBackRun: (id) => call(ENDPOINTS.handBackRun, { params: { id } }),
     replayRun: (id, fromStep) => call(ENDPOINTS.replayRun, { params: { id, step: fromStep } }),
+    stopExperiment: (id) => call(ENDPOINTS.stopExperiment, { params: { id } }),
     chatThread: (subject) => call(ENDPOINTS.chatThread, { query: { kind: subject.kind, id: subject.id } }),
     sendChat: (request) => call(ENDPOINTS.sendChat, { body: request }),
     confirmChatProposal: (proposalId) => call(ENDPOINTS.confirmChatProposal, { params: { id: proposalId } }),

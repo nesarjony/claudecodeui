@@ -25,7 +25,8 @@ export type DecisionKind =
   | 'handover'
   | 'release'
   | 'lesson-promotion'
-  | 'playbook-adoption';
+  | 'playbook-adoption'
+  | 'playbook-rollback';
 
 export const LEDGER_CHOICES = [
   'continue',

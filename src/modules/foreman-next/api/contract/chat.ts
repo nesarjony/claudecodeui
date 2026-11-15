@@ -9,8 +9,8 @@ export type ChatDelivery = (typeof CHAT_DELIVERIES)[number];
 
 export type ChatLink = EntityRef & { label: string };
 export type ChatActions = { id: string; count: number; undone: boolean };
-// What chat may only propose, because it cannot be taken back (a stop, an answer) or lifts what is not the owner's own pause (a stop, the hold his veto set): the owner confirms it, on a screen or his phone, with the same call his own press makes.
-export const CHAT_PROPOSAL_KINDS = ['stop-run', 'answer-question', 'resume'] as const;
+// What chat may only propose, because it cannot be taken back (a stop of a run or an experiment, an answer) or lifts what is not the owner's own pause (a stop, the hold his veto set): the owner confirms it, on a screen or his phone, with the same call his own press makes.
+export const CHAT_PROPOSAL_KINDS = ['stop-run', 'stop-experiment', 'answer-question', 'resume'] as const;
 export type ChatProposalKind = (typeof CHAT_PROPOSAL_KINDS)[number];
 export type ChatProposal = { id: string; kind: ChatProposalKind; summary: string; state: 'open' | 'confirmed' };
 export const CHAT_ROLES = ['owner', 'foreman'] as const;

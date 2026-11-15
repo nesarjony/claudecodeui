@@ -36,6 +36,7 @@ export const ENDPOINTS = {
   takeOverRun: { method: 'POST', path: '/work/runs/:id/take-over' },
   handBackRun: { method: 'POST', path: '/work/runs/:id/hand-back' },
   replayRun: { method: 'POST', path: '/work/runs/:id/replay/:step' },
+  stopExperiment: { method: 'POST', path: '/work/experiments/:id/stop' },
   chatThread: { method: 'GET', path: '/chat/thread' },
   sendChat: { method: 'POST', path: '/chat/messages' },
   confirmChatProposal: { method: 'POST', path: '/chat/proposals/:id/confirm' },
