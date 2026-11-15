@@ -203,8 +203,8 @@ app.use('/api/browser-use-mcp', browserUseMcpRoutes);
 app.use('/api/foreman', foremanBridge.router);
 // Foreman suggestion card and hand-over grants: the logged-in user's view of the bridge (pending suggestion, feedback, handing a session over)
 app.use('/api/foreman-suggestions', authenticateToken, foremanUiRoutes);
-// Foreman tab: the logged-in user's allowlisted view of Foreman (overview, decisions, spend, settings, tasks, inbox, lessons)
-app.use('/api/foreman-tab', authenticateToken, foremanTabRoutes);
+// Foreman tab: the logged-in user's allowlisted view of Foreman (overview, decisions, spend, settings, tasks, inbox, lessons); not mounted once FOREMAN_URL names the rebuilt Foreman
+if (foremanTabRoutes) app.use('/api/foreman-tab', authenticateToken, foremanTabRoutes);
 
 // The rebuilt Foreman's control API: the logged-in owner's proxy to Foreman's own API (slice 4b).
 app.use('/api/foreman-next', authenticateToken, foremanNextRoutes);

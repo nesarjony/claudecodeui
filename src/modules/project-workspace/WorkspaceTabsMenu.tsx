@@ -4,7 +4,7 @@ import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { ArrowLeft, Folder, GitBranch, HardHat, MessageSquare, MoreHorizontal, Terminal } from 'lucide-react';
 
-import { FOREMAN_TAB_LABEL_KEY } from '@/modules/foreman';
+import { FOREMAN_TAB_LABEL_KEY, isForemanTabAvailable } from '@/modules/foreman';
 import type { AppTab } from '@/shared/types';
 
 type WorkspaceTabsMenuProps = {
@@ -30,6 +30,7 @@ export default function WorkspaceTabsMenu({ activeTab, setActiveTab }: Workspace
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const [anchor, setAnchor] = useState<{ top: number; left: number } | null>(null);
+  const views = VIEWS.filter((view) => view.id !== 'foreman' || isForemanTabAvailable());
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -102,7 +103,7 @@ export default function WorkspaceTabsMenu({ activeTab, setActiveTab }: Workspace
             style={{ top: anchor.top, left: anchor.left, width: MENU_WIDTH_PX }}
             className="fixed z-[170] overflow-hidden rounded-xl border border-border bg-popover p-1 text-popover-foreground shadow-xl"
           >
-            {VIEWS.map((view) => (
+            {views.map((view) => (
               <button
                 key={view.id}
                 type="button"

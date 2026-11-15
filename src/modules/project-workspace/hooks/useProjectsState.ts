@@ -8,6 +8,7 @@ import type { ServerEvent,
   LoadingProgress,
   Project,
   ProjectSession,IsSessionProcessing } from '@/shared/types';
+import { isForemanTabAvailable } from '@/modules/foreman';
 import { mergeProjectSelectionMetadata } from '@/modules/project-workspace/utils/projectSelectionMetadata';
 import { readSelectedProvider } from '@/shared/selectedProvider';
 
@@ -349,6 +350,8 @@ const removeSessionFromProject = (project: Project, sessionIdToDelete: string): 
 const VALID_TABS: Set<string> = new Set(['chat', 'files', 'shell', 'git', 'tasks', 'browser', 'foreman']);
 
 const isValidTab = (tab: string): tab is AppTab => {
+  // A tab remembered from before the build that has no old Foreman tab falls back to chat.
+  if (tab === 'foreman') return isForemanTabAvailable();
   return VALID_TABS.has(tab) || tab.startsWith('plugin:');
 };
 

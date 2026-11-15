@@ -4,7 +4,7 @@ import { ChatInterface } from '@/modules/chat';
 import { FileTree } from '@/modules/file-tree';
 import { StandaloneShell } from '@/modules/standalone-shell';
 import { GitPanel } from '@/modules/git-panel';
-import { ForemanPanel } from '@/modules/foreman';
+import { ForemanPanel, isForemanTabAvailable } from '@/modules/foreman';
 import { ForemanSessionBar } from '@/modules/foreman-next';
 import { PluginTabContent } from '@/modules/plugins';
 import { BrowserUsePanel, useBrowserUseEnabled } from '@/modules/browser-use';
@@ -220,7 +220,7 @@ function WorkspaceMain({
             </div>
           )}
 
-          {activeTab === 'foreman' && (
+          {activeTab === 'foreman' && isForemanTabAvailable() && (
             <div className="h-full overflow-hidden">
               <ForemanPanel isVisible={activeTab === 'foreman'} onOpenSession={openForemanSession} />
             </div>

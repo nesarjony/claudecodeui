@@ -3,3 +3,5 @@
 // English catalog, so the menu can translate the label before the panel itself is ever opened.
 export { default as ForemanPanel } from '@/modules/foreman/ForemanPanel';
 export { FOREMAN_TAB_LABEL_KEY } from '@/modules/foreman/i18n';
+// isForemanTabAvailable: false in the build made for the rebuilt Foreman, which has no old tab.
+export { isForemanTabAvailable } from '@/modules/foreman/tabAvailability';

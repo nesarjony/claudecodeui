@@ -395,8 +395,10 @@ database and every copy.
 
 - **Tokens:** the bridge token (`FOREMAN_BRIDGE_TOKEN_FILE`, what Foreman presents) and the events token (`FOREMAN_EVENTS_TOKEN_FILE`, what cloudcli presents to Foreman's
   intake), two different values, each in a file of mode 600.
-- **`FOREMAN_URL`:** the new Foreman's origin, `http://127.0.0.1:4211`. The suggestions client, the runtime hooks and the Foreman tab call the origin in `FOREMAN_URL`, else the origin of
+- **`FOREMAN_URL`:** the new Foreman's origin, `http://127.0.0.1:4211`. The suggestions client and the runtime hooks call the origin in `FOREMAN_URL`, else the origin of
   `FOREMAN_EVENTS_URL`, else the old Foreman's `http://127.0.0.1:4111`. Set it explicitly: with neither it nor `FOREMAN_EVENTS_URL` set, the UI keeps calling the old Foreman.
+  With `FOREMAN_URL` set the old Foreman tab has no server half: `/api/foreman-tab` is not mounted (`server/modules/foreman/foreman-tab.module.ts`), so nothing of it can call the new
+  Foreman with the bridge token. Its client half is hidden by the build with `VITE_FOREMAN_NEXT_API=real` (`src/modules/foreman/tabAvailability.ts`). Neither is deleted.
 - **`FOREMAN_EVENTS_URL`:** the new Foreman's intake. `FOREMAN_EVENTS_TOKEN_FILE` has no default: without it nothing is pushed (events are still stored and `eventsSince`
   serves them).
 - **claude-cap:** the `foreman-worker` profile enabled and reachable as `<CLAUDE_CAP_URL>/profile/foreman-worker`, with its caps (MiniMax: 70% of the five-hour and 80% of the
