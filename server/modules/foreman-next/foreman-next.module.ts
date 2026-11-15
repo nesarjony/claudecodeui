@@ -5,7 +5,7 @@ import express, { type NextFunction, type Request, type Response } from 'express
 
 import { createForemanNextClient, type ForemanNextClient } from '@/modules/foreman-next/foreman-next.client.js';
 import { FOREMAN_NEXT_ROUTES } from '@/modules/foreman-next/foreman-next.routes.js';
-import { readServiceLog } from '@/modules/foreman-next/foreman-next.service-log.js';
+import { createServiceLog, type ServiceLogSource } from '@/modules/foreman-next/foreman-next.service-log.js';
 import { readTokenFile } from '@/modules/foreman-next/foreman-next.token.js';
 import { AppError, asyncHandler, createApiSuccessResponse } from '@/shared/utils.js';
 
@@ -14,8 +14,8 @@ import { AppError, asyncHandler, createApiSuccessResponse } from '@/shared/utils
  * `/api/foreman-next` behind `authenticateToken`, so a request that reaches it is the logged-in owner's, and the token it adds is what tells Foreman
  * so. Answers use cloudcli's envelope: `{ success: true, data }`, or `{ success: false, error: { code, message } }`.
  */
-export function createForemanNextRouter(options: { client: ForemanNextClient; serviceLogFile: string | undefined }) {
-  const { client, serviceLogFile } = options;
+export function createForemanNextRouter(options: { client: ForemanNextClient; serviceLog: ServiceLogSource }) {
+  const { client, serviceLog } = options;
   const router = express.Router();
 
   router.use((_request: Request, response: Response, next: NextFunction) => {
@@ -23,7 +23,7 @@ export function createForemanNextRouter(options: { client: ForemanNextClient; se
     next();
   });
 
-  router.get('/service-log', asyncHandler(async (_request, response) => response.json(createApiSuccessResponse(await readServiceLog(serviceLogFile)))));
+  router.get('/service-log', asyncHandler(async (_request, response) => response.json(createApiSuccessResponse(await serviceLog()))));
 
   for (const route of FOREMAN_NEXT_ROUTES) {
     const handler = asyncHandler(async (request, response) => {
@@ -55,11 +55,24 @@ export function resolveForemanNextTokenFile(environment: NodeJS.ProcessEnv = pro
   return environment.FOREMAN_NEXT_API_TOKEN_FILE?.trim() || path.join(homeDirectory, '.config', 'foreman', 'next-api-token');
 }
 
+/** Foreman's user unit, whose journal is the service log unless `FOREMAN_NEXT_LOG_FILE` names a file. */
+const FOREMAN_UNIT = 'foreman-next';
+
 /** Configured by the environment of the cloudcli process: where Foreman answers (loopback only), the file with its API token, and its service log. None of it reaches the browser. */
 export function createForemanNextModule() {
   const tokenFile = resolveForemanNextTokenFile();
+  const token = () => readTokenFile(tokenFile);
   return createForemanNextRouter({
-    client: createForemanNextClient({ baseUrl: process.env.FOREMAN_NEXT_URL ?? 'http://127.0.0.1:4211', token: () => readTokenFile(tokenFile) }),
-    serviceLogFile: process.env.FOREMAN_NEXT_LOG_FILE,
+    client: createForemanNextClient({ baseUrl: process.env.FOREMAN_NEXT_URL ?? 'http://127.0.0.1:4211', token }),
+    // The token guard's own read: the log is cleaned of the exact token the proxy holds, whatever shape a line gives it.
+    serviceLog: createServiceLog({
+      file: process.env.FOREMAN_NEXT_LOG_FILE,
+      journalCommand: 'journalctl',
+      unit: FOREMAN_UNIT,
+      secrets: async () => {
+        const value = await token();
+        return value === null ? [] : [value];
+      },
+    }),
   });
 }

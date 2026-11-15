@@ -12,6 +12,7 @@ import express from 'express';
 import { assertLoopback, createForemanNextClient } from '@/modules/foreman-next/foreman-next.client.js';
 import { createForemanNextRouter } from '@/modules/foreman-next/foreman-next.module.js';
 import { FOREMAN_NEXT_ROUTES } from '@/modules/foreman-next/foreman-next.routes.js';
+import { createServiceLog } from '@/modules/foreman-next/foreman-next.service-log.js';
 import { readTokenFile } from '@/modules/foreman-next/foreman-next.token.js';
 
 const TOKEN = 'proxy-token-0123456789';
@@ -46,7 +47,7 @@ async function proxyOver(foremanUrl: string, token: string | undefined | (() => 
   });
   app.use(express.json());
   const tokenSource = typeof token === 'function' ? token : async () => token ?? null;
-  app.use('/api/foreman-next', createForemanNextRouter({ client: createForemanNextClient({ baseUrl: foremanUrl, token: tokenSource }, fetchFn), serviceLogFile }));
+  app.use('/api/foreman-next', createForemanNextRouter({ client: createForemanNextClient({ baseUrl: foremanUrl, token: tokenSource }, fetchFn), serviceLog: createServiceLog({ file: serviceLogFile, journalCommand: 'journalctl', unit: 'foreman-next', secrets: async () => [] }) }));
   const server: Server = await new Promise((resolve) => {
     const listening = app.listen(0, '127.0.0.1', () => resolve(listening));
   });
