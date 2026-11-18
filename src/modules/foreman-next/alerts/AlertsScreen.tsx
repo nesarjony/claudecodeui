@@ -11,7 +11,7 @@ import { entityPath } from '@/modules/foreman-next/utils/foremanPaths';
 
 function AlertLine({ alert }: { alert: AlertItem }) {
   const { t } = useTranslation('foremanNext');
-  const { subject } = alert;
+  const to = alert.subject ? entityPath(alert.subject) : null;
   return (
     <li className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 py-3">
       <div className="min-w-0">
@@ -20,9 +20,9 @@ function AlertLine({ alert }: { alert: AlertItem }) {
       </div>
       <div className="flex items-center gap-3">
         <Chip tone={alert.severity === 'critical' ? 'bad' : 'warn'}>{t(`alerts.severity.${alert.severity}`)}</Chip>
-        {subject ? (
-          <Link to={entityPath(subject)} className="text-sm text-primary hover:underline">
-            {t(`alerts.open.${subject.kind}`)} ↗
+        {alert.subject && to ? (
+          <Link to={to} className="text-sm text-primary hover:underline">
+            {t(`alerts.open.${alert.subject.kind}`)} ↗
           </Link>
         ) : null}
       </div>

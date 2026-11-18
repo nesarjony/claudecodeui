@@ -35,11 +35,19 @@ export function ChatMessageItem({ message }: { message: ChatMessage }) {
       <p className="whitespace-pre-wrap text-sm">{message.text}</p>
       {message.evidence.length > 0 ? (
         <p className="flex flex-wrap gap-x-3 text-xs">
-          {message.evidence.map((link) => (
-            <Link key={`${link.kind}-${link.id}-${link.label}`} to={entityPath(link)} className="text-primary hover:underline">
-              ↗ {link.label}
-            </Link>
-          ))}
+          {message.evidence.map((link) => {
+            const to = entityPath(link);
+            const key = `${link.kind}-${link.id}-${link.label}`;
+            return to === null ? (
+              <span key={key} className="text-muted-foreground">
+                {link.label}
+              </span>
+            ) : (
+              <Link key={key} to={to} className="text-primary hover:underline">
+                ↗ {link.label}
+              </Link>
+            );
+          })}
         </p>
       ) : null}
       {actions ? (

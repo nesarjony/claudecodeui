@@ -67,3 +67,22 @@ describe('a proposal in a chat message', () => {
     expect(screen.queryByRole('button', { name: 'Confirm' })).toBeNull();
   });
 });
+
+describe('the evidence a chat message links to', () => {
+  it('opens a goal on the goal page and a run on the run page, and says an unknown kind as text with no link', () => {
+    const evidence = [
+      { kind: 'goal', id: 'g-inbox', label: 'desk · Inbox' },
+      { kind: 'run', id: 'run-t2', label: 't2-layout' },
+      { kind: 'lesson', id: 'l1', label: 'a lesson' },
+    ] as unknown as ChatMessage['evidence'];
+    renderWithForeman(
+      <ul>
+        <ChatMessageItem message={{ ...message('confirmed'), evidence }} />
+      </ul>,
+    );
+    expect(screen.getByRole('link', { name: /desk · Inbox/ }).getAttribute('href')).toBe('/foreman/work/g-inbox');
+    expect(screen.getByRole('link', { name: /t2-layout/ }).getAttribute('href')).toBe('/foreman/work/runs/run-t2');
+    expect(screen.getByText('a lesson')).toBeTruthy();
+    expect(screen.queryByRole('link', { name: /a lesson/ })).toBeNull();
+  });
+});

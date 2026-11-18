@@ -20,9 +20,19 @@ export const foremanPath = {
   session: (id: string) => `/session/${id}`,
 };
 
-/** Where a link to a goal, a run or a decision opens: chat evidence, alerts and the like. */
-export function entityPath(entity: EntityRef): string {
-  if (entity.kind === 'run') return foremanPath.run(entity.id);
-  if (entity.kind === 'decision') return foremanPath.decision(entity.id);
-  return foremanPath.goal(entity.id);
+/**
+ * Where a link to a goal, a run or a decision opens: chat evidence, alerts and the like. A goal opens the goal page and a run the run page: the two have different ids, so a goal's
+ * id on the run page is a 404. A kind this build does not know has no page, so it is `null` and nothing links to a guess.
+ */
+export function entityPath(entity: EntityRef): string | null {
+  switch (entity.kind) {
+    case 'goal':
+      return foremanPath.goal(entity.id);
+    case 'run':
+      return foremanPath.run(entity.id);
+    case 'decision':
+      return foremanPath.decision(entity.id);
+    default:
+      return null;
+  }
 }
