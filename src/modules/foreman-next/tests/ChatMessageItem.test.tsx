@@ -5,7 +5,7 @@ import type { ChatMessage, ChatProposal } from '@/modules/foreman-next/api/contr
 import { ChatMessageItem } from '@/modules/foreman-next/chat/ChatMessageItem';
 import { quickApi, renderWithForeman } from '@/modules/foreman-next/tests/testHelpers';
 
-// `state` is typed 'open' | 'confirmed'; the backend also sends 'expired' and may add more, so the tests pass states the type does not know.
+// `state` is typed 'open' | 'confirmed' | 'expired', and the backend may add more, so the tests pass states the type does not know.
 const message = (state: string): ChatMessage => ({
   id: 'm-1',
   role: 'foreman',

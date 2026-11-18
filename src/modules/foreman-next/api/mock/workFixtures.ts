@@ -1,4 +1,5 @@
 import type { BatchEntry, GoalDetail, RunDetail } from '@/modules/foreman-next/api/contract';
+import { NO_BUDGET, NO_FORECAST_TREND, STUDY_WITH_CODE_GRAPH } from '@/modules/foreman-next/api/mock/mockHelpers';
 import { readOnlyGoalFixture } from '@/modules/foreman-next/api/mock/readOnlyFixtures';
 import { at, DAY_MS, HOUR_MS } from '@/modules/foreman-next/api/mock/time';
 
@@ -50,6 +51,8 @@ export const goalsFixture = (now: number): GoalDetail[] => [
     name: 'Inbox',
     title: 'desk · Inbox at 100% Libredesk parity',
     doneWhen: 'all 120 checklist rows are DONE and verified by the judge',
+    budget: NO_BUDGET,
+    forecastTrend: NO_FORECAST_TREND,
     state: 'active',
     done: 65,
     total: 120,
@@ -68,7 +71,9 @@ export const goalsFixture = (now: number): GoalDetail[] => [
       ...INBOX_STRATEGY_V2,
       replannedAt: at(now, -3 * HOUR_MS),
       status: 'in-review',
+      study: STUDY_WITH_CODE_GRAPH,
       previous: { version: 1, steps: ['Layout first, then components', 'Contract batch before integration', 'Fix batch last'] },
+      changes: null,
     },
     batches: inboxBatches(),
     repoProgress: [],
@@ -79,6 +84,8 @@ export const goalsFixture = (now: number): GoalDetail[] => [
     name: 'Contacts',
     title: 'desk · Contacts at 100% Libredesk parity',
     doneWhen: 'all 96 checklist rows are DONE and verified by the judge',
+    budget: NO_BUDGET,
+    forecastTrend: NO_FORECAST_TREND,
     state: 'queued',
     done: 0,
     total: 96,
@@ -103,6 +110,8 @@ export const goalsFixture = (now: number): GoalDetail[] => [
     name: 'Conversation',
     title: 'desk · Conversation at 100% Libredesk parity',
     doneWhen: 'all 140 checklist rows are DONE and verified by the judge',
+    budget: NO_BUDGET,
+    forecastTrend: NO_FORECAST_TREND,
     state: 'queued',
     done: 0,
     total: 140,
@@ -127,6 +136,8 @@ export const goalsFixture = (now: number): GoalDetail[] => [
     name: 'demo',
     title: 'scratch · demo at 100% parity',
     doneWhen: 'all 12 checklist rows are DONE and verified by the judge',
+    budget: NO_BUDGET,
+    forecastTrend: NO_FORECAST_TREND,
     state: 'done',
     done: 12,
     total: 12,
@@ -141,7 +152,7 @@ export const goalsFixture = (now: number): GoalDetail[] => [
     daysTaken: 2,
     spent: { usd: 3.1, shareUsd: 5, firstPassYield: 83, usdPerRow: 0.26 },
     study: null,
-    strategy: { version: 1, replannedAt: at(now, -6 * DAY_MS), reason: 'first plan', status: 'approved', steps: ['Build the 12 rows in two batches'], risks: [], previous: null },
+    strategy: { version: 1, replannedAt: at(now, -6 * DAY_MS), reason: 'first plan', status: 'approved', study: STUDY_WITH_CODE_GRAPH, steps: ['Build the 12 rows in two batches'], risks: [], previous: null, changes: null },
     batches: [],
     repoProgress: [],
   },

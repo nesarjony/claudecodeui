@@ -49,7 +49,13 @@ export type GoalSummary = {
   daysTaken: number | null;
 };
 export type GoalsOverview = { programme: string | null; goals: GoalSummary[]; handedOver: RunSummary[] };
-export type NewGoalRequest = { repo: string; goal: string };
+/**
+ * A goal in the owner's words (BR-1.1). `successMeasure` is how he will know it is done, in the repo's own units; `budgetUsd` is the most it may cost Foreman in API credit, and a goal that
+ * reaches it pauses; `deadline` is when he wants it done by. All three are optional (or null): `{ repo, goal }` is a goal measured by the repo's own check, with only the Charter's limits on it.
+ */
+/** The owner changes what he limited a goal to, after it started: a field left out is as it was, null takes the limit away. Raising a budget a goal has reached lets it go on. */
+export type GoalLimitsChange = { budgetUsd?: number | null; deadline?: IsoTime | null };
+export type NewGoalRequest = { repo: string; goal: string; successMeasure?: string | null; budgetUsd?: number | null; deadline?: IsoTime | null };
 
 // What Foreman reads before it plans (wireframes §14): shown while a goal is `studying`.
 export const STUDY_STEP_IDS = ['docs', 'conventions', 'checklist', 'git', 'code-map'] as const;
@@ -58,14 +64,21 @@ export const STUDY_STEP_STATES = ['done', 'running', 'pending'] as const;
 export type StudyStep = { id: StudyStepId; state: (typeof STUDY_STEP_STATES)[number] };
 
 export type StrategyStatus = 'awaiting-approval' | 'approved' | 'in-review';
+/** Whether the study had the code graph (BR-5.12): `degraded` says why it had none, and the plan was made from file paths from git (BR-10.10). */
+export type StrategyStudy = { structure: 'infigraph' | 'degraded'; reason: string | null };
+/** What this version did to the one before it (BR-1.5): steps are named by their titles. Work already integrated is not counted as dropped. */
+export type StrategyChanges = { againstVersion: number; added: string[]; removed: string[]; reordered: string[]; changed: string[]; risksAdded: string[]; risksRemoved: string[] };
 export type Strategy = {
   version: number;
   replannedAt: IsoTime;
   reason: string;
   status: StrategyStatus;
+  study: StrategyStudy;
   steps: string[];
   risks: string[];
   previous: { version: number; steps: string[] } | null;
+  /** The difference from `previous`, null for a first version. */
+  changes: StrategyChanges | null;
 };
 
 export const BATCH_STATES = ['done', 'running', 'waiting', 'queued'] as const;
@@ -82,10 +95,18 @@ export type BatchEntry = {
   runId: string | null;
 };
 /** What a repo says of a goal's rows when it was read at one of its commits: how many of the plan's rows it judges done. */
-export type RepoProgressPoint = { repoHead: string; rowsDone: number; rowsPlanned: number; complete: boolean; recordedAt: IsoTime };
+export type RepoProgressPoint = { repoHead: string; rowsDone: number; rowsBuilt: number; rowsPlanned: number; complete: boolean; recordedAt: IsoTime };
+/** What the owner limited the goal to, and whether the forecast fits it: `fits` is whether what it has cost plus the forecast stays within `limitUsd`, `onTime` whether the forecast finishes by `deadline`. Null where there is no limit, or no forecast to compare. */
+export type GoalBudget = { limitUsd: number | null; deadline: IsoTime | null; projectedUsd: number | null; fits: boolean | null; onTime: boolean | null };
+/** One integrated batch against its forecast (BR-1.10): `errorPct` is signed, positive when it cost more than forecast. The worker's share is null where the allowance could not tell what one run used. */
+export type ForecastErrorPoint = { batch: string; recordedAt: IsoTime; forecastUsd: number; actualUsd: number; errorPct: number | null; forecastWorkerWindows: number; actualWorkerWindows: number | null };
+/** The forecast error after each batch, oldest first, and of the totals so far: null where nothing could be compared. Nothing here is estimated. */
+export type ForecastTrend = { points: ForecastErrorPoint[]; cumulativeUsdErrorPct: number | null; cumulativeWorkerWindowsErrorPct: number | null };
 export type GoalDetail = GoalSummary & {
   title: string;
   doneWhen: string;
+  budget: GoalBudget;
+  forecastTrend: ForecastTrend;
   counts: { done: number; built: number; todo: number };
   spent: { usd: number; shareUsd: number; firstPassYield: number; usdPerRow: number };
   study: StudyStep[] | null;

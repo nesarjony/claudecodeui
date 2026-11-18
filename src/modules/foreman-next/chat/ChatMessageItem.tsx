@@ -9,7 +9,7 @@ import { formatClock } from '@/modules/foreman-next/utils/foremanFormat';
 import { entityPath } from '@/modules/foreman-next/utils/foremanPaths';
 import { Button } from '@/shared/ui';
 
-// The contract types a proposal as open or confirmed, but Foreman also sends 'expired' (confirming it returns a 409) and may add states later.
+// The contract types a proposal as open, confirmed or expired (confirming an expired one returns a 409), and Foreman may add states later.
 // So only a proposal known to be open gets the Confirm button; every other state is shown as text and never actionable.
 const isOpenProposal = (state: unknown): boolean => state === 'open';
 

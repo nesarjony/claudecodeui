@@ -91,7 +91,7 @@ describe('the status strip', () => {
       ['DeepSeek unavailable', /Workers pause at a safe point/],
       ['cloudcli unavailable', /Nothing new starts/],
       ['Database unavailable', /Workers keep their sessions/],
-      ['infigraph unavailable', /file paths from git/],
+      ['The code-structure index is unavailable', /Plans are made without it/],
       ['Owner away', /one digest/],
     ];
     expected.forEach(([title, detail], position) => {
@@ -114,28 +114,28 @@ describe('the status strip', () => {
       ...status,
       degraded: [
         { mode: 'api-credit', since: new Date().toISOString() },
-        { mode: 'disk' as DegradedMode, since: new Date().toISOString() },
+        { mode: 'tape-drive' as DegradedMode, since: new Date().toISOString() },
       ],
     });
-    vi.spyOn(api, 'alerts').mockResolvedValue([{ id: 'lost:disk', severity: 'critical', text: 'disk is unavailable: 96% full', at: new Date().toISOString(), subject: null }]);
+    vi.spyOn(api, 'alerts').mockResolvedValue([{ id: 'lost:tape-drive', severity: 'critical', text: 'tape-drive is unavailable: 96% full', at: new Date().toISOString(), subject: null }]);
     const banner = await strip(api);
     const modes = await within(banner).findByRole('status', { name: 'Degraded modes' });
     const items = within(modes).getAllByRole('listitem');
     expect(items).toHaveLength(2);
     expect(within(items[0] as HTMLElement).getByText('API credit unavailable')).toBeTruthy();
-    expect(within(items[1] as HTMLElement).getByText('Degraded: disk')).toBeTruthy();
-    expect(await within(items[1] as HTMLElement).findByText('disk is unavailable: 96% full')).toBeTruthy();
+    expect(within(items[1] as HTMLElement).getByText('Degraded: tape-drive')).toBeTruthy();
+    expect(await within(items[1] as HTMLElement).findByText('tape-drive is unavailable: 96% full')).toBeTruthy();
     expect(modes.textContent).not.toMatch(/degraded\.|undefined/);
   });
 
   it('says so, without an alert to quote, for an unknown degraded mode', async () => {
     const api = quickApi();
     const status = await api.status();
-    vi.spyOn(api, 'status').mockResolvedValue({ ...status, degraded: [{ mode: 'claude-cap' as DegradedMode, since: new Date().toISOString() }] });
+    vi.spyOn(api, 'status').mockResolvedValue({ ...status, degraded: [{ mode: 'tape-drive' as DegradedMode, since: new Date().toISOString() }] });
     vi.spyOn(api, 'alerts').mockResolvedValue([]);
     const banner = await strip(api);
     const modes = await within(banner).findByRole('status', { name: 'Degraded modes' });
-    expect(within(modes).getByText('Degraded: claude-cap')).toBeTruthy();
+    expect(within(modes).getByText('Degraded: tape-drive')).toBeTruthy();
     expect(await within(modes).findByText(/Foreman reports this mode as degraded, but this screen has no description of it yet/)).toBeTruthy();
   });
 

@@ -1,4 +1,5 @@
 import type { GoalDetail } from '@/modules/foreman-next/api/contract';
+import { NO_BUDGET, NO_FORECAST_TREND, STUDY_WITH_CODE_GRAPH } from '@/modules/foreman-next/api/mock/mockHelpers';
 import { at, DAY_MS, HOUR_MS } from '@/modules/foreman-next/api/mock/time';
 
 /** Used by the mock store as a goal on a read-only repo (desk): planned and approved, it waits for the owner's switch, and the repo says how far its rows are. */
@@ -8,6 +9,8 @@ export const readOnlyGoalFixture = (now: number): GoalDetail => ({
   name: 'Reports',
   title: 'desk · Reports at 100% Libredesk parity',
   doneWhen: 'all 40 checklist rows are DONE and verified by the judge',
+  budget: NO_BUDGET,
+  forecastTrend: NO_FORECAST_TREND,
   state: 'read-only',
   done: 18,
   total: 40,
@@ -22,11 +25,11 @@ export const readOnlyGoalFixture = (now: number): GoalDetail => ({
   daysTaken: null,
   spent: { usd: 1.2, shareUsd: 20, firstPassYield: 0, usdPerRow: 0 },
   study: null,
-  strategy: { version: 1, replannedAt: at(now, -3 * DAY_MS), reason: 'first plan', status: 'approved', steps: ['Build the report screens in four batches'], risks: ['desk is read-only: the rows move when your own pipeline judges them'], previous: null },
+  strategy: { version: 1, replannedAt: at(now, -3 * DAY_MS), reason: 'first plan', status: 'approved', study: STUDY_WITH_CODE_GRAPH, steps: ['Build the report screens in four batches'], risks: ['desk is read-only: the rows move when your own pipeline judges them'], previous: null, changes: null },
   batches: [],
   repoProgress: [
-    { repoHead: 'a1b2c3d', rowsDone: 11, rowsPlanned: 40, complete: false, recordedAt: at(now, -3 * DAY_MS) },
-    { repoHead: 'e4f5a6b', rowsDone: 14, rowsPlanned: 40, complete: false, recordedAt: at(now, -2 * DAY_MS) },
-    { repoHead: '9c8d7e6', rowsDone: 18, rowsPlanned: 40, complete: false, recordedAt: at(now, -HOUR_MS) },
+    { repoHead: 'a1b2c3d', rowsDone: 11, rowsBuilt: 0, rowsPlanned: 40, complete: false, recordedAt: at(now, -3 * DAY_MS) },
+    { repoHead: 'e4f5a6b', rowsDone: 14, rowsBuilt: 0, rowsPlanned: 40, complete: false, recordedAt: at(now, -2 * DAY_MS) },
+    { repoHead: '9c8d7e6', rowsDone: 18, rowsBuilt: 0, rowsPlanned: 40, complete: false, recordedAt: at(now, -HOUR_MS) },
   ],
 });

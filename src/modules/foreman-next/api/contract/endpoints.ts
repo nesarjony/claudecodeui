@@ -29,6 +29,7 @@ export const ENDPOINTS = {
   pauseGoal: { method: 'POST', path: '/work/goals/:id/pause' },
   resumeGoal: { method: 'POST', path: '/work/goals/:id/resume' },
   replanGoal: { method: 'POST', path: '/work/goals/:id/replan' },
+  setGoalLimits: { method: 'POST', path: '/work/goals/:id/limits' },
   run: { method: 'GET', path: '/work/runs/:id' },
   pauseRun: { method: 'POST', path: '/work/runs/:id/pause' },
   resumeRun: { method: 'POST', path: '/work/runs/:id/resume' },

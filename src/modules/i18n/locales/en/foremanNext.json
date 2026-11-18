@@ -72,8 +72,16 @@
       "detail": "Foreman stops acting. Workers keep their sessions, nothing is lost, and Foreman resumes when the database is back."
     },
     "infigraph": {
-      "title": "infigraph unavailable",
-      "detail": "Briefs fall back to file paths from git, and each lower-quality brief is flagged."
+      "title": "The code-structure index is unavailable",
+      "detail": "Plans are made without it."
+    },
+    "claude-cap": {
+      "title": "claude-cap is unreachable",
+      "detail": "Model calls are paused."
+    },
+    "disk": {
+      "title": "Disk is nearly full",
+      "detail": "New batches are held."
     },
     "owner-away": {
       "title": "Owner away",

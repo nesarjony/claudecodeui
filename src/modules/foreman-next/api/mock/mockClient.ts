@@ -176,6 +176,11 @@ export function createMockApi({ scenario = 'default', latencyMs = 150, studyMs =
           target.strategy = { ...target.strategy, version: target.strategy.version + 1, replannedAt: at(Date.now(), 0), reason: 'because you asked', status: 'in-review' };
         }),
       ),
+    // Limits are the mock's to hold in memory only from the goal page's slice on; until then every goal says it has none to change.
+    setGoalLimits: () =>
+      respond('setGoalLimits', () => {
+        throw notFound('goal');
+      }),
     run: (id) => respond('run', () => run(id)),
     pauseRun: (id) => respond('pauseRun', () => setRun(id, (target) => void (target.state = 'paused'))),
     resumeRun: (id) => respond('resumeRun', () => setRun(id, (target) => void (target.state = 'running'))),

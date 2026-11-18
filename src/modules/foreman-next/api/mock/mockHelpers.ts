@@ -1,7 +1,13 @@
 import { ApiRequestError } from '@/shared/api';
-import type { GoalDetail, RunDetail, RunSummary, StudyStep } from '@/modules/foreman-next/api/contract';
+import type { ForecastTrend, GoalBudget, GoalDetail, RunDetail, RunSummary, StrategyStudy, StudyStep } from '@/modules/foreman-next/api/contract';
 import { STUDY_STEP_IDS } from '@/modules/foreman-next/api/contract';
 import { at } from '@/modules/foreman-next/api/mock/time';
+
+/** What a goal with no limit and nothing forecast yet says of its budget, and of how its forecast fared: nothing to compare. */
+export const NO_BUDGET: GoalBudget = { limitUsd: null, deadline: null, projectedUsd: null, fits: null, onTime: null };
+export const NO_FORECAST_TREND: ForecastTrend = { points: [], cumulativeUsdErrorPct: null, cumulativeWorkerWindowsErrorPct: null };
+/** A study that had the code graph, so the plan was made with it. */
+export const STUDY_WITH_CODE_GRAPH: StrategyStudy = { structure: 'infigraph', reason: null };
 
 export const clone = <T>(value: T): T => (value === undefined ? value : (JSON.parse(JSON.stringify(value)) as T));
 
@@ -43,6 +49,8 @@ export function newGoalDetail(request: { repo: string; goal: string }, id: strin
     name,
     title: `${request.repo} · ${name}`,
     doneWhen: 'every checklist row is DONE and verified by the judge',
+    budget: NO_BUDGET,
+    forecastTrend: NO_FORECAST_TREND,
     state: 'studying',
     done: 0,
     total: 60,
@@ -70,9 +78,11 @@ export function firstStrategy(now: number): NonNullable<GoalDetail['strategy']> 
     replannedAt: at(now, 0),
     reason: 'first plan, from the repo study',
     status: 'awaiting-approval',
+    study: STUDY_WITH_CODE_GRAPH,
     steps: ['Contract batch first', 'Layout, then components', 'Integration and the judge pass last'],
     risks: ['no donor tests for part of the checklist'],
     previous: null,
+    changes: null,
   };
 }
 

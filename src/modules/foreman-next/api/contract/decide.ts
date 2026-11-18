@@ -2,7 +2,8 @@ import type { DecisionKind, DelegationKind, DelegationLevel, EntityRef, IsoTime,
 
 export type QuestionOption = { id: string; label: string; rowsDelta: number; cost: string; risk: string };
 export type SimilarDecision = { id: string; title: string; decidedAt: IsoTime; choice: string };
-export type QuestionRecommendation = { optionId: string; confidence: number; reason: string; similar: SimilarDecision[] };
+// `confidence` is null when whoever asked stated none: Foreman shows what it was given, and invents nothing.
+export type QuestionRecommendation = { optionId: string; confidence: number | null; reason: string; similar: SimilarDecision[] };
 
 // Foreman orders the list by rows held, most first. `delegable` is false for kinds that never move up the trust ladder, such as the charter's.
 export type OwnerQuestion = {

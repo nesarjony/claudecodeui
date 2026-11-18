@@ -58,6 +58,7 @@ export function createRealApi(): ForemanApi {
     pauseGoal: (goalId) => call(ENDPOINTS.pauseGoal, { params: { id: goalId } }),
     resumeGoal: (goalId) => call(ENDPOINTS.resumeGoal, { params: { id: goalId } }),
     replanGoal: (goalId) => call(ENDPOINTS.replanGoal, { params: { id: goalId } }),
+    setGoalLimits: (goalId, change) => call(ENDPOINTS.setGoalLimits, { params: { id: goalId }, body: change }),
     run: (id) => call(ENDPOINTS.run, { params: { id } }),
     pauseRun: (id) => call(ENDPOINTS.pauseRun, { params: { id } }),
     resumeRun: (id) => call(ENDPOINTS.resumeRun, { params: { id } }),

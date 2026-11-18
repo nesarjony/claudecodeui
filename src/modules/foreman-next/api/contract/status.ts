@@ -1,8 +1,9 @@
 import type { EntityRef, IsoTime } from '@/modules/foreman-next/api/contract/foundation';
 
-export const DEGRADED_MODES = ['api-credit', 'minimax', 'cloudcli', 'postgres', 'infigraph', 'owner-away'] as const;
+export const DEGRADED_MODES = ['api-credit', 'minimax', 'cloudcli', 'postgres', 'infigraph', 'owner-away', 'claude-cap', 'disk'] as const;
 export type DegradedMode = (typeof DEGRADED_MODES)[number];
-export type DegradedState = { mode: DegradedMode; since: IsoTime };
+/** `reason` is said where the loss has one that the owner can act on (infigraph: which repo's code graph, and why it is not there or not open). */
+export type DegradedState = { mode: DegradedMode; since: IsoTime; reason?: string };
 
 export const FOREMAN_STATES = ['running', 'paused', 'workers-paused', 'stopped'] as const;
 export type ForemanState = (typeof FOREMAN_STATES)[number];

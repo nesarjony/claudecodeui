@@ -35,6 +35,7 @@ export const FOREMAN_NEXT_ROUTES: readonly ForemanNextRoute[] = [
   { method: 'POST', path: '/work/goals/:id/pause', body: false },
   { method: 'POST', path: '/work/goals/:id/resume', body: false },
   { method: 'POST', path: '/work/goals/:id/replan', body: false },
+  { method: 'POST', path: '/work/goals/:id/limits', body: true },
   { method: 'GET', path: '/work/runs/:id', body: false },
   { method: 'POST', path: '/work/runs/:id/pause', body: false },
   { method: 'POST', path: '/work/runs/:id/resume', body: false },

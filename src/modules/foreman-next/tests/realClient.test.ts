@@ -25,6 +25,7 @@ const CASES: Case[] = [
   ['rateDecision', (api) => api.rateDecision('d1', { verdict: 'bad', correction: 'ask me' }), 'POST', `${BASE}/decisions/d1/feedback`, { verdict: 'bad', correction: 'ask me' }],
   ['createGoal', (api) => api.createGoal({ repo: 'desk', goal: 'Contacts' }), 'POST', `${BASE}/work/goals`, { repo: 'desk', goal: 'Contacts' }],
   ['adjustStrategy', (api) => api.adjustStrategy('g1', 'fewer batches'), 'POST', `${BASE}/work/goals/g1/strategy/adjust`, { note: 'fewer batches' }],
+  ['setGoalLimits', (api) => api.setGoalLimits('g1', { budgetUsd: 60, deadline: null }), 'POST', `${BASE}/work/goals/g1/limits`, { budgetUsd: 60, deadline: null }],
   ['replayRun', (api) => api.replayRun('run-1', 'checks'), 'POST', `${BASE}/work/runs/run-1/replay/checks`],
   ['alerts', (api) => api.alerts(), 'GET', `${BASE}/alerts`],
   ['serviceLog', (api) => api.serviceLog(), 'GET', `${BASE}/service-log`],
