@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
+import { areForemanSuggestionsAvailable } from '@/modules/foreman';
 import { DarkModeToggle } from '@/shared/ui';
 import { LanguageSelector } from '@/modules/i18n';
 import { SETTING_ROW_CLASS } from '@/shared/constants';
@@ -115,12 +116,14 @@ export default function QuickSettingsContent({
         </p>
       </QuickSettingsSection>
 
-      <QuickSettingsSection title={t('quickSettings.sections.foreman')}>
-        {renderToggleRows(FOREMAN_TOGGLES)}
-        <p className="ml-3 text-xs text-muted-foreground">
-          {t('quickSettings.showForemanSuggestionsDescription')}
-        </p>
-      </QuickSettingsSection>
+      {areForemanSuggestionsAvailable() ? (
+        <QuickSettingsSection title={t('quickSettings.sections.foreman')}>
+          {renderToggleRows(FOREMAN_TOGGLES)}
+          <p className="ml-3 text-xs text-muted-foreground">
+            {t('quickSettings.showForemanSuggestionsDescription')}
+          </p>
+        </QuickSettingsSection>
+      ) : null}
     </div>
   );
 }

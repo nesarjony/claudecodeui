@@ -4,4 +4,5 @@
 export { default as ForemanPanel } from '@/modules/foreman/ForemanPanel';
 export { FOREMAN_TAB_LABEL_KEY } from '@/modules/foreman/i18n';
 // isForemanTabAvailable: false in the build made for the rebuilt Foreman, which has no old tab.
-export { isForemanTabAvailable } from '@/modules/foreman/tabAvailability';
+// areForemanSuggestionsAvailable: the same for the "Foreman suggests" card and its Quick Settings switch.
+export { areForemanSuggestionsAvailable, isForemanTabAvailable } from '@/modules/foreman/tabAvailability';

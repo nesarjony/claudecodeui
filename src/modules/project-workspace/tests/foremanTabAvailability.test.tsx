@@ -3,7 +3,7 @@ import { I18nextProvider } from 'react-i18next';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { i18n } from '@/modules/i18n';
-import { isForemanTabAvailable } from '@/modules/foreman';
+import { areForemanSuggestionsAvailable, isForemanTabAvailable } from '@/modules/foreman';
 import WorkspaceTabsMenu from '@/modules/project-workspace/WorkspaceTabsMenu';
 
 /**
@@ -46,6 +46,16 @@ describe('the old Foreman tab', () => {
     cleanup();
     vi.stubEnv('VITE_FOREMAN_NEXT_API', 'real');
     expect(openViews()).toEqual(['Chat', 'Shell', 'Files', 'Source Control']);
+  });
+});
+
+/** The "Foreman suggests" card is the old Foreman's as well: the rebuilt one makes none, so its build neither asks for the card nor offers its Quick Settings switch (that one is tested with Quick Settings). */
+describe('the old Foreman suggestions', () => {
+  it('are available except in the build made for the rebuilt Foreman', () => {
+    vi.stubEnv('VITE_FOREMAN_NEXT_API', '');
+    expect(areForemanSuggestionsAvailable()).toBe(true);
+    vi.stubEnv('VITE_FOREMAN_NEXT_API', 'real');
+    expect(areForemanSuggestionsAvailable()).toBe(false);
   });
 });
 

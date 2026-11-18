@@ -34,6 +34,7 @@ import {
 } from '@/modules/foreman/foreman-session-reads.service.js';
 import { createForemanSessionStateService, type ForemanSessionStateService } from '@/modules/foreman/foreman-session-state.service.js';
 import { createForemanSessionsService, type ForemanSessionsDependencies } from '@/modules/foreman/foreman-sessions.service.js';
+import { oldForemanTabEnabled } from '@/modules/foreman/foreman-tab.module.js';
 import {
   createForemanSuggestionsClient,
   createSuggestionBroadcaster,
@@ -299,11 +300,14 @@ export function createForemanModule() {
  * The user-facing half of the suggestion card: the pending suggestion for a session and the user's feedback,
  * proxied to Foreman with the bridge token (kept server-side), which sessions Foreman supervises, and the owner's hand-over grants. Mounted at
  * `/api/foreman-suggestions` behind the normal cloudcli login, unlike the bridge router.
+ *
+ * Once `FOREMAN_URL` names the rebuilt Foreman (the old tab's switch, `oldForemanTabEnabled`), the suggestion half is retired: that Foreman has no suggestions
+ * endpoint, so the card asking it would only fail on every chat that opens. The router stays mounted for the supervised list and the hand-over grants, which are cloudcli's own.
  */
 // Consumed by the server entrypoint, which mounts the returned router, and by the delegation integration test.
-export function createForemanUiModule(bridge: { state: ForemanSessionStateService; handover: ForemanHandoverService }) {
+export function createForemanUiModule(bridge: { state: ForemanSessionStateService; handover: ForemanHandoverService }, environment: NodeJS.ProcessEnv = process.env) {
   return createForemanUiRouter({
-    client: createForemanSuggestionsClient({ tokenFile: resolveBridgeTokenFile() }),
+    client: createForemanSuggestionsClient({ tokenFile: resolveBridgeTokenFile(environment), retired: !oldForemanTabEnabled(environment) }),
     state: bridge.state,
     handover: bridge.handover,
   });

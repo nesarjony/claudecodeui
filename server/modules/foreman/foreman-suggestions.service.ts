@@ -139,6 +139,11 @@ type ForemanSuggestionsClientDependencies = {
   baseUrl?: string;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
+  /**
+   * The rebuilt Foreman is the one `FOREMAN_URL` names, and it makes no suggestions: it has no suggestions or notes endpoint, so asking it with the bridge token
+   * only fails (`FOREMAN_ERROR`, 502) on every chat that opens. A retired client answers "none" at once and calls nobody.
+   */
+  retired?: boolean;
 };
 
 /** Foreman's origin: the explicit value, else `FOREMAN_URL`, else the origin of `FOREMAN_EVENTS_URL`, else Foreman's local address. */
@@ -170,6 +175,8 @@ export function resolveForemanBaseUrl(explicit: string | undefined): string {
 export function createForemanSuggestionsClient(dependencies: ForemanSuggestionsClientDependencies) {
   const fetchImpl = dependencies.fetchImpl ?? fetch;
   const timeoutMs = dependencies.timeoutMs ?? FOREMAN_TIMEOUT_MS;
+  const retired = dependencies.retired === true;
+  const noSuggestion = () => new AppError('Suggestion not found.', { code: 'SUGGESTION_NOT_FOUND', statusCode: 404 });
 
   async function call(method: 'GET' | 'POST', pathAndQuery: string, body?: unknown, callTimeoutMs = timeoutMs): Promise<{ status: number; json: Record<string, unknown> | null }> {
     const token = await readBridgeToken(dependencies.tokenFile);
@@ -208,6 +215,7 @@ export function createForemanSuggestionsClient(dependencies: ForemanSuggestionsC
       if (!SESSION_ID_PATTERN.test(sessionId)) {
         throw invalid('Invalid session id.', 'INVALID_SESSION_ID');
       }
+      if (retired) return null;
       const { status, json } = await call('GET', `/foreman/suggestions?sessionId=${encodeURIComponent(sessionId)}`);
       if (status !== 200) {
         throw new AppError('Foreman could not return the pending suggestion.', { code: 'FOREMAN_ERROR', statusCode: 502 });
@@ -221,6 +229,7 @@ export function createForemanSuggestionsClient(dependencies: ForemanSuggestionsC
       if (!SESSION_ID_PATTERN.test(sessionId)) {
         throw invalid('Invalid session id.', 'INVALID_SESSION_ID');
       }
+      if (retired) return null;
       const { status, json } = await call('GET', `/foreman/notes?sessionId=${encodeURIComponent(sessionId)}`);
       if (status !== 200) {
         throw new AppError('Foreman could not return the notes.', { code: 'FOREMAN_ERROR', statusCode: 502 });
@@ -245,6 +254,7 @@ export function createForemanSuggestionsClient(dependencies: ForemanSuggestionsC
       if (!SUGGESTION_ID_PATTERN.test(suggestionId)) {
         throw invalid('Invalid suggestion id.');
       }
+      if (retired) throw noSuggestion();
       const { status, json } = await call('POST', `/foreman/suggestions/${encodeURIComponent(suggestionId)}/execute`, {}, EXECUTE_TIMEOUT_MS);
       if (status === 200 && json) {
         return json;
@@ -272,6 +282,7 @@ export function createForemanSuggestionsClient(dependencies: ForemanSuggestionsC
       if (input.finalText !== undefined && (typeof input.finalText !== 'string' || input.finalText.length > MAX_FINAL_TEXT_LENGTH)) {
         throw invalid(`finalText must be a string of at most ${MAX_FINAL_TEXT_LENGTH} characters.`);
       }
+      if (retired) throw noSuggestion();
       const { status, json } = await call('POST', `/foreman/suggestions/${encodeURIComponent(suggestionId)}/feedback`, {
         action: input.action,
         ...(input.finalText !== undefined ? { finalText: input.finalText } : {}),

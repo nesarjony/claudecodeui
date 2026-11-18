@@ -4,7 +4,7 @@ import { ChatInterface } from '@/modules/chat';
 import { FileTree } from '@/modules/file-tree';
 import { StandaloneShell } from '@/modules/standalone-shell';
 import { GitPanel } from '@/modules/git-panel';
-import { ForemanPanel, isForemanTabAvailable } from '@/modules/foreman';
+import { areForemanSuggestionsAvailable, ForemanPanel, isForemanTabAvailable } from '@/modules/foreman';
 import { ForemanSessionBar } from '@/modules/foreman-next';
 import { PluginTabContent } from '@/modules/plugins';
 import { BrowserUsePanel, useBrowserUseEnabled } from '@/modules/browser-use';
@@ -175,7 +175,7 @@ function WorkspaceMain({
                 showRawParameters={showRawParameters}
                 showThinking={showThinking}
                 sendByCtrlEnter={sendByCtrlEnter}
-                showForemanSuggestions={showForemanSuggestions}
+                showForemanSuggestions={showForemanSuggestions && areForemanSuggestionsAvailable()}
                 externalMessageUpdate={externalMessageUpdate}
                 newSessionTrigger={newSessionTrigger}
                 onShowAllTasks={tasksEnabled ? showAllTasks : null}
