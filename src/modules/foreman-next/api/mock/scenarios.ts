@@ -1,3 +1,4 @@
+import { DEGRADED_MODES } from '@/modules/foreman-next/api/contract';
 import type { DegradedMode } from '@/modules/foreman-next/api/contract';
 import type { MockStore } from '@/modules/foreman-next/api/mock/mockStore';
 import { ceilingQuestion } from '@/modules/foreman-next/api/mock/decideFixtures';
@@ -34,7 +35,8 @@ export const MOCK_SCENARIOS: MockScenario[] = [
   'loading',
 ];
 
-const ALL_DEGRADED_MODES: DegradedMode[] = ['api-credit', 'minimax', 'cloudcli', 'postgres', 'infigraph', 'owner-away'];
+// Every mode the contract names, so a mode added to it shows up in this scenario; the ones that have a reason carry one, as Foreman's do.
+const DEGRADED_REASONS: Partial<Record<DegradedMode, string>> = { infigraph: 'desk: the code graph could not be built (the index file is missing)' };
 
 const nextMonthStart = (now: number): number => {
   const date = new Date(now);
@@ -84,7 +86,10 @@ export function applyScenario(store: MockStore, scenario: MockScenario, now: num
   } else if (scenario === 'deepseek-unread') {
     store.status = { ...store.status, spend: { ...store.status.spend, deepseekMonthUsd: null } };
   } else if (scenario === 'degraded') {
-    store.status.degraded = ALL_DEGRADED_MODES.map((mode, position) => ({ mode, since: at(now, -(position + 1) * HOUR_MS) }));
+    store.status.degraded = DEGRADED_MODES.map((mode, position) => {
+      const reason = DEGRADED_REASONS[mode];
+      return { mode, since: at(now, -(position + 1) * HOUR_MS), ...(reason === undefined ? {} : { reason }) };
+    });
   } else if (scenario === 'run-failed') {
     failRun(store);
   } else if (scenario === 'taken-over') {

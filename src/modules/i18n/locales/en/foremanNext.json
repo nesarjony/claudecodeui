@@ -51,6 +51,7 @@
   "degraded": {
     "label": "Degraded modes",
     "since": "since {{clock}}",
+    "why": "Why:",
     "api-credit": {
       "title": "API credit unavailable",
       "detail": "Routine supervision continues in plain code. Running batches finish to a safe point, no new batches start, and decisions that need Opus queue up."

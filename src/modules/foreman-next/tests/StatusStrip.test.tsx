@@ -2,6 +2,7 @@ import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest';
 import type { ReactNode } from 'react';
 
+import { DEGRADED_MODES } from '@/modules/foreman-next/api/contract';
 import type { DegradedMode, ForemanApi } from '@/modules/foreman-next/api/contract';
 import { ForemanStatusProvider } from '@/modules/foreman-next/context/ForemanStatusProvider';
 import { statusFixture } from '@/modules/foreman-next/api/mock/shellFixtures';
@@ -96,7 +97,7 @@ describe('the status strip', () => {
     const banner = await strip(quickApi('degraded'));
     const modes = await within(banner).findByRole('status', { name: 'Degraded modes' });
     const items = within(modes).getAllByRole('listitem');
-    expect(items).toHaveLength(6);
+    expect(items).toHaveLength(8);
     const expected: [string, RegExp][] = [
       ['API credit unavailable', /no new batches start/],
       ['DeepSeek unavailable', /Workers pause at a safe point/],
@@ -104,6 +105,8 @@ describe('the status strip', () => {
       ['Database unavailable', /Workers keep their sessions/],
       ['The code-structure index is unavailable', /Plans are made without it/],
       ['Owner away', /one digest/],
+      ['claude-cap is unreachable', /Model calls are paused/],
+      ['Disk is nearly full', /New batches are held/],
     ];
     expected.forEach(([title, detail], position) => {
       expect(within(items[position] as HTMLElement).getByText(title)).toBeTruthy();
@@ -148,6 +151,53 @@ describe('the status strip', () => {
     const modes = await within(banner).findByRole('status', { name: 'Degraded modes' });
     expect(within(modes).getByText('Degraded: tape-drive')).toBeTruthy();
     expect(await within(modes).findByText(/Foreman reports this mode as degraded, but this screen has no description of it yet/)).toBeTruthy();
+  });
+
+  it('says the new modes in plain words, every contract mode having a sentence of its own and none the "Degraded: <mode>" fallback', async () => {
+    const banner = await strip(quickApi('degraded'));
+    const modes = await within(banner).findByRole('status', { name: 'Degraded modes' });
+    expect(within(modes).getAllByRole('listitem')).toHaveLength(DEGRADED_MODES.length);
+    expect(modes.textContent).not.toMatch(/Degraded: |degraded\.|undefined/);
+  });
+
+  it('shows the reason Foreman gives for a loss beside its sentence, as plain text, and no "Why" without one', async () => {
+    const banner = await strip(quickApi('degraded'));
+    const modes = await within(banner).findByRole('status', { name: 'Degraded modes' });
+    const items = within(modes).getAllByRole('listitem');
+    const infigraph = items[4] as HTMLElement;
+    expect(within(infigraph).getByText('The code-structure index is unavailable')).toBeTruthy();
+    expect(within(infigraph).getByText('Why: desk: the code graph could not be built (the index file is missing)')).toBeTruthy();
+    expect(modes.textContent?.match(/Why:/g)).toHaveLength(1);
+  });
+
+  it('shows a reason as the text it is: no markup is made of it, and a blank or non-text one is not shown', async () => {
+    const api = quickApi();
+    const status = await api.status();
+    const since = new Date().toISOString();
+    vi.spyOn(api, 'status').mockResolvedValue({
+      ...status,
+      degraded: [
+        { mode: 'disk', since, reason: '<b>96%</b> full & "growing"' },
+        { mode: 'claude-cap', since, reason: '   ' },
+        { mode: 'infigraph', since, reason: 42 as unknown as string },
+      ],
+    });
+    const banner = await strip(api);
+    const modes = await within(banner).findByRole('status', { name: 'Degraded modes' });
+    expect(within(modes).getByText('Why: <b>96%</b> full & "growing"')).toBeTruthy();
+    expect(modes.querySelector('b')).toBeNull();
+    expect(modes.textContent?.match(/Why:/g)).toHaveLength(1);
+  });
+
+  it('keeps the "Degraded: <mode>" fallback for a mode this build does not know, and shows its reason too', async () => {
+    const api = quickApi();
+    const status = await api.status();
+    vi.spyOn(api, 'status').mockResolvedValue({ ...status, degraded: [{ mode: 'tape-drive' as DegradedMode, since: new Date().toISOString(), reason: 'the tape is jammed' }] });
+    vi.spyOn(api, 'alerts').mockResolvedValue([]);
+    const banner = await strip(api);
+    const modes = await within(banner).findByRole('status', { name: 'Degraded modes' });
+    expect(within(modes).getByText('Degraded: tape-drive')).toBeTruthy();
+    expect(within(modes).getByText('Why: the tape is jammed')).toBeTruthy();
   });
 
   it('shows no degraded list while everything is available', async () => {
