@@ -11,7 +11,8 @@ export type ForemanStatus = {
   state: ForemanState;
   pauseReason: 'owner' | 'api-ceiling' | 'minimax-window' | null;
   resumesAt: IsoTime | null;
-  spend: { monthUsd: number; ceilingUsd: number; paceUsdPerDay: number };
+  /** `monthUsd` is the API credit's, the one the ceiling is about; `deepseekMonthUsd` is Foreman's own DeepSeek calls, paid on their own account and never counted in it; it is `null` when that reading failed. */
+  spend: { monthUsd: number; ceilingUsd: number; paceUsdPerDay: number; deepseekMonthUsd: number | null };
   minimax: { fiveHourPct: number; weeklyPct: number };
   alerts: number;
   blockingDecisions: number;
