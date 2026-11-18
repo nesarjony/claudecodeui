@@ -27,8 +27,8 @@
     "state": {
       "running": "Running",
       "pausedOwner": "Paused by you",
-      "pausedCeiling": "Paused · API ceiling reached · resumes {{day}}, or raise it (owner only)",
-      "pausedCeilingOpen": "Paused · API ceiling reached · raise it to continue (owner only)",
+      "pausedCeiling": "Paused · Spending limit reached. See the alert for which limit and how to raise it. Resumes {{day}}.",
+      "pausedCeilingOpen": "Paused · Spending limit reached. See the alert for which limit and how to raise it.",
       "workersPaused": "Workers paused · the workers' plan window is full · resumes {{clock}}. Foreman keeps planning.",
       "workersPausedOpen": "Workers paused · the workers' plan window is full. Foreman keeps planning.",
       "stopped": "Stopped · nothing runs until you resume"

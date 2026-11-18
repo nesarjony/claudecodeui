@@ -34,10 +34,21 @@ describe('the status strip', () => {
     expect(within(banner).getByRole('button', { name: /Chat/ }).getAttribute('aria-keyshortcuts')).toBe('Meta+J Control+J');
   });
 
-  it('shows the API ceiling pause with the resume day and who can lift it', async () => {
+  it('says a spending limit was reached, without naming which one, with the resume day and the alert beside it', async () => {
     const banner = await strip(quickApi('budget-paused'));
-    expect(await within(banner).findByText(/Paused · API ceiling reached · resumes .+, or raise it \(owner only\)/)).toBeTruthy();
+    expect(await within(banner).findByText(/Paused · Spending limit reached\. See the alert for which limit and how to raise it\. Resumes .+\./)).toBeTruthy();
+    expect(within(banner).getByRole('link', { name: '! 1 alert' }).getAttribute('href')).toBe('/foreman/alerts');
     expect((within(banner).getByRole('button', { name: /Pause all/ }) as HTMLButtonElement).disabled).toBe(true);
+    expect(banner.textContent).not.toMatch(/API ceiling reached|raise it to continue/);
+  });
+
+  it('words the pause the same when the DeepSeek limit or an unreadable DeepSeek spend holds the work, which have no resume day: Foreman reports both as api-ceiling', () => {
+    const status = statusFixture();
+    renderWithForeman(<StatusSummary status={{ ...status, state: 'paused', pauseReason: 'api-ceiling', resumesAt: null, spend: { ...status.spend, deepseekMonthUsd: null } }} />);
+    expect(screen.getByText('Paused · Spending limit reached. See the alert for which limit and how to raise it.')).toBeTruthy();
+    expect(screen.getByText('DeepSeek —')).toBeTruthy();
+    expect(screen.getByText('API credit $41.20 of $200')).toBeTruthy();
+    expect(document.body.textContent).not.toMatch(/API ceiling|Resumes/);
   });
 
   it('shows a plan-window pause neutrally: workers paused, when they resume, and that Foreman keeps planning, with no gauge', async () => {
