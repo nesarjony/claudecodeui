@@ -9,11 +9,10 @@ function ForecastLine({ goal }: { goal: GoalDetail }) {
   const { t } = useTranslation('foremanNext');
   const { forecast } = goal;
   if (!forecast) return null;
+  // The contract's estimate of plan windows (`minimaxWindows`) means nothing once no route has a window, so the line is the cost and the finish time.
   const parts = [
     t('work.forecast.batches', { count: forecast.batchesLeft }),
     t('work.forecast.credit', { usd: formatUsd(forecast.usdToGo) }),
-    // The estimate of plan windows is the contract's `minimaxWindows`: no route has a window now, so a count of none is not worth a part.
-    forecast.minimaxWindows > 0 ? t('work.forecast.windows', { count: forecast.minimaxWindows }) : null,
     forecast.doneBy ? t('work.forecast.doneBy', { day: formatWeekday(forecast.doneBy), certainty: t(`work.certainty.${forecast.certainty}`) }) : null,
   ];
   return (

@@ -8,7 +8,7 @@ import type {
 } from '@/modules/chat/hooks/useQuickCommands';
 
 const MODEL_OPTIONS: { value: QuickCommandSettings['model']; label: string }[] = [
-  { value: 'haiku', label: 'Haiku — MiniMax (cheap, metered)' },
+  { value: 'haiku', label: 'Haiku — DeepSeek (cheap, metered)' },
   { value: 'sonnet', label: 'Sonnet — Claude plan' },
   { value: 'opus', label: 'Opus — Claude plan (best)' },
 ];

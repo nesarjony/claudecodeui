@@ -29,6 +29,7 @@ import {
   TREND_IDS,
 } from '@/modules/foreman-next/api/contract';
 import type { ForemanState } from '@/modules/foreman-next/api/contract';
+import { degradedCatalogKey } from '@/modules/foreman-next/utils/degradedCatalog';
 import { BOARD_COLUMN_IDS } from '@/modules/foreman-next/work/boardColumns';
 
 const ROOT = join(__dirname, '..');
@@ -69,7 +70,7 @@ const family = (prefix: string, values: readonly string[], suffixes: readonly st
 // Every family is built from the contract's own value lists, so a value added to the contract has to be in the catalog.
 const FAMILIES: string[] = [
   ...family('status.state', FOREMAN_STATES.flatMap((state) => STATE_KEYS[state])),
-  ...family('degraded', DEGRADED_MODES, ['.title', '.detail']),
+  ...family('degraded', DEGRADED_MODES.map(degradedCatalogKey), ['.title', '.detail']),
   ...family('delegation.kind', DELEGATION_KINDS),
   ...family('delegation.asks', DELEGATION_KINDS),
   ...family('delegation.level', DELEGATION_LEVELS),

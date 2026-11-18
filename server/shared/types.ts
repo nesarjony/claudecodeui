@@ -1358,7 +1358,7 @@ export type SandboxCommandService = {
 /**
  * How a Claude session is billed. `api-key` sessions carry the `@api` model marker and run
  * on the Anthropic API key; `cap` sessions carry the `@cap` marker and run through claude-cap's
- * worker routing profile (MiniMax, never Anthropic, with no real credential in the CLI's
+ * worker routing profile (DeepSeek, never Anthropic, with no real credential in the CLI's
  * environment); `subscription` sessions run on the Claude subscription.
  *
  * Used by the Foreman bridge for session listings, digests, and event payloads.

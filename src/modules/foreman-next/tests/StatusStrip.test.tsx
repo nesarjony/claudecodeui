@@ -2,7 +2,7 @@ import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest';
 import type { ReactNode } from 'react';
 
-import type { ForemanApi } from '@/modules/foreman-next/api/contract';
+import type { DegradedMode, ForemanApi } from '@/modules/foreman-next/api/contract';
 import { ForemanStatusProvider } from '@/modules/foreman-next/context/ForemanStatusProvider';
 import { statusFixture } from '@/modules/foreman-next/api/mock/shellFixtures';
 import { ConnectionBanner } from '@/modules/foreman-next/shell/ConnectionBanner';
@@ -98,6 +98,45 @@ describe('the status strip', () => {
       expect(within(items[position] as HTMLElement).getByText(title)).toBeTruthy();
       expect(within(items[position] as HTMLElement).getByText(detail)).toBeTruthy();
     });
+  });
+
+  it('titles the loss of the worker and helper routes DeepSeek, though Foreman still names that mode minimax', async () => {
+    const banner = await strip(quickApi('degraded'));
+    const modes = await within(banner).findByRole('status', { name: 'Degraded modes' });
+    expect(within(modes).getByText('DeepSeek unavailable')).toBeTruthy();
+    expect(modes.textContent).not.toMatch(/MiniMax/);
+  });
+
+  it('shows a degraded mode this build does not know as "Degraded: <mode>" with its alert, and keeps the known ones', async () => {
+    const api = quickApi();
+    const status = await api.status();
+    vi.spyOn(api, 'status').mockResolvedValue({
+      ...status,
+      degraded: [
+        { mode: 'api-credit', since: new Date().toISOString() },
+        { mode: 'disk' as DegradedMode, since: new Date().toISOString() },
+      ],
+    });
+    vi.spyOn(api, 'alerts').mockResolvedValue([{ id: 'lost:disk', severity: 'critical', text: 'disk is unavailable: 96% full', at: new Date().toISOString(), subject: null }]);
+    const banner = await strip(api);
+    const modes = await within(banner).findByRole('status', { name: 'Degraded modes' });
+    const items = within(modes).getAllByRole('listitem');
+    expect(items).toHaveLength(2);
+    expect(within(items[0] as HTMLElement).getByText('API credit unavailable')).toBeTruthy();
+    expect(within(items[1] as HTMLElement).getByText('Degraded: disk')).toBeTruthy();
+    expect(await within(items[1] as HTMLElement).findByText('disk is unavailable: 96% full')).toBeTruthy();
+    expect(modes.textContent).not.toMatch(/degraded\.|undefined/);
+  });
+
+  it('says so, without an alert to quote, for an unknown degraded mode', async () => {
+    const api = quickApi();
+    const status = await api.status();
+    vi.spyOn(api, 'status').mockResolvedValue({ ...status, degraded: [{ mode: 'claude-cap' as DegradedMode, since: new Date().toISOString() }] });
+    vi.spyOn(api, 'alerts').mockResolvedValue([]);
+    const banner = await strip(api);
+    const modes = await within(banner).findByRole('status', { name: 'Degraded modes' });
+    expect(within(modes).getByText('Degraded: claude-cap')).toBeTruthy();
+    expect(await within(modes).findByText(/Foreman reports this mode as degraded, but this screen has no description of it yet/)).toBeTruthy();
   });
 
   it('shows no degraded list while everything is available', async () => {

@@ -113,8 +113,9 @@ describe('Settings', () => {
     renderForemanApp('/foreman/settings');
     const facts = await screen.findByRole('region', { name: 'Budget and models' });
     expect(within(facts).getByText('API $200 a month (owner only) · pace about $6.50 a day · goal share: Inbox $40')).toBeTruthy();
-    expect(within(facts).getByText('Plan window')).toBeTruthy();
-    expect(within(facts).getByText('none watched: DeepSeek is pay-per-token, so it has no plan window to stop at')).toBeTruthy();
+    expect(within(facts).getByText('Worker plan window')).toBeTruthy();
+    expect(within(facts).getByText('not watched: DeepSeek is pay-per-token, so there is no plan window to stop at')).toBeTruthy();
+    expect(facts.textContent).not.toMatch(/100%|5-hour/);
     expect(within(facts).getByText('Opus (API credit) · desk workers DeepSeek only · side runs DeepSeek')).toBeTruthy();
     expect(facts.textContent).not.toMatch(/MiniMax/);
     expect(within(facts).getByText(/Strategist v3 · Supervisor v3 · Judge v4 · Coach v1/)).toBeTruthy();

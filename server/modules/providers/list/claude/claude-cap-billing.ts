@@ -3,7 +3,7 @@
  *
  * claude-cap (a local proxy, `http://127.0.0.1:34817`) answers a request that carries the header
  * `x-claude-cap-profile: <profile>` by rewriting every Claude model name to the profile's upstream
- * (MiniMax-M3 on the free plan for `foreman-worker`) and by replacing whatever credentials the client
+ * (DeepSeek, pay per token, for `foreman-worker`) and by replacing whatever credentials the client
  * sent with the upstream's own. A cap session therefore never needs, and must never be handed, an
  * Anthropic credential: the CLI starts with a placeholder API key and nothing else.
  *

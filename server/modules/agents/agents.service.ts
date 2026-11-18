@@ -27,7 +27,7 @@ export type AgentSummary = {
   lastTool: AgentActivity | null;
   tokens: { input: number; output: number; cacheRead: number; cacheWrite: number };
   costUsd: number;
-  /** False when no message used a model with a known price (e.g. routed to MiniMax). */
+  /** False when no message used a model with a known price (e.g. routed to DeepSeek). */
   costKnown: boolean;
   prompt: string;
   result: string;

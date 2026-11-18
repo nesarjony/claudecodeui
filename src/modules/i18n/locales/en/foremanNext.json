@@ -55,9 +55,13 @@
       "title": "API credit unavailable",
       "detail": "Routine supervision continues in plain code. Running batches finish to a safe point, no new batches start, and decisions that need Opus queue up."
     },
-    "minimax": {
+    "deepseek": {
       "title": "DeepSeek unavailable",
       "detail": "Workers pause at a safe point, and work that needs a helper model waits. Foreman keeps planning and learning."
+    },
+    "unlisted": {
+      "title": "Degraded: {{mode}}",
+      "detail": "Foreman reports this mode as degraded, but this screen has no description of it yet. The alerts say more."
     },
     "cloudcli": {
       "title": "cloudcli unavailable",
@@ -361,8 +365,6 @@
       "batches_one": "about {{count}} more batch",
       "batches_other": "about {{count}} more batches",
       "credit": "{{usd}} of API credit",
-      "windows_one": "{{count}} plan window",
-      "windows_other": "{{count}} plan windows",
       "doneBy": "done around {{day}} ({{certainty}})"
     },
     "certainty": {
@@ -579,8 +581,8 @@
     "budget": "Budget",
     "budgetLine": "API {{monthly}} a month (owner only) · pace about {{pace}} a day",
     "share": "goal share: {{goal}} {{usd}}",
-    "planWindow": "Plan window",
-    "planWindowNone": "none watched: DeepSeek is pay-per-token, so it has no plan window to stop at",
+    "planWindow": "Worker plan window",
+    "planWindowNone": "not watched: DeepSeek is pay-per-token, so there is no plan window to stop at",
     "planWindowResume": "stop desk workers at {{pct}}% of a 5-hour or weekly plan window; the rest stays yours; auto-resume",
     "planWindowStay": "stop desk workers at {{pct}}% of a 5-hour or weekly plan window; the rest stays yours",
     "models": "Models",

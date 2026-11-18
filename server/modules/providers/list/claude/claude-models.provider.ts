@@ -258,7 +258,7 @@ export const CLAUDE_API_KEY_MODEL_SUFFIX = '@api';
 
 /**
  * A model value ending in this suffix runs the session through claude-cap's `foreman-worker`
- * routing profile: every Claude model name is answered by the profile's upstream (MiniMax) and no
+ * routing profile: every Claude model name is answered by the profile's upstream (DeepSeek) and no
  * Anthropic credential is ever handed to the CLI. The runtime strips the suffix before handing the
  * model to the SDK (see claude-cap-billing.ts for the environment such a session gets).
  */
@@ -279,7 +279,7 @@ CLAUDE_PREDEFINED_MODELS.OPTIONS.push(
     ...option,
     value: `${option.value}${CLAUDE_CAP_MODEL_SUFFIX}`,
     label: `${option.label} · claude-cap profile`,
-    description: `${option.description} Answered by the claude-cap worker profile (MiniMax), never by Anthropic.`,
+    description: `${option.description} Answered by the claude-cap worker profile (DeepSeek), never by Anthropic.`,
   })),
 );
 

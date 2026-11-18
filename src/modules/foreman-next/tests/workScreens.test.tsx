@@ -89,16 +89,13 @@ describe('Work', () => {
     expect(within(strategy).getByRole('button', { name: 'Compare v1' }).getAttribute('aria-expanded')).toBe('true');
   });
 
-  it('names an estimate of plan windows neutrally, and only when there is one', async () => {
+  it('keeps cost and finish time in the forecast and leaves out the plan-window estimate, whatever value Foreman still sends for it', async () => {
     const goal = await quickApi().goal('g-inbox');
     const forecast = goal.forecast;
     if (!forecast) throw new Error('the fixture goal has a forecast');
-    const { unmount } = renderWithForeman(<GoalProgress goal={{ ...goal, forecast: { ...forecast, minimaxWindows: 2 } }} />);
-    expect(screen.getByText(/about 9 more batches · \$11 of API credit · 2 plan windows · done around/)).toBeTruthy();
-    unmount();
-    renderWithForeman(<GoalProgress goal={goal} />);
-    expect(screen.getByText(/about 9 more batches · \$11 of API credit · done around/)).toBeTruthy();
-    expect(document.body.textContent).not.toMatch(/MiniMax|window/);
+    renderWithForeman(<GoalProgress goal={{ ...goal, forecast: { ...forecast, minimaxWindows: 0.3 } }} />);
+    expect(screen.getByText(/about 9 more batches · \$11 of API credit · done around \w{3} \(likely\)/)).toBeTruthy();
+    expect(document.body.textContent).not.toMatch(/MiniMax|window|\b0\.3\b/);
   });
 
   it('shows the goal page: progress, forecast, spend, the strategy and the batches', async () => {
