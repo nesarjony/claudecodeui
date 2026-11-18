@@ -2,7 +2,8 @@ import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
 import { createMockApi } from '@/modules/foreman-next/api/mock/mockClient';
-import { quickApi, renderForemanApp } from '@/modules/foreman-next/tests/testHelpers';
+import { quickApi, renderForemanApp, renderWithForeman } from '@/modules/foreman-next/tests/testHelpers';
+import { GoalProgress } from '@/modules/foreman-next/work/GoalProgress';
 
 describe('Work', () => {
   it('shows the board: a goal in two columns, handed-over sessions among the active work, queued and done goals', async () => {
@@ -88,6 +89,18 @@ describe('Work', () => {
     expect(within(strategy).getByRole('button', { name: 'Compare v1' }).getAttribute('aria-expanded')).toBe('true');
   });
 
+  it('names an estimate of plan windows neutrally, and only when there is one', async () => {
+    const goal = await quickApi().goal('g-inbox');
+    const forecast = goal.forecast;
+    if (!forecast) throw new Error('the fixture goal has a forecast');
+    const { unmount } = renderWithForeman(<GoalProgress goal={{ ...goal, forecast: { ...forecast, minimaxWindows: 2 } }} />);
+    expect(screen.getByText(/about 9 more batches · \$11 of API credit · 2 plan windows · done around/)).toBeTruthy();
+    unmount();
+    renderWithForeman(<GoalProgress goal={goal} />);
+    expect(screen.getByText(/about 9 more batches · \$11 of API credit · done around/)).toBeTruthy();
+    expect(document.body.textContent).not.toMatch(/MiniMax|window/);
+  });
+
   it('shows the goal page: progress, forecast, spend, the strategy and the batches', async () => {
     renderForemanApp('/foreman/work/g-inbox');
     expect(await screen.findByRole('heading', { name: 'desk · Inbox at 100% Libredesk parity' })).toBeTruthy();
@@ -95,7 +108,7 @@ describe('Work', () => {
     expect(screen.getByText('DONE 65')).toBeTruthy();
     expect(screen.getByText('BUILT 3')).toBeTruthy();
     expect(screen.getByText('TODO 52')).toBeTruthy();
-    expect(screen.getByText(/about 9 more batches · \$11 of API credit · 4 MiniMax windows · done around \w{3} \(likely\)/)).toBeTruthy();
+    expect(screen.getByText(/about 9 more batches · \$11 of API credit · done around \w{3} \(likely\)/)).toBeTruthy();
     expect(screen.getByText(/\$12\.40 of the \$40 share · first-pass yield 91% · \$0\.38 per DONE row/)).toBeTruthy();
     const strategy = screen.getByRole('region', { name: 'Strategy v2' });
     expect(within(strategy).getAllByRole('listitem')).toHaveLength(3);

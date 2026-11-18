@@ -1,13 +1,17 @@
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
-import { quickApi, renderForemanApp } from '@/modules/foreman-next/tests/testHelpers';
+import { settingsFixture } from '@/modules/foreman-next/api/mock/settingsFixtures';
+import { SettingsFacts } from '@/modules/foreman-next/settings/SettingsFacts';
+import { quickApi, renderForemanApp, renderWithForeman } from '@/modules/foreman-next/tests/testHelpers';
 import { ApiRequestError } from '@/shared/api';
 
 describe('the run view', () => {
   it('shows a live run: stages, Foreman\'s decisions with the card behind a steer, the worker, and the pending verdict', async () => {
     renderForemanApp('/foreman/work/runs/run-t2');
-    expect(await screen.findByText(/MiniMax-M3 · sandboxed · turn 14 · 23m · MiniMax 3% of the 5h window/)).toBeTruthy();
+    // The run header names the model, the clock and the turn, and no plan-window gauge.
+    expect(await screen.findByText(/^deepseek-chat · sandboxed · turn 14 · 23m$/)).toBeTruthy();
+    expect(document.body.textContent).not.toMatch(/MiniMax|of the 5h window/);
     const stages = screen.getByRole('list', { name: 'Stages' });
     expect(within(stages).getAllByRole('listitem').map((item) => item.textContent?.replace(/[─▸\s]+$/, '').trim())).toEqual(['Brief ✓', 'Worker ●', 'Checks ○', 'Judge ○', 'Close ○']);
     expect(screen.getByText(/when the worker says done, asks something, or goes 10 turns without a commit/)).toBeTruthy();
@@ -105,15 +109,27 @@ describe('Settings', () => {
     expect(within(attention).getByText('Quiet hours hold everything except stop events.')).toBeTruthy();
   });
 
-  it('shows the read-only lines: budget, MiniMax, models and roles with the editor', async () => {
+  it('shows the read-only lines: budget, plan window, models and roles with the editor', async () => {
     renderForemanApp('/foreman/settings');
     const facts = await screen.findByRole('region', { name: 'Budget and models' });
     expect(within(facts).getByText('API $200 a month (owner only) · pace about $6.50 a day · goal share: Inbox $40')).toBeTruthy();
-    expect(within(facts).getByText('stop desk workers at 80% of the 5-hour or weekly window; the rest stays yours; auto-resume')).toBeTruthy();
-    expect(within(facts).getByText('Opus (API credit) · desk workers MiniMax-M3 only · side runs MiniMax')).toBeTruthy();
+    expect(within(facts).getByText('Plan window')).toBeTruthy();
+    expect(within(facts).getByText('none watched: DeepSeek is pay-per-token, so it has no plan window to stop at')).toBeTruthy();
+    expect(within(facts).getByText('Opus (API credit) · desk workers DeepSeek only · side runs DeepSeek')).toBeTruthy();
+    expect(facts.textContent).not.toMatch(/MiniMax/);
     expect(within(facts).getByText(/Strategist v3 · Supervisor v3 · Judge v4 · Coach v1/)).toBeTruthy();
     expect(within(facts).getByRole('link', { name: /Editor/ }).getAttribute('href')).toBe('http://127.0.0.1:4111');
     expect(within(facts).queryByRole('button')).toBeNull();
+  });
+
+  it('states a watched plan window neutrally, with the stop point and whether workers resume by themselves', () => {
+    const settings = settingsFixture();
+    const { unmount } = renderWithForeman(<SettingsFacts settings={{ ...settings, minimax: { stopAtPct: 80, autoResume: true } }} editorUrl={null} />);
+    expect(screen.getByText('stop desk workers at 80% of a 5-hour or weekly plan window; the rest stays yours; auto-resume')).toBeTruthy();
+    unmount();
+    renderWithForeman(<SettingsFacts settings={{ ...settings, minimax: { stopAtPct: 80, autoResume: false } }} editorUrl={null} />);
+    expect(screen.getByText('stop desk workers at 80% of a 5-hour or weekly plan window; the rest stays yours')).toBeTruthy();
+    expect(document.body.textContent).not.toMatch(/MiniMax/);
   });
 
   it('lists the registry: each repo as registered, what its adapter says of it, and the switch for workers on a read-only one', async () => {

@@ -9,7 +9,8 @@ export type MockScenario =
   | 'empty'
   | 'quiet'
   | 'budget-paused'
-  | 'minimax-paused'
+  | 'plan-window-paused'
+  | 'deepseek-unread'
   | 'degraded'
   | 'run-failed'
   | 'taken-over'
@@ -23,7 +24,8 @@ export const MOCK_SCENARIOS: MockScenario[] = [
   'empty',
   'quiet',
   'budget-paused',
-  'minimax-paused',
+  'plan-window-paused',
+  'deepseek-unread',
   'degraded',
   'run-failed',
   'taken-over',
@@ -68,9 +70,10 @@ export function applyScenario(store: MockStore, scenario: MockScenario, now: num
       state: 'paused',
       pauseReason: 'api-ceiling',
       resumesAt: at(nextMonthStart(now), 0),
-      spend: { monthUsd: 200, ceilingUsd: 200, paceUsdPerDay: 0 },
+      spend: { ...store.status.spend, monthUsd: 200, paceUsdPerDay: 0 },
     };
-  } else if (scenario === 'minimax-paused') {
+  } else if (scenario === 'plan-window-paused') {
+    // What an older or differently routed Foreman could still send: the strip must name no gauge and no percentage for it.
     store.status = {
       ...store.status,
       state: 'workers-paused',
@@ -78,6 +81,8 @@ export function applyScenario(store: MockStore, scenario: MockScenario, now: num
       resumesAt: at(now, 2 * HOUR_MS),
       minimax: { fiveHourPct: 80, weeklyPct: 31 },
     };
+  } else if (scenario === 'deepseek-unread') {
+    store.status = { ...store.status, spend: { ...store.status.spend, deepseekMonthUsd: null } };
   } else if (scenario === 'degraded') {
     store.status.degraded = ALL_DEGRADED_MODES.map((mode, position) => ({ mode, since: at(now, -(position + 1) * HOUR_MS) }));
   } else if (scenario === 'run-failed') {

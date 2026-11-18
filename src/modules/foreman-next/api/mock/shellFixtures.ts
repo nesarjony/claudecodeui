@@ -6,8 +6,9 @@ export const statusFixture = (): ForemanStatus => ({
   state: 'running',
   pauseReason: null,
   resumesAt: null,
-  spend: { monthUsd: 41.2, ceilingUsd: 200, paceUsdPerDay: 6.5 },
-  minimax: { fiveHourPct: 34, weeklyPct: 12 },
+  spend: { monthUsd: 41.2, ceilingUsd: 200, paceUsdPerDay: 6.5, deepseekMonthUsd: 0.42 },
+  // Foreman still sends the plan-window reading under its old name; with DeepSeek it is always 0.
+  minimax: { fiveHourPct: 0, weeklyPct: 0 },
   alerts: 1,
   blockingDecisions: 2,
   degraded: [],

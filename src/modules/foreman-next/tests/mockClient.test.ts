@@ -115,7 +115,7 @@ describe('the mock client, hand-over (BR-2.10)', () => {
       runId: 'run-t2',
       goal: 'desk · Inbox',
       batch: 't2-layout',
-      model: 'MiniMax-M3',
+      model: 'deepseek-chat',
       sandboxed: true,
       control: 'foreman',
     });
@@ -131,7 +131,7 @@ describe('the mock client, hand-over (BR-2.10)', () => {
 
 describe('the mock client, special states', () => {
   it('has a scenario for each state of wireframes §15', () => {
-    expect(MOCK_SCENARIOS).toEqual(expect.arrayContaining(['empty', 'quiet', 'budget-paused', 'minimax-paused', 'degraded', 'run-failed', 'taken-over', 'error', 'unreachable', 'loading']));
+    expect(MOCK_SCENARIOS).toEqual(expect.arrayContaining(['empty', 'quiet', 'budget-paused', 'plan-window-paused', 'deepseek-unread', 'degraded', 'run-failed', 'taken-over', 'error', 'unreachable', 'loading']));
   });
 
   it('budget-paused: the owner-only question that lifts the pause is there, and cannot be delegated', async () => {

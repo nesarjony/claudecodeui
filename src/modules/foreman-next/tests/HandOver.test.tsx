@@ -101,7 +101,7 @@ describe('the session bar', () => {
   it('shows the Foreman worker banner on a worker session, with Watch in Foreman and Take over, and no hand-over', async () => {
     renderWithForeman(<SessionSupervisionBar sessionId="sess-t2-layout" />);
     const banner = await screen.findByRole('status');
-    expect(banner.textContent).toContain('Foreman worker · desk · Inbox · batch t2-layout · MiniMax-M3 · sandboxed · supervised');
+    expect(banner.textContent).toContain('Foreman worker · desk · Inbox · batch t2-layout · deepseek-chat · sandboxed · supervised');
     expect(within(banner).getByText(/Foreman's messages in this session are labelled "Foreman"\./)).toBeTruthy();
     expect(within(banner).getByRole('link', { name: /Watch in Foreman/ }).getAttribute('href')).toBe('/foreman/work/runs/run-t2');
     expect(within(banner).getByRole('button', { name: 'Take over' })).toBeTruthy();

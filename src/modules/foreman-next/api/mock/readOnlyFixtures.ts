@@ -12,7 +12,7 @@ export const readOnlyGoalFixture = (now: number): GoalDetail => ({
   done: 18,
   total: 40,
   counts: { done: 18, built: 2, todo: 20 },
-  forecast: { batchesLeft: 4, usdToGo: 5, minimaxWindows: 2, doneBy: at(now, 6 * DAY_MS), certainty: 'uncertain' },
+  forecast: { batchesLeft: 4, usdToGo: 5, minimaxWindows: 0, doneBy: at(now, 6 * DAY_MS), certainty: 'uncertain' },
   waitsOnYou: { decisions: 0, rowsHeld: 0 },
   batch: null,
   queuedAfter: null,

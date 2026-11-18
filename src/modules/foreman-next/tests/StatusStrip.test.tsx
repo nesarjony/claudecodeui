@@ -4,8 +4,10 @@ import type { ReactNode } from 'react';
 
 import type { ForemanApi } from '@/modules/foreman-next/api/contract';
 import { ForemanStatusProvider } from '@/modules/foreman-next/context/ForemanStatusProvider';
+import { statusFixture } from '@/modules/foreman-next/api/mock/shellFixtures';
 import { ConnectionBanner } from '@/modules/foreman-next/shell/ConnectionBanner';
 import { StatusStrip } from '@/modules/foreman-next/shell/StatusStrip';
+import { StatusSummary } from '@/modules/foreman-next/shell/StatusSummary';
 import { quickApi, renderWithForeman } from '@/modules/foreman-next/tests/testHelpers';
 
 const shell = (children?: ReactNode) => (
@@ -22,11 +24,11 @@ const strip = async (api: ForemanApi) => {
 };
 
 describe('the status strip', () => {
-  it('shows the run state, API spend, MiniMax windows and alerts, with the global controls', async () => {
+  it('shows the run state, the API credit and DeepSeek spend apart, and alerts, with the global controls', async () => {
     const banner = await strip(quickApi());
     expect(within(banner).getByText('Running')).toBeTruthy();
-    expect(within(banner).getByText('API $41.20 of $200')).toBeTruthy();
-    expect(within(banner).getByText('MiniMax 5h 34% · wk 12%')).toBeTruthy();
+    expect(within(banner).getByText('API credit $41.20 of $200')).toBeTruthy();
+    expect(within(banner).getByText('DeepSeek $0.42')).toBeTruthy();
     expect(within(banner).getByText('! 1 alert')).toBeTruthy();
     for (const name of ['Pause all', 'Stop all']) expect(within(banner).getByRole('button', { name: new RegExp(name) })).toBeTruthy();
     expect(within(banner).getByRole('button', { name: /Chat/ }).getAttribute('aria-keyshortcuts')).toBe('Meta+J Control+J');
@@ -38,9 +40,45 @@ describe('the status strip', () => {
     expect((within(banner).getByRole('button', { name: /Pause all/ }) as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it('shows the MiniMax window pause: workers paused, when they resume, and that Foreman keeps planning', async () => {
-    const banner = await strip(quickApi('minimax-paused'));
-    expect(await within(banner).findByText(/Workers paused · MiniMax 5h window at 80% · resumes \d{2}:\d{2}\. Foreman keeps planning\./)).toBeTruthy();
+  it('shows a plan-window pause neutrally: workers paused, when they resume, and that Foreman keeps planning, with no gauge', async () => {
+    const banner = await strip(quickApi('plan-window-paused'));
+    expect(await within(banner).findByText(/Workers paused · the workers' plan window is full · resumes \d{2}:\d{2}\. Foreman keeps planning\./)).toBeTruthy();
+    expect(banner.textContent).not.toMatch(/MiniMax|80%|31%|5h|wk/);
+  });
+
+  it('shows no plan-window gauge, even when Foreman still sends the old minimax reading', async () => {
+    const banner = await strip(quickApi('plan-window-paused'));
+    await within(banner).findByText(/Workers paused/);
+    expect(banner.textContent).not.toMatch(/MiniMax|5h|wk|%/);
+    expect(within(banner).getByText('API credit $41.20 of $200')).toBeTruthy();
+  });
+
+  it('shows an em dash for DeepSeek when its spend could not be read, never $NaN, $null or a $0.00 that is not a reading', async () => {
+    const banner = await strip(quickApi('deepseek-unread'));
+    expect(await within(banner).findByText('DeepSeek —')).toBeTruthy();
+    expect(within(banner).getByText('API credit $41.20 of $200')).toBeTruthy();
+    expect(banner.textContent).not.toMatch(/NaN|null|undefined|\$0\.00/);
+    expect(within(banner).getByTitle("DeepSeek's spend this month could not be read just now")).toBeTruthy();
+  });
+
+  it('treats a missing deepseekMonthUsd, as an older Foreman sends it, like an unread one', () => {
+    const status = statusFixture();
+    const { monthUsd, ceilingUsd, paceUsdPerDay } = status.spend;
+    renderWithForeman(<StatusSummary status={{ ...status, spend: { monthUsd, ceilingUsd, paceUsdPerDay } as typeof status.spend }} />);
+    expect(screen.getByText('DeepSeek —')).toBeTruthy();
+  });
+
+  it('shows a real DeepSeek zero as $0.00, apart from a reading that failed', () => {
+    const status = statusFixture();
+    renderWithForeman(<StatusSummary status={{ ...status, spend: { ...status.spend, deepseekMonthUsd: 0 } }} />);
+    expect(screen.getByText('DeepSeek $0.00')).toBeTruthy();
+  });
+
+  it("says the workers' plan window paused things when the reason arrives on a paused state, and does not crash without a resume time", () => {
+    const status = statusFixture();
+    renderWithForeman(<StatusSummary status={{ ...status, state: 'paused', pauseReason: 'minimax-window', resumesAt: null }} />);
+    expect(screen.getByText("Workers paused · the workers' plan window is full. Foreman keeps planning.")).toBeTruthy();
+    expect(document.body.textContent).not.toMatch(/MiniMax/);
   });
 
   it('lists every degraded mode with what Foreman does meanwhile (BR-10.10)', async () => {
@@ -50,7 +88,7 @@ describe('the status strip', () => {
     expect(items).toHaveLength(6);
     const expected: [string, RegExp][] = [
       ['API credit unavailable', /no new batches start/],
-      ['MiniMax unavailable', /Workers pause at a safe point/],
+      ['DeepSeek unavailable', /Workers pause at a safe point/],
       ['cloudcli unavailable', /Nothing new starts/],
       ['Database unavailable', /Workers keep their sessions/],
       ['infigraph unavailable', /file paths from git/],

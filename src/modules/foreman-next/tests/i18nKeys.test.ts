@@ -119,6 +119,16 @@ describe('the English catalog', () => {
     expect([...FAMILIES, ...UI_FAMILIES].filter((key) => !has(key))).toEqual([]);
   });
 
+  it('has no string that names a MiniMax plan window: MiniMax is gone, and only the contract keeps the old name', () => {
+    const strings: string[] = [];
+    const collect = (node: unknown): void => {
+      if (typeof node === 'string') strings.push(node);
+      else if (node !== null && typeof node === 'object') Object.values(node).forEach(collect);
+    };
+    collect(enForemanNext);
+    expect(strings.filter((text) => /minimax/i.test(text))).toEqual([]);
+  });
+
   it('keeps no state of the status strip without a sentence', () => {
     expect(FOREMAN_STATES.filter((state) => !STATE_KEYS[state])).toEqual([]);
   });

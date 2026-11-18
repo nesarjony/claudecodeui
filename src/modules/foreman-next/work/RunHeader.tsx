@@ -16,7 +16,6 @@ export function RunHeader({ run }: { run: RunDetail }) {
     run.sandboxed ? t('run.sandboxed') : null,
     t('run.turn', { turn: run.turn }),
     t('run.elapsed', { minutes: run.elapsedMinutes }),
-    run.kind === 'worker' ? t('run.minimaxWindow', { pct: run.minimaxWindowPct }) : null,
   ].filter(Boolean);
   return (
     <Panel title={t('run.title')} aside={<span>{meta.join(' · ')}</span>}>

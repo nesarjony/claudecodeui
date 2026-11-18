@@ -8,7 +8,7 @@ import { StatusSummary } from '@/modules/foreman-next/shell/StatusSummary';
 
 type StatusStripProps = { chatOpen: boolean; chatButtonRef: Ref<HTMLButtonElement>; onToggleChat: () => void };
 
-/** Used by ForemanShell as the strip on every screen: run state, spend, MiniMax windows, alerts, global controls and every degraded mode. */
+/** Used by ForemanShell as the strip on every screen: run state, API credit and DeepSeek spend, alerts, global controls and every degraded mode. */
 export function StatusStrip({ chatOpen, chatButtonRef, onToggleChat }: StatusStripProps) {
   const { t } = useTranslation('foremanNext');
   const { data: status, status: loadState } = useForemanStatus();

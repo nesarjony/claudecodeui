@@ -29,12 +29,15 @@
       "pausedOwner": "Paused by you",
       "pausedCeiling": "Paused · API ceiling reached · resumes {{day}}, or raise it (owner only)",
       "pausedCeilingOpen": "Paused · API ceiling reached · raise it to continue (owner only)",
-      "workersPaused": "Workers paused · MiniMax 5h window at {{pct}}% · resumes {{clock}}. Foreman keeps planning.",
-      "workersPausedOpen": "Workers paused · MiniMax 5h window at {{pct}}%. Foreman keeps planning.",
+      "workersPaused": "Workers paused · the workers' plan window is full · resumes {{clock}}. Foreman keeps planning.",
+      "workersPausedOpen": "Workers paused · the workers' plan window is full. Foreman keeps planning.",
       "stopped": "Stopped · nothing runs until you resume"
     },
-    "spend": "API {{spent}} of {{ceiling}}",
-    "minimax": "MiniMax 5h {{fiveHour}}% · wk {{weekly}}%",
+    "spend": "API credit {{spent}} of {{ceiling}}",
+    "spendTitle": "This month's spend on the API credit (Opus), against its monthly ceiling",
+    "deepseek": "DeepSeek {{spent}}",
+    "deepseekTitle": "This month's DeepSeek spend (workers and helpers, paid per token on its own account); it does not count against the API credit ceiling",
+    "deepseekUnreadTitle": "DeepSeek's spend this month could not be read just now",
     "alerts_one": "! {{count}} alert",
     "alerts_other": "! {{count}} alerts",
     "pauseAll": "Pause all",
@@ -53,8 +56,8 @@
       "detail": "Routine supervision continues in plain code. Running batches finish to a safe point, no new batches start, and decisions that need Opus queue up."
     },
     "minimax": {
-      "title": "MiniMax unavailable",
-      "detail": "Workers pause at a safe point. Foreman keeps planning and learning."
+      "title": "DeepSeek unavailable",
+      "detail": "Workers pause at a safe point, and work that needs a helper model waits. Foreman keeps planning and learning."
     },
     "cloudcli": {
       "title": "cloudcli unavailable",
@@ -265,7 +268,7 @@
     "events": {
       "blocking-decision": "A decision that blocks the critical path",
       "idle-decision": "A decision that blocks nothing urgent",
-      "pause": "Paused by the budget ceiling or the MiniMax window",
+      "pause": "Paused by the budget ceiling or a plan window",
       "stuck-work": "Work stuck and Foreman can't resolve it",
       "decided-alone": "Something Foreman decided alone (Review)",
       "progress": "New lesson, batch finished, experiment result",
@@ -358,8 +361,8 @@
       "batches_one": "about {{count}} more batch",
       "batches_other": "about {{count}} more batches",
       "credit": "{{usd}} of API credit",
-      "windows_one": "{{count}} MiniMax window",
-      "windows_other": "{{count}} MiniMax windows",
+      "windows_one": "{{count}} plan window",
+      "windows_other": "{{count}} plan windows",
       "doneBy": "done around {{day}} ({{certainty}})"
     },
     "certainty": {
@@ -426,7 +429,6 @@
     "sandboxed": "sandboxed",
     "turn": "turn {{turn}}",
     "elapsed": "{{minutes}}m",
-    "minimaxWindow": "MiniMax {{pct}}% of the 5h window",
     "stages": "Stages",
     "stage": {
       "attach": "Attach",
@@ -577,9 +579,10 @@
     "budget": "Budget",
     "budgetLine": "API {{monthly}} a month (owner only) · pace about {{pace}} a day",
     "share": "goal share: {{goal}} {{usd}}",
-    "minimax": "MiniMax",
-    "minimaxResume": "stop desk workers at {{pct}}% of the 5-hour or weekly window; the rest stays yours; auto-resume",
-    "minimaxStay": "stop desk workers at {{pct}}% of the 5-hour or weekly window; the rest stays yours",
+    "planWindow": "Plan window",
+    "planWindowNone": "none watched: DeepSeek is pay-per-token, so it has no plan window to stop at",
+    "planWindowResume": "stop desk workers at {{pct}}% of a 5-hour or weekly plan window; the rest stays yours; auto-resume",
+    "planWindowStay": "stop desk workers at {{pct}}% of a 5-hour or weekly plan window; the rest stays yours",
     "models": "Models",
     "roles": "Roles",
     "editor": "Editor"

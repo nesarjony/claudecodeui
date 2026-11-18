@@ -30,8 +30,9 @@ export const attentionFixture = (): AttentionPolicy => ({
 /** Used by the mock store as the read-only lines of Settings. */
 export const settingsFixture = (): ForemanSettings => ({
   budget: { monthlyUsd: 200, paceUsdPerDay: 6.5, goalShares: [{ goal: 'Inbox', usd: 40 }] },
-  minimax: { stopAtPct: 80, autoResume: true },
-  models: { foremanRoles: 'Opus (API credit)', workers: 'desk workers MiniMax-M3 only', sideRuns: 'side runs MiniMax' },
+  // No plan is watched (DeepSeek has no plan window), which Foreman writes as a stop at the whole of it.
+  minimax: { stopAtPct: 100, autoResume: true },
+  models: { foremanRoles: 'Opus (API credit)', workers: 'desk workers DeepSeek only', sideRuns: 'side runs DeepSeek' },
   roles: [
     { name: 'Strategist', version: 3 },
     { name: 'Supervisor', version: 3 },
