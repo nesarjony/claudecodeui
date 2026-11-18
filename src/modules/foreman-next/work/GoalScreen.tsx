@@ -6,12 +6,13 @@ import { useForemanResource } from '@/modules/foreman-next/hooks/useForemanResou
 import { foremanPath } from '@/modules/foreman-next/utils/foremanPaths';
 import { BatchList } from '@/modules/foreman-next/work/BatchList';
 import { GoalHeader } from '@/modules/foreman-next/work/GoalHeader';
+import { GoalLimits } from '@/modules/foreman-next/work/GoalLimits';
 import { GoalProgress } from '@/modules/foreman-next/work/GoalProgress';
 import { ReadOnlyPanel } from '@/modules/foreman-next/work/ReadOnlyPanel';
 import { StrategyPanel } from '@/modules/foreman-next/work/StrategyPanel';
 import { StudyPanel } from '@/modules/foreman-next/work/StudyPanel';
 
-/** Used by ForemanNextRoutes for the goal page (wireframes §6b): what Foreman is studying before a strategy exists, then progress and forecast, the strategy and its approval, and the batches. */
+/** Used by ForemanNextRoutes for the goal page (wireframes §6b): what Foreman is studying before a strategy exists, then the limits it was given, progress and forecast, the strategy and its approval, and the batches. */
 export function GoalScreen() {
   const { t } = useTranslation('foremanNext');
   const { goalId = '' } = useParams();
@@ -26,6 +27,7 @@ export function GoalScreen() {
         {(data) => (
           <>
             <GoalHeader goal={data} />
+            <GoalLimits goal={data} />
             {data.study ? <StudyPanel steps={data.study} /> : <GoalProgress goal={data} />}
             {data.readOnly || data.repoProgress.length > 0 ? <ReadOnlyPanel goal={data} /> : null}
             {data.strategy ? <StrategyPanel goalId={data.id} strategy={data.strategy} compareOnOpen={params.get('compare') === 'previous'} /> : null}

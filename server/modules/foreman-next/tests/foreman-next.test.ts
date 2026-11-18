@@ -107,6 +107,34 @@ test('forwards a body and an id with colons, and only the query the route names'
   await foreman.close();
 });
 
+test('forwards a change of a goal\'s limits with its body, relays Foreman\'s refusal, and gives that path no other method', async () => {
+  const foreman = await fakeForeman((request) => (request.body.includes('2020') ? { status: 400, body: { error: { code: 'invalid', message: 'the deadline has already passed' } } } : { status: 200, body: { id: 'goal:1', budget: { limitUsd: 60, deadline: null } } }));
+  const proxy = await proxyOver(foreman.url, TOKEN);
+  try {
+    const headers = { 'content-type': 'application/json' };
+    const changed = await fetch(`${proxy.base}/work/goals/${encodeURIComponent('goal:1')}/limits`, { method: 'POST', headers, body: JSON.stringify({ budgetUsd: 60, deadline: null }) });
+    assert.equal(changed.status, 200);
+    assert.deepEqual(await changed.json(), { success: true, data: { id: 'goal:1', budget: { limitUsd: 60, deadline: null } } });
+    const refused = await fetch(`${proxy.base}/work/goals/g1/limits`, { method: 'POST', headers, body: JSON.stringify({ deadline: '2020-01-01T00:00:00.000Z' }) });
+    assert.equal(refused.status, 400);
+    assert.deepEqual(await refused.json(), { success: false, error: { code: 'invalid', message: 'the deadline has already passed' } });
+    assert.deepEqual(
+      foreman.seen.map((entry) => [entry.method, entry.url, entry.authorization]),
+      [['POST', `/foreman/work/goals/${encodeURIComponent('goal:1')}/limits`, `Bearer ${TOKEN}`], ['POST', '/foreman/work/goals/g1/limits', `Bearer ${TOKEN}`]],
+    );
+    assert.deepEqual(JSON.parse(foreman.seen[0]?.body ?? ''), { budgetUsd: 60, deadline: null });
+    assert.deepEqual(JSON.parse(foreman.seen[1]?.body ?? ''), { deadline: '2020-01-01T00:00:00.000Z' });
+    // Only the POST is the contract's: a read, a replace, a delete and a path below it reach nothing, and an id that is not one is refused.
+    for (const [method, probe, status] of [['GET', '/work/goals/g1/limits', 404], ['PUT', '/work/goals/g1/limits', 404], ['DELETE', '/work/goals/g1/limits', 404], ['POST', '/work/goals/g1/limits/extra', 404], ['POST', '/work/goals/a%20b/limits', 400], ['POST', '/work/goals/%2e%2e/limits', 400]] as const) {
+      assert.equal(await rawStatus(proxy.base, probe, method), status, `${method} ${probe}`);
+    }
+    assert.equal(foreman.seen.length, 2);
+  } finally {
+    await proxy.close();
+    await foreman.close();
+  }
+});
+
 test('keeps Foreman\'s refusal code and message, and says so when Foreman does not answer or has no token', async () => {
   const foreman = await fakeForeman(() => ({ status: 409, body: { error: { code: 'conflict', message: 'the question was already answered' } } }));
   const proxy = await proxyOver(foreman.url, TOKEN);

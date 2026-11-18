@@ -3,7 +3,7 @@ import type { DegradedMode } from '@/modules/foreman-next/api/contract';
 import type { MockStore } from '@/modules/foreman-next/api/mock/mockStore';
 import { ceilingQuestion } from '@/modules/foreman-next/api/mock/decideFixtures';
 import { RUN_FAILURE } from '@/modules/foreman-next/api/mock/workFixtures';
-import { at, HOUR_MS } from '@/modules/foreman-next/api/mock/time';
+import { at, DAY_MS, HOUR_MS } from '@/modules/foreman-next/api/mock/time';
 
 export type MockScenario =
   | 'default'
@@ -13,6 +13,7 @@ export type MockScenario =
   | 'plan-window-paused'
   | 'deepseek-unread'
   | 'degraded'
+  | 'goal-over-budget'
   | 'run-failed'
   | 'taken-over'
   | 'error'
@@ -28,6 +29,7 @@ export const MOCK_SCENARIOS: MockScenario[] = [
   'plan-window-paused',
   'deepseek-unread',
   'degraded',
+  'goal-over-budget',
   'run-failed',
   'taken-over',
   'error',
@@ -85,6 +87,13 @@ export function applyScenario(store: MockStore, scenario: MockScenario, now: num
     };
   } else if (scenario === 'deepseek-unread') {
     store.status = { ...store.status, spend: { ...store.status.spend, deepseekMonthUsd: null } };
+  } else if (scenario === 'goal-over-budget') {
+    // The Inbox goal was given $12 and has cost $12.40: it is held until the owner raises the budget.
+    const inbox = store.goals.find((goal) => goal.id === 'g-inbox');
+    if (inbox) {
+      inbox.state = 'paused';
+      inbox.budget = { limitUsd: 12, deadline: at(now, 7 * DAY_MS), projectedUsd: 23.4, fits: false, onTime: true };
+    }
   } else if (scenario === 'degraded') {
     store.status.degraded = DEGRADED_MODES.map((mode, position) => {
       const reason = DEGRADED_REASONS[mode];

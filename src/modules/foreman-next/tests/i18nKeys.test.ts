@@ -101,6 +101,7 @@ const UI_FAMILIES: string[] = [
   ...family('nav', ['today', 'decide', 'work', 'settings']),
   ...family('decide.tab', ['needs', 'review', 'history']),
   ...family('work.views', ['board', 'list']),
+  ...family('work.limits.error', ['notAmount', 'notDate', 'past']),
   ...family('today.greeting', ['morning', 'afternoon', 'evening']),
 ];
 

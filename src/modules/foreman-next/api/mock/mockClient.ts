@@ -1,5 +1,6 @@
 import { ApiRequestError } from '@/shared/api';
 import type { ChatMessage, ChatSubjectRef, DelegationRule, ForemanApi, GoalDetail, RepoSettings, RunDetail, RunStageId, SessionSupervision } from '@/modules/foreman-next/api/contract';
+import { heldForBudget } from '@/modules/foreman-next/utils/goalLimits';
 import { clone, find, firstStrategy, isLiveHandOver, newGoalDetail, newHandedOverRun, notFound, studySteps, summaryOf } from '@/modules/foreman-next/api/mock/mockHelpers';
 import { createMockStore } from '@/modules/foreman-next/api/mock/mockStore';
 import type { MockStore } from '@/modules/foreman-next/api/mock/mockStore';
@@ -176,10 +177,29 @@ export function createMockApi({ scenario = 'default', latencyMs = 150, studyMs =
           target.strategy = { ...target.strategy, version: target.strategy.version + 1, replannedAt: at(Date.now(), 0), reason: 'because you asked', status: 'in-review' };
         }),
       ),
-    // Limits are the mock's to hold in memory only from the goal page's slice on; until then every goal says it has none to change.
-    setGoalLimits: () =>
+    setGoalLimits: (goalId, change) =>
       respond('setGoalLimits', () => {
-        throw notFound('goal');
+        const target = goal(goalId);
+        // What Foreman refuses: a goal that is over, a budget that is not an amount above zero, a deadline that has passed.
+        if (target.state === 'done') throw new ApiRequestError('this goal is done', { code: 'conflict', status: 409 });
+        if (change.budgetUsd != null && !(Number.isFinite(change.budgetUsd) && change.budgetUsd > 0)) throw new ApiRequestError('the budget must be an amount above zero', { code: 'invalid', status: 400 });
+        if (change.deadline != null && new Date(change.deadline).getTime() <= Date.now()) throw new ApiRequestError('the deadline has already passed', { code: 'invalid', status: 400 });
+        const wasHeld = heldForBudget(target);
+        const limitUsd = change.budgetUsd === undefined ? target.budget.limitUsd : change.budgetUsd;
+        const deadline = change.deadline === undefined ? target.budget.deadline : change.deadline;
+        const projectedUsd = limitUsd === null || target.forecast === null ? null : target.spentUsd + target.forecast.usdToGo;
+        target.budget = {
+          limitUsd,
+          deadline,
+          projectedUsd,
+          fits: projectedUsd === null || limitUsd === null ? null : projectedUsd <= limitUsd,
+          onTime: deadline === null || !target.forecast?.doneBy ? null : new Date(target.forecast.doneBy).getTime() <= new Date(deadline).getTime(),
+        };
+        // A goal is held while it has used up its budget: raising or removing the budget lets it go on, and lowering it to what it has cost holds it.
+        const isHeld = heldForBudget(target);
+        if (wasHeld && !isHeld && target.state === 'paused') target.state = 'active';
+        if (!wasHeld && isHeld && target.state === 'active') target.state = 'paused';
+        return target;
       }),
     run: (id) => respond('run', () => run(id)),
     pauseRun: (id) => respond('pauseRun', () => setRun(id, (target) => void (target.state = 'paused'))),

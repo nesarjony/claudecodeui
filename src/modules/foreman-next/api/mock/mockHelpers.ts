@@ -1,5 +1,5 @@
 import { ApiRequestError } from '@/shared/api';
-import type { ForecastTrend, GoalBudget, GoalDetail, RunDetail, RunSummary, StrategyStudy, StudyStep } from '@/modules/foreman-next/api/contract';
+import type { ForecastTrend, GoalBudget, GoalDetail, NewGoalRequest, RunDetail, RunSummary, StrategyStudy, StudyStep } from '@/modules/foreman-next/api/contract';
 import { STUDY_STEP_IDS } from '@/modules/foreman-next/api/contract';
 import { at } from '@/modules/foreman-next/api/mock/time';
 
@@ -41,15 +41,15 @@ export function studySteps(progress: number): StudyStep[] {
   return STUDY_STEP_IDS.map((id, position) => ({ id, state: position < reached ? 'done' : position === reached ? 'running' : 'pending' }));
 }
 
-export function newGoalDetail(request: { repo: string; goal: string }, id: string): GoalDetail {
+export function newGoalDetail(request: NewGoalRequest, id: string): GoalDetail {
   const name = request.goal.trim();
   return {
     id,
     repo: request.repo,
     name,
     title: `${request.repo} · ${name}`,
-    doneWhen: 'every checklist row is DONE and verified by the judge',
-    budget: NO_BUDGET,
+    doneWhen: request.successMeasure?.trim() || 'every checklist row is DONE and verified by the judge',
+    budget: { ...NO_BUDGET, limitUsd: request.budgetUsd ?? null, deadline: request.deadline ?? null },
     forecastTrend: NO_FORECAST_TREND,
     state: 'studying',
     done: 0,
