@@ -9,6 +9,17 @@ import { formatClock } from '@/modules/foreman-next/utils/foremanFormat';
 import { entityPath } from '@/modules/foreman-next/utils/foremanPaths';
 import { Button } from '@/shared/ui';
 
+// The contract types a proposal as open or confirmed, but Foreman also sends 'expired' (confirming it returns a 409) and may add states later.
+// So only a proposal known to be open gets the Confirm button; every other state is shown as text and never actionable.
+const isOpenProposal = (state: unknown): boolean => state === 'open';
+
+function ProposalState({ state }: { state: unknown }) {
+  const { t } = useTranslation('foremanNext');
+  if (state === 'confirmed') return <span className="text-muted-foreground">{t('chat.confirmed')}</span>;
+  if (state === 'expired') return <span className="text-muted-foreground">{t('chat.expired')}</span>;
+  return <span className="text-muted-foreground">{typeof state === 'string' ? state : ''}</span>;
+}
+
 /** Used by the chat drawer for one message: who said it, when, the evidence it links to, the actions Foreman took (with Undo), what it proposes and cannot do itself (with Confirm, the owner's own press), and Remember to keep an answer as knowledge (BR-5.1). */
 export function ChatMessageItem({ message }: { message: ChatMessage }) {
   const { t } = useTranslation('foremanNext');
@@ -44,12 +55,12 @@ export function ChatMessageItem({ message }: { message: ChatMessage }) {
       {proposals.map((proposal) => (
         <div key={proposal.id} className="flex items-center justify-between gap-2 rounded-md border border-border p-2 text-xs">
           <span>{proposal.summary}</span>
-          {proposal.state === 'confirmed' ? (
-            <span className="text-muted-foreground">{t('chat.confirmed')}</span>
-          ) : (
+          {isOpenProposal(proposal.state) ? (
             <Button variant="default" size="sm" className="h-7 px-2 text-xs" disabled={busy} onClick={() => void run(() => api.confirmChatProposal(proposal.id))}>
               {t('chat.confirm')}
             </Button>
+          ) : (
+            <ProposalState state={proposal.state} />
           )}
         </div>
       ))}

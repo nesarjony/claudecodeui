@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 
 import { ResourceView } from '@/modules/foreman-next/components/ResourceView';
 import { NothingNeedsYou } from '@/modules/foreman-next/decide/NothingNeedsYou';
+import { QuestionBoundary } from '@/modules/foreman-next/decide/QuestionBoundary';
 import { QuestionCard } from '@/modules/foreman-next/decide/QuestionCard';
 import { useForemanResource } from '@/modules/foreman-next/hooks/useForemanResource';
 import { foremanPath } from '@/modules/foreman-next/utils/foremanPaths';
@@ -18,7 +19,7 @@ export function NeedsYouTab() {
   return (
     <ResourceView resource={questions} isEmpty={(items) => items.length === 0} empty={<NothingNeedsYou batch={batch} />}>
       {(items) => {
-        const shown = questionId ? items.filter((question) => question.id === questionId) : items;
+        const shown = questionId ? items.filter((question) => question?.id === questionId) : items;
         return (
           <div className="space-y-4">
             {questionId && shown.length > 0 ? (
@@ -26,7 +27,16 @@ export function NeedsYouTab() {
                 ◂ {t('decide.allQuestions')}
               </Link>
             ) : null}
-            {shown.length === 0 ? <NothingNeedsYou batch={batch} /> : shown.map((question) => <QuestionCard key={question.id} question={question} />)}
+            {shown.length === 0 ? (
+              <NothingNeedsYou batch={batch} />
+            ) : (
+              // A malformed question is caught at its own item, so it cannot blank the rest of the list.
+              shown.map((question, index) => (
+                <QuestionBoundary key={question?.id ?? `malformed-${index}`} question={question}>
+                  <QuestionCard question={question} />
+                </QuestionBoundary>
+              ))
+            )}
           </div>
         );
       }}
