@@ -84,6 +84,32 @@ export const ceilingQuestion = (now: number): OwnerQuestion => ({
   ifUnanswered: 'Everything stays paused until the 1st.',
 });
 
+/**
+ * Used by the worker-stalled scenario: the question Foreman asks when it stopped a worker for making no progress. Its options are named by words (go, pause, close) with labels Foreman writes,
+ * and the worker's last words come last in the context, marked as the worker's and clipped, as Foreman writes them.
+ */
+export const workerStalledQuestion = (now: number): OwnerQuestion => ({
+  id: 'worker-stalled:run-t2',
+  title: 'The worker on batch t2-layout of "desk · Inbox" was stopped. Try the batch again?',
+  repo: 'desk',
+  goalId: 'g-inbox',
+  goal: 'g-inbox',
+  delegationKind: null,
+  delegationLevel: 'ask',
+  delegable: false,
+  holdsRows: 6,
+  askedAt: at(now, -9 * MINUTE_MS),
+  context:
+    "It went 10 turns without a commit after it was told what to do. Its worker slot is free for the other goals, and what it committed is kept. Trying again starts a fresh worker on the same batch.\n\nThe worker's last message, in its own words (quoted, not Foreman's): \"I will wait for the migration to finish before I touch InboxLayout.\nThen I will carry on with the header rows.\"",
+  options: [
+    { id: 'go', label: 'Try the batch again', rowsDelta: 0, cost: 'a fresh worker takes the batch', risk: '' },
+    { id: 'pause', label: 'Pause the goal', rowsDelta: 0, cost: 'nothing runs until you hand it back', risk: '' },
+    { id: 'close', label: 'Close the goal', rowsDelta: 0, cost: 'the goal ends as it is, with its unfinished work listed', risk: '' },
+  ],
+  recommendation: { optionId: 'go', confidence: null, reason: '', similar: [] },
+  ifUnanswered: 't2-layout stays held. Nothing else waits on this.',
+});
+
 /** Used by the mock store as the items Foreman decided alone, each with its veto window (Decide > Review). */
 export const reviewFixture = (now: number): ReviewItem[] => [
   {

@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import type { FormEvent, KeyboardEvent } from 'react';
 
 import { REMEMBER_SCOPES } from '@/modules/foreman-next/api/contract';
-import type { OwnerQuestion, RememberScope } from '@/modules/foreman-next/api/contract';
+import type { OwnerQuestion, QuestionOption, RememberScope } from '@/modules/foreman-next/api/contract';
 import { InlineError } from '@/modules/foreman-next/components/InlineError';
 import { useAction } from '@/modules/foreman-next/hooks/useAction';
 import { useForemanApi } from '@/modules/foreman-next/hooks/useForemanApi';
@@ -21,6 +21,9 @@ function moveFocus(event: KeyboardEvent<HTMLDivElement>) {
 }
 
 type QuestionAnswerFormProps = { question: OwnerQuestion; asks: string | null };
+
+/** What an answer button says: a letter (A, B, C) on its own, since the options table beside it says what each does; an option named by a word (go, pause) says its label, which Foreman writes. */
+const optionText = (option: QuestionOption): string => (option.id.length <= 1 ? option.id : option.label || option.id);
 
 /** Used by the question card for the one-tap answer buttons, a free-text reply, and the two things an answer can teach Foreman: a rule, and a step up the trust ladder. */
 export function QuestionAnswerForm({ question, asks }: QuestionAnswerFormProps) {
@@ -57,7 +60,7 @@ export function QuestionAnswerForm({ question, asks }: QuestionAnswerFormProps) 
               aria-label={`${option.id}: ${option.label}`}
               onClick={() => void answer(option.id, null)}
             >
-              {option.id}
+              {optionText(option)}
             </Button>
           ))}
         </div>

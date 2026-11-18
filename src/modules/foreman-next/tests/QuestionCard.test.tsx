@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { questionsFixture } from '@/modules/foreman-next/api/mock/decideFixtures';
 import { QuestionCard } from '@/modules/foreman-next/decide/QuestionCard';
-import { quickApi, renderWithForeman } from '@/modules/foreman-next/tests/testHelpers';
+import { quickApi, renderForemanApp, renderWithForeman } from '@/modules/foreman-next/tests/testHelpers';
 
 const question = () => {
   const [first] = questionsFixture(Date.now());
@@ -91,5 +91,81 @@ describe('the decision card (Needs you)', () => {
     renderWithForeman(<QuestionCard question={question()} />);
     fireEvent.click(screen.getByText(/similar decisions \(3\)/));
     expect(screen.getByText(/Parity first: defer nothing visible · Full option/)).toBeTruthy();
+  });
+});
+
+describe('the worker-stalled question (Needs you)', () => {
+  const stalled = () => {
+    const found = quickApi('worker-stalled');
+    return found.questions().then((questions) => {
+      const [first] = questions.filter((candidate) => candidate.id === 'worker-stalled:run-t2');
+      if (!first) throw new Error('the scenario has the question');
+      return first;
+    });
+  };
+
+  it('shows what the worker said, marked as the worker\'s and apart from what Foreman says, with its line breaks', async () => {
+    renderWithForeman(<QuestionCard question={await stalled()} />);
+    const card = screen.getByRole('article', { name: /The worker on batch t2-layout .* was stopped\. Try the batch again\?/ });
+    expect(within(card).getByText(/It went 10 turns without a commit after it was told what to do/)).toBeTruthy();
+    expect(within(card).getByText('Worker said')).toBeTruthy();
+    expect(within(card).getByText("in its own words, not Foreman's")).toBeTruthy();
+    const quote = card.querySelector('blockquote');
+    expect(quote?.textContent).toBe('I will wait for the migration to finish before I touch InboxLayout.\nThen I will carry on with the header rows.');
+    expect(card.textContent).not.toMatch(/The worker's last message/);
+  });
+
+  it('shows the worker\'s words as plain text, whatever they hold', async () => {
+    const question = await stalled();
+    renderWithForeman(<QuestionCard question={{ ...question, context: `It stopped.\n\nThe worker's last message, in its own words (quoted, not Foreman's): "<img src=x onerror=alert(1)> **bold** & \\"quoted\\"…"` }} />);
+    const quote = document.querySelector('blockquote');
+    expect(quote?.textContent).toBe('<img src=x onerror=alert(1)> **bold** & \\"quoted\\"…');
+    expect(quote?.querySelector('img')).toBeNull();
+  });
+
+  it('renders every option Foreman sends, with its label in the table and on its button, whatever ids it names them by', async () => {
+    renderWithForeman(<QuestionCard question={await stalled()} />);
+    const table = screen.getByRole('table');
+    for (const label of ['Try the batch again', 'Pause the goal', 'Close the goal']) expect(within(table).getByText(label)).toBeTruthy();
+    expect(within(table).getAllByRole('row')).toHaveLength(4);
+    const answers = screen.getByRole('toolbar', { name: 'Answer' });
+    expect(within(answers).getAllByRole('button').map((button) => button.textContent)).toEqual(['Try the batch again', 'Pause the goal', 'Close the goal']);
+    expect(within(answers).getByRole('button', { name: 'go: Try the batch again' })).toBeTruthy();
+    expect(within(table).getByText('recommended')).toBeTruthy();
+  });
+
+  it('answers with the option\'s id, which is what Foreman reads, not its label', async () => {
+    const api = quickApi('worker-stalled');
+    const answer = vi.spyOn(api, 'answerQuestion');
+    const question = await stalled();
+    renderWithForeman(<QuestionCard question={question} />, { api });
+    fireEvent.click(screen.getByRole('button', { name: 'pause: Pause the goal' }));
+    await waitFor(() => expect(answer).toHaveBeenCalledOnce());
+    expect(answer).toHaveBeenCalledWith('worker-stalled:run-t2', { optionId: 'pause', reply: null, remember: 'repo', delegate: false });
+  });
+
+  it('keeps a letter on the button for options named by letters, as before', () => {
+    renderWithForeman(<QuestionCard question={question()} />);
+    expect(within(screen.getByRole('toolbar', { name: 'Answer' })).getAllByRole('button').map((button) => button.textContent)).toEqual(['A', 'B', 'C']);
+  });
+
+  it('copes with a context that says nothing of a worker, with no options, and with a recommendation that is empty', async () => {
+    const base = await stalled();
+    renderWithForeman(<QuestionCard question={{ ...base, context: 'Foreman cannot read the repo.', options: [], recommendation: { optionId: 'go', confidence: null, reason: '', similar: [] } }} />);
+    expect(screen.getByText('Foreman cannot read the repo.')).toBeTruthy();
+    expect(screen.queryByText('Worker said')).toBeNull();
+    expect(screen.getByRole('textbox')).toBeTruthy();
+  });
+});
+
+describe('the Needs you list with a worker-stalled question', () => {
+  it('lists it with the others, the one that holds the most rows first, and shows what the worker said', async () => {
+    renderForemanApp('/foreman/decide/needs', quickApi('worker-stalled'));
+    const cards = await screen.findAllByRole('article');
+    expect(cards).toHaveLength(3);
+    const stalledCard = cards.find((card) => card.textContent?.includes('Worker said'));
+    expect(stalledCard).toBeTruthy();
+    expect(within(stalledCard as HTMLElement).getByText(/I will wait for the migration/)).toBeTruthy();
+    expect(within(stalledCard as HTMLElement).getByRole('button', { name: 'close: Close the goal' })).toBeTruthy();
   });
 });

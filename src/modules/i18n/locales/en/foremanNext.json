@@ -165,6 +165,8 @@
     "whyYours": "Why it's yours: {{asks}} are set to \"{{level}}\"",
     "changeRule": "Settings › Delegation",
     "context": "What's going on",
+    "workerSaid": "Worker said",
+    "workerSaidNote": "in its own words, not Foreman's",
     "options": "Options",
     "rowsNow": "Rows now",
     "cost": "Cost",

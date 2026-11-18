@@ -1,7 +1,7 @@
 import { DEGRADED_MODES } from '@/modules/foreman-next/api/contract';
 import type { DegradedMode } from '@/modules/foreman-next/api/contract';
 import type { MockStore } from '@/modules/foreman-next/api/mock/mockStore';
-import { ceilingQuestion } from '@/modules/foreman-next/api/mock/decideFixtures';
+import { ceilingQuestion, workerStalledQuestion } from '@/modules/foreman-next/api/mock/decideFixtures';
 import { RUN_FAILURE } from '@/modules/foreman-next/api/mock/workFixtures';
 import { at, DAY_MS, HOUR_MS } from '@/modules/foreman-next/api/mock/time';
 
@@ -14,6 +14,7 @@ export type MockScenario =
   | 'deepseek-unread'
   | 'degraded'
   | 'goal-over-budget'
+  | 'worker-stalled'
   | 'run-failed'
   | 'taken-over'
   | 'error'
@@ -30,6 +31,7 @@ export const MOCK_SCENARIOS: MockScenario[] = [
   'deepseek-unread',
   'degraded',
   'goal-over-budget',
+  'worker-stalled',
   'run-failed',
   'taken-over',
   'error',
@@ -87,6 +89,8 @@ export function applyScenario(store: MockStore, scenario: MockScenario, now: num
     };
   } else if (scenario === 'deepseek-unread') {
     store.status = { ...store.status, spend: { ...store.status.spend, deepseekMonthUsd: null } };
+  } else if (scenario === 'worker-stalled') {
+    store.questions = [workerStalledQuestion(now), ...store.questions];
   } else if (scenario === 'goal-over-budget') {
     // The Inbox goal was given $12 and has cost $12.40: it is held until the owner raises the budget.
     const inbox = store.goals.find((goal) => goal.id === 'g-inbox');
