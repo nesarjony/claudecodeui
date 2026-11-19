@@ -132,8 +132,13 @@ export type RunDecision = {
   cardId: string | null;
 };
 export type WorkerSnapshot = { now: string; changed: { files: number; added: number; removed: number }; tools: string[]; says: string };
+/** A deterministic gate of the quality bar that was run on the run's last commit, and what it found: the tests were not weakened, the licence rules held, no row accepted before was broken. Said in the owner's words, each finding with what to do about it. */
+export type RunGate = { gate: 'tests' | 'licence' | 'regression'; passed: boolean; findings: string[] };
 export type RunVerdict = {
-  check: { command: string; exitCode: number; cleanCopy: boolean; outputUrl: string | null };
+  /** `output` is what the check printed, secrets scrubbed and the end of it when it was long: what the rows were accepted on. Null when the check was not run. `outputUrl` is not used. */
+  check: { command: string; exitCode: number; cleanCopy: boolean; outputUrl: string | null; output: string | null };
+  /** The gates run on the last commit, in the order tests, licence, regression; one that was not run for the repo is not listed. */
+  gates: RunGate[];
   rows: { row: number; passed: boolean; note: string | null }[];
   verdictUrl: string | null;
   next: string | null;

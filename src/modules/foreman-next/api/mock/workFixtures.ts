@@ -234,7 +234,8 @@ const runsBase = (): RunDetail[] => [
     decisions: [{ id: 'run-t1-d22', turn: 22, choice: 'pass', maker: { type: 'role', role: 'judge', version: 4 }, model: 'Opus', costUsd: 0.12, quote: null, cardId: null }],
     worker: null,
     verdict: {
-      check: { command: 'pnpm verify', exitCode: 0, cleanCopy: true, outputUrl: 'http://127.0.0.1:4111/artifacts/t1-verify' },
+      check: { command: 'pnpm verify', exitCode: 0, cleanCopy: true, outputUrl: 'http://127.0.0.1:4111/artifacts/t1-verify', output: null },
+      gates: [],
       rows: [
         { row: 4, passed: true, note: null },
         { row: 7, passed: true, note: null },
