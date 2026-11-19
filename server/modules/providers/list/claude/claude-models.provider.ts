@@ -71,6 +71,22 @@ export const CLAUDE_PREDEFINED_MODELS: ProviderModelsDefinition = {
       },
     },
     {
+      value: 'claude-fable-5-2',
+      label: 'Fable 5.2',
+      description: 'Fable 5.2 · Most capable Claude model for the hardest, longest-running tasks.',
+      effort: {
+        default: 'high',
+        values: [
+          { value: 'low' },
+          { value: 'medium' },
+          { value: 'high' },
+          { value: 'xhigh' },
+          { value: 'max' },
+          ULTRACODE_EFFORT_OPTION,
+        ],
+      },
+    },
+    {
       value: 'sonnet',
       label: 'Sonnet',
       description: 'Latest Sonnet model for everyday coding tasks.',

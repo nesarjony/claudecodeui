@@ -55,6 +55,8 @@ type Price = { input: number; output: number; cacheRead: number };
 // $ per million tokens (Anthropic first-party API rates). Cache writes are
 // priced from input: 1.25x for the 5-minute cache, 2x for the 1-hour cache.
 const PRICES: Array<[string, Price]> = [
+  ['fable-5-2', { input: 8, output: 40, cacheRead: 0.2 }],
+  ['mythos-5-2', { input: 8, output: 40, cacheRead: 0.2 }],
   ['fable-5-1', { input: 10, output: 50, cacheRead: 0.25 }],
   ['mythos-5-1', { input: 10, output: 50, cacheRead: 0.25 }],
   ['fable-5', { input: 10, output: 50, cacheRead: 1 }],
@@ -78,7 +80,8 @@ const STRETCH_GAP_MS = 2 * 60 * 60 * 1000;
 // this much transcript simply starts at the oldest entry read.
 const STRETCH_SCAN_BYTES = 8 * 1024 * 1024;
 
-function priceFor(model: string | null): Price | null {
+/** First entry of PRICES whose key the model id contains, so more specific keys must come first. Exported for tests. */
+export function priceFor(model: string | null): Price | null {
   if (!model) return null;
   const normalized = model.toLowerCase();
   return PRICES.find(([key]) => normalized.includes(key))?.[1] ?? null;

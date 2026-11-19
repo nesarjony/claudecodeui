@@ -108,3 +108,24 @@ test('the catalog lists a cap variant of every model that has an API-key variant
   assert.equal([...values].some((value) => /@(api|cap).*@(api|cap)/.test(value)), false);
   assert.match(findClaudeModelOption('claude-sonnet-5-5@cap')?.label ?? '', /claude-cap profile/);
 });
+
+test('Fable 5.2 is listed by its explicit id with ultracode, has no 1M variant, and its marked variants read cleanly', () => {
+  const fable52 = findClaudeModelOption('claude-fable-5-2');
+  assert.equal(fable52?.label, 'Fable 5.2');
+  assert.equal(fable52?.effort?.default, 'high');
+  assert.deepEqual(
+    fable52?.effort?.values.map((entry) => entry.value),
+    ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'],
+  );
+  assert.deepEqual(fable52?.effort, findClaudeModelOption('fable')?.effort);
+  // The alias keeps its own label; Fable has the 1M window natively, so there is no [1m] entry.
+  assert.equal(findClaudeModelOption('fable')?.label, 'Fable 5');
+  assert.equal(findClaudeModelOption('claude-fable-5-2[1m]'), null);
+
+  // The marked variants are generated from the base entry, whose description ends in a full stop so the suffix sentence reads on.
+  assert.ok(fable52?.description?.endsWith('.'));
+  const apiVariant = findClaudeModelOption(`claude-fable-5-2${CLAUDE_API_KEY_MODEL_SUFFIX}`);
+  assert.equal(apiVariant?.label, 'Fable 5.2 · API key');
+  assert.match(apiVariant?.description ?? '', /tasks\. Billed to the Anthropic API key\.$/);
+  assert.equal(findClaudeModelOption(`claude-fable-5-2${CLAUDE_CAP_MODEL_SUFFIX}`)?.label, 'Fable 5.2 · claude-cap profile');
+});
