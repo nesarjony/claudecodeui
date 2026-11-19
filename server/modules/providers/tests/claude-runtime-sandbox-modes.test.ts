@@ -6,6 +6,7 @@ import type { ClaudeRuntimeEvent } from '@/shared/types.js';
 
 import {
   argValue,
+  hasFlag,
   kinds,
   lastSpawn,
   permissionAnswers,
@@ -48,7 +49,7 @@ test('run_started reports the mode the CLI really starts in: none sent is defaul
     const outcome = sandboxed ? await withSandboxProvider(() => sandboxAdditions(), run) : await run();
     assert.equal((outcome.events.find((event) => event.kind === 'run_started') as RunStarted).permissionMode, expected, label);
     const { argv } = await lastSpawn();
-    assert.equal(argv.includes('--permission-mode') ? argValue(argv, '--permission-mode') : 'default', expected, `${label}: the mode the CLI was given`);
+    assert.equal(hasFlag(argv, '--permission-mode') ? argValue(argv, '--permission-mode') : 'default', expected, `${label}: the mode the CLI was given`);
   }
 });
 
@@ -76,7 +77,7 @@ test('a sandboxed run asked for bypassPermissions, auto or the UI\'s skipPermiss
       const request = await waitForPermissionRequest(sessionId);
       assert.equal(request.sandboxed, true, label);
       const { argv } = await lastSpawn();
-      assert.equal(argv.includes('--permission-mode'), false, `${label}: the CLI runs in the default mode`);
+      assert.equal(hasFlag(argv, '--permission-mode'), false, `${label}: the CLI runs in the default mode`);
       assert.equal(argv.includes('--allow-dangerously-skip-permissions'), false, label);
 
       runtime.resolveToolApproval(request.requestId, { allow: false, message: 'Not part of the task.' });
@@ -96,7 +97,7 @@ test('a sandboxed run keeps acceptEdits and plan, and neither plan mode nor the 
     }, `app-session-mode-${permissionMode}`));
     const { argv } = await lastSpawn();
     assert.equal(argValue(argv, '--permission-mode'), permissionMode);
-    assert.equal(argv.includes('--allowedTools'), false, permissionMode);
+    assert.equal(hasFlag(argv, '--allowedTools'), false, permissionMode);
   }
 });
 
@@ -111,7 +112,7 @@ test('a person typing into a worker\'s session runs sandboxed: the UI\'s allowed
       const request = await waitForPermissionRequest(sessionId);
       assert.deepEqual([request.toolName, request.sandboxed], [tool, true], `${tool} waits for an answer instead of being allowed`);
       const { argv } = await lastSpawn();
-      assert.equal(argv.includes('--allowedTools'), false, 'the CLI is not told to allow it either');
+      assert.equal(hasFlag(argv, '--allowedTools'), false, 'the CLI is not told to allow it either');
       assert.ok(argValue(argv, '--disallowedTools').split(/[ ,]+/).includes('NotebookEdit'));
       runtime.resolveToolApproval(request.requestId, { allow: false, message: 'Not now.' });
       await pending;

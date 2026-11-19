@@ -238,7 +238,19 @@ export async function lastSpawn(): Promise<{ argv: string[]; catchAll: string | 
   return (await readLog()).filter((entry) => entry.spawn).at(-1)?.spawn;
 }
 
-export const argValue = (argv: string[], flag: string) => argv[argv.indexOf(flag) + 1];
+/**
+ * The value the CLI got for `flag`. The SDK spells some flags `--flag value` and others `--flag=value` (0.3.328 moved most of them to the
+ * second form), so both are read; '' when the flag is absent.
+ */
+export const argValue = (argv: string[], flag: string): string => {
+  const joined = argv.find((arg) => arg.startsWith(`${flag}=`));
+  if (joined !== undefined) return joined.slice(flag.length + 1);
+  const index = argv.indexOf(flag);
+  return index === -1 ? '' : argv[index + 1];
+};
+
+/** Whether the CLI got `flag`, in either spelling (see argValue). */
+export const hasFlag = (argv: string[], flag: string): boolean => argv.includes(flag) || argv.some((arg) => arg.startsWith(`${flag}=`));
 
 /** The settings object of a run's tool settings (what the UI stores): no allow rules, no denials, no bypass unless overridden. */
 export const settingsWith = (overrides: Record<string, unknown>) => ({ allowedTools: [], disallowedTools: [], skipPermissions: false, ...overrides });

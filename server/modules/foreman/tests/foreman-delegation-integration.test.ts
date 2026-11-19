@@ -290,6 +290,12 @@ const outputOf = (call: { outputs: Array<{ matcher: string; output: any }> }, ma
   call.outputs.find((entry) => entry.matcher === matcher)?.output;
 const spawnOf = async (mark: number) => (await until('the CLI to start', async () => (await fakeLog()).slice(mark).find((entry) => entry.spawn))).spawn as { argv: string[]; tmpdir: string | null; claudeTmpdir: string | null };
 const settingsOf = (argv: string[]) => JSON.parse(argv[argv.indexOf('--settings') + 1]) as Record<string, any>;
+// The SDK spells some flags `--flag value` and others `--flag=value` (0.3.328 moved most of them to the second form).
+const flagValue = (argv: string[], flag: string): string => {
+  const joined = argv.find((arg) => arg.startsWith(`${flag}=`));
+  return joined !== undefined ? joined.slice(flag.length + 1) : argv[argv.indexOf(flag) + 1];
+};
+const hasFlag = (argv: string[], flag: string): boolean => argv.includes(flag) || argv.some((arg) => arg.startsWith(`${flag}=`));
 const eventsOf = (sessionId: string, kind?: string) => pushed.filter((event) => event.sessionId === sessionId && (!kind || event.kind === kind));
 
 test('a bridge-started run hands the CLI Foreman\'s subagents (bashAllow stays behind) and the Bash rule, and there is no guard hook next to it', async () => {
@@ -333,7 +339,7 @@ test('the sandbox sent with the start reaches the CLI: the SDK sandbox option, t
   });
   assert.deepEqual(settings.permissions.allow, policy.permissions.allow);
   assert.deepEqual(settings.permissions.deny, [...policy.permissions.deny, ...forced.flatMap((file) => ['Edit', 'Write', 'NotebookEdit'].map((tool) => `${tool}(/${file})`))]);
-  assert.deepEqual(spawn.argv[spawn.argv.indexOf('--disallowedTools') + 1].split(/[ ,]+/).sort(), ['AskUserQuestion', 'ExitPlanMode', 'WebFetch']);
+  assert.deepEqual(flagValue(spawn.argv, '--disallowedTools').split(/[ ,]+/).sort(), ['AskUserQuestion', 'ExitPlanMode', 'WebFetch']);
   assert.equal(spawn.tmpdir, `${scratchDir}/tmp`);
   assert.equal(spawn.claudeTmpdir, `${scratchDir}/cc`);
   // The CLI makes <TMPDIR>/claude-<uid> itself but not its parents: the bridge made them before the run.
@@ -465,9 +471,9 @@ test('an adopted session runs as its owner set it up: their mode, no sandbox, no
   const call = await settledCall(mark);
   const entries = (await fakeLog()).slice(mark);
   const spawn = entries.find((entry) => entry.spawn).spawn as { argv: string[]; tmpdir: string | null };
-  assert.equal(spawn.argv[spawn.argv.indexOf('--permission-mode') + 1], 'acceptEdits', 'Foreman\'s turn runs in the owner\'s mode');
+  assert.equal(flagValue(spawn.argv, '--permission-mode'), 'acceptEdits', 'Foreman\'s turn runs in the owner\'s mode');
   assert.equal(spawn.argv.includes('--settings') && 'sandbox' in settingsOf(spawn.argv), false, 'no sandbox was added');
-  assert.equal(spawn.argv.includes('--disallowedTools'), false);
+  assert.equal(hasFlag(spawn.argv, '--disallowedTools'), false);
   assert.equal(entries.find((entry) => entry.initialized).agents, null, 'the worker\'s subagents are not handed to the owner\'s session');
   assert.deepEqual(entries.find((entry) => entry.initialized).initialized, ['Notification'], 'and neither is the Bash rule');
   assert.deepEqual(call.settled, { behavior: 'allow', by: 'cli' });

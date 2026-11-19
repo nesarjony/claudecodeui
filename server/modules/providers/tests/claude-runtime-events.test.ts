@@ -6,6 +6,7 @@ import type { ClaudeRuntimeEvent } from '@/shared/types.js';
 import {
   argValue,
   directory,
+  hasFlag,
   initializeHooks,
   kinds,
   lastSpawn,
@@ -263,7 +264,7 @@ test('a fallback model and denied tools from the additions reach the CLI, next t
 test('without additions the CLI gets no fallback model, and a run without the provider is unchanged', async () => {
   await runPrompt('hello', { toolsSettings: settingsWith({ disallowedTools: ['WebFetch'] }) }, 'app-session-no-fallback');
   const { argv, catchAll } = await lastSpawn();
-  assert.equal(argv.includes('--fallback-model'), false);
+  assert.equal(hasFlag(argv, '--fallback-model'), false);
   assert.equal(argValue(argv, '--disallowedTools'), 'WebFetch');
   assert.equal(catchAll, null);
 });
