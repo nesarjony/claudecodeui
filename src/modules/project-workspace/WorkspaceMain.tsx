@@ -4,8 +4,6 @@ import { ChatInterface } from '@/modules/chat';
 import { FileTree } from '@/modules/file-tree';
 import { StandaloneShell } from '@/modules/standalone-shell';
 import { GitPanel } from '@/modules/git-panel';
-import { areForemanSuggestionsAvailable, ForemanPanel, isForemanTabAvailable } from '@/modules/foreman';
-import { ForemanSessionBar } from '@/modules/foreman-next';
 import { PluginTabContent } from '@/modules/plugins';
 import { BrowserUsePanel, useBrowserUseEnabled } from '@/modules/browser-use';
 import { usePaletteOpsRegister } from '@/modules/command-palette';
@@ -65,7 +63,7 @@ function WorkspaceMain({
   isActivePane = true,
 }: WorkspaceMainProps) {
   const preferences = useUiPreferences();
-  const { showRawParameters, showThinking, sendByCtrlEnter, showForemanSuggestions } = preferences;
+  const { showRawParameters, showThinking, sendByCtrlEnter } = preferences;
 
   const { tasksEnabled, isTaskMasterInstalled } = useTasksSettings();
   const browserUseEnabled = useBrowserUseEnabled();
@@ -118,12 +116,6 @@ function WorkspaceMain({
     handleFileOpen(filePath);
   }, [handleFileOpen, setActiveTab]);
 
-  // The Foreman tab's session links open that session's chat.
-  const openForemanSession = useCallback((sessionId: string) => {
-    onNavigateToSession(sessionId);
-    setActiveTab('chat');
-  }, [onNavigateToSession, setActiveTab]);
-
   // Opens the editor side panel in place, keeping the current tab (e.g. chat).
   const openFileInEditor = useCallback((filePath: string) => {
     resolvedFileOpen(filePath);
@@ -156,7 +148,6 @@ function WorkspaceMain({
         />
       )}
 
-      {selectedSession && <ForemanSessionBar sessionId={selectedSession.id} />}
 
       <div className="flex min-h-0 flex-1 overflow-hidden">
         <div className={`flex min-h-0 min-w-[200px] flex-col overflow-hidden ${editorExpanded ? 'hidden' : ''} flex-1`}>
@@ -175,7 +166,6 @@ function WorkspaceMain({
                 showRawParameters={showRawParameters}
                 showThinking={showThinking}
                 sendByCtrlEnter={sendByCtrlEnter}
-                showForemanSuggestions={showForemanSuggestions && areForemanSuggestionsAvailable()}
                 externalMessageUpdate={externalMessageUpdate}
                 newSessionTrigger={newSessionTrigger}
                 onShowAllTasks={tasksEnabled ? showAllTasks : null}
@@ -217,12 +207,6 @@ function WorkspaceMain({
           {shouldShowBrowserTab && activeTab === 'browser' && (
             <div className="h-full overflow-hidden">
               <BrowserUsePanel isVisible={activeTab === 'browser'} onShowSettings={onShowSettings} />
-            </div>
-          )}
-
-          {activeTab === 'foreman' && isForemanTabAvailable() && (
-            <div className="h-full overflow-hidden">
-              <ForemanPanel isVisible={activeTab === 'foreman'} onOpenSession={openForemanSession} />
             </div>
           )}
 

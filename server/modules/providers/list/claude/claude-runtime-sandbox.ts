@@ -1,12 +1,12 @@
 /**
  * The sandbox half of the Claude runtime.
  *
- * A session that must run isolated (the Foreman bridge's workers) has a sandbox policy that the runtime folds into the SDK options of every
+ * A session that must run isolated has a sandbox policy that the runtime folds into the SDK options of every
  * run. That logic lives here, apart from the 1800-line runtime provider, because it is the part that has to be right for a session to be
  * isolated at all: it is small, typed and tested on its own, and a later change to it cannot be lost in the provider's streaming code.
  *
  * Nothing in this file reads the provider's environment-time constants (the tool approval window is read when the provider loads, and the
- * tests set it before importing the provider), so the helpers here are either module state set by the Foreman bridge or pure functions.
+ * tests set it before importing the provider), so the helpers here are either module state set by its registrar or pure functions.
  */
 
 import { isSandboxedPermissionMode } from '@/shared/utils.js';
@@ -36,14 +36,14 @@ export type RuntimeSandbox = RuntimeAdditions & { sandbox: Record<string, unknow
 export type RuntimeSandboxRefusal = { refuse: string };
 
 /**
- * What the sandbox provider is told about the run besides its session: `required` when the run is marked as one the Foreman bridge dispatched
- * for a sandboxed session (`foremanSandbox: true` in its options). Such a run never goes ahead without a sandbox; an unmarked run (a person
+ * What the sandbox provider is told about the run besides its session: `required` when the run is marked as one dispatched
+ * for a sandboxed session (`requireSandbox: true` in its options). Such a run never goes ahead without a sandbox; an unmarked run (a person
  * typing in the UI) is never refused just because the bridge's records cannot be read.
  */
 type RuntimeSandboxRun = { required: boolean };
 
 /**
- * The sandbox provider the Foreman bridge registers. It answers synchronously for an app session id: `null` for a session without a sandbox,
+ * The registered sandbox provider. It answers synchronously for an app session id: `null` for a session without a sandbox,
  * a refusal when the run must not start, or the sandbox to apply.
  */
 export type RuntimeSandboxProvider = (sessionId: string, run: RuntimeSandboxRun) => RuntimeSandboxRefusal | RuntimeSandbox | null;
@@ -58,10 +58,10 @@ export type RuntimeSdkOptions = { sandbox?: unknown; settings?: Record<string, u
 let runtimeSandboxProvider: RuntimeSandboxProvider | null = null;
 
 /**
- * Registers the provider of the sandbox of sessions that must run isolated (the Foreman bridge's). Unlike the additions provider it is never
+ * Registers the provider of the sandbox of sessions that must run isolated. Unlike the additions provider it is never
  * skipped on a timeout: a session that has a sandbox runs in it or not at all. Pass `null` to take it away.
  */
-// Consumed by the foreman module (through providers/index.ts) to run the sessions it started in their sandbox, and by the Claude runtime tests.
+// Consumed through providers/index.ts to run a sandboxed session, and by the Claude runtime tests.
 export function setClaudeRuntimeSandboxProvider(provider: RuntimeSandboxProvider | null): void {
   runtimeSandboxProvider = provider;
 }

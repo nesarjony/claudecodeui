@@ -103,7 +103,7 @@ describe('service worker fetch handler', () => {
     const { dispatch } = loadServiceWorker({ fetch: offline });
 
     assert.equal(dispatch(`${ORIGIN}/manifest.json`, { method: 'POST' }), null);
-    assert.equal(dispatch(`${ORIGIN}/api/foreman/suggestions`), null);
+    assert.equal(dispatch(`${ORIGIN}/api/projects`), null);
     assert.equal(dispatch(`${ORIGIN}/ws?token=redacted`), null);
     assert.equal(dispatch('https://api.github.com/repos/siteboon/claudecodeui'), null);
   });

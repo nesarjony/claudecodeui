@@ -29,10 +29,9 @@ import {
 useFakeClaudeRuntime();
 
 /**
- * The sandbox of a Foreman session as the runtime applies it. The runtime asks its sandbox provider (registered by the Foreman bridge)
+ * The sandbox of a supervised session as the runtime applies it. The runtime asks its registered sandbox provider
  * for each run of a session: `null` for none, `{ refuse }` when the run must not start, otherwise the additions below. The stand-in has
  * the shape `buildSandboxAdditions` produces; the real provider is exercised through the bridge module in
- * foreman-delegation-integration.test.ts.
  */
 const sandboxAdditions = (overrides: Record<string, unknown> = {}) => ({
   sandbox: {
@@ -335,16 +334,16 @@ test('a tool the sandbox denies is refused at once with no prompt, in a bypass m
 });
 
 // ---------------------------------------------------------------------------------------------
-// Beside Foreman's compaction hooks (the runtime additions provider)
+// Beside the compaction hooks (the runtime additions provider)
 // ---------------------------------------------------------------------------------------------
 
-const FOREMAN_REPO = '/mnt/dev/repo'; // the project path runPrompt gives a run by default
+const SUPERVISED_REPO = '/mnt/dev/repo'; // the project path runPrompt gives a run by default
 const noopHook = { matcher: '', hooks: [async () => ({})] };
-const foremanAdditions = async (session: { sessionId: string; projectPath: string | null }) =>
-  session.projectPath === FOREMAN_REPO ? { hooks: { PreCompact: [noopHook], SessionStart: [noopHook] } } : {};
+const compactionAdditions = async (session: { sessionId: string; projectPath: string | null }) =>
+  session.projectPath === SUPERVISED_REPO ? { hooks: { PreCompact: [noopHook], SessionStart: [noopHook] } } : {};
 
-test('a sandboxed Foreman session registers the compaction hooks and the sandbox together, and the sandbox is not a hook', async () => {
-  await withAdditions(foremanAdditions, () => withSandboxProvider(() => sandboxAdditions({ approvalTimeoutMs: 20_000 }), async () => {
+test('a sandboxed session registers the compaction hooks and the sandbox together, and the sandbox is not a hook', async () => {
+  await withAdditions(compactionAdditions, () => withSandboxProvider(() => sandboxAdditions({ approvalTimeoutMs: 20_000 }), async () => {
     const pending = runPrompt('ask', {}, 'app-session-sb-both');
     // canUseTool is wired: the call is held, flagged as sandboxed.
     const request = await waitForPermissionRequest('app-session-sb-both');
@@ -366,8 +365,8 @@ test('a sandboxed Foreman session registers the compaction hooks and the sandbox
   }));
 });
 
-test('either half alone: a sandbox outside a Foreman repo adds no hook, a Foreman repo without a sandbox only the compaction hooks', async () => {
-  await withAdditions(foremanAdditions, async () => {
+test('either half alone: a sandbox outside the supervised repo adds no hook, that repo without a sandbox only the compaction hooks', async () => {
+  await withAdditions(compactionAdditions, async () => {
     await withSandboxProvider(() => sandboxAdditions(), () => runPrompt('hello', { projectPath: '/mnt/dev/elsewhere' }, 'app-session-sb-only'));
     assert.deepEqual(Object.keys(await initializeHooks()), ['Notification']);
     const sandboxed = await lastSpawn();

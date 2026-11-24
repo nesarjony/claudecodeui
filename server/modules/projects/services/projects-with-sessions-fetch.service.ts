@@ -300,7 +300,7 @@ function broadcastProgress(progress: ProgressUpdate) {
 }
 
 /**
- * Reads the open projects from DB and returns normalized session summaries. A project that a module has registered as over (a Foreman batch's
+ * Reads the open projects from DB and returns normalized session summaries. A project that a module has registered as over (a batch worktree's
  * worktree once its batch has closed, see `project-list-filters.ts`) is not listed: it is with the archived ones, where its sessions stay readable.
  */
 export async function getProjectsWithSessions(

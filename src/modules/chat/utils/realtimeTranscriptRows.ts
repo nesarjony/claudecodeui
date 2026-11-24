@@ -4,7 +4,7 @@ import type { NormalizedMessage } from '@/shared/types';
  * The kinds that are rows of the conversation.
  *
  * Every other kind on the chat socket is a control or app event — run
- * lifecycle, permission prompts, sidebar deltas, Foreman suggestions — that has
+ * lifecycle, permission prompts, sidebar deltas — that has
  * its own consumer and no place in the transcript. `stream_delta` is a row as
  * well, though the realtime handler buffers it on its own path.
  */

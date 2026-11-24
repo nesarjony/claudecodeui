@@ -1,7 +1,6 @@
 import {
   Brain,
   Eye,
-  HardHat,
   Languages,
   Mic,
   Moon,
@@ -10,7 +9,6 @@ import {
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
-import { areForemanSuggestionsAvailable } from '@/modules/foreman';
 import { DarkModeToggle } from '@/shared/ui';
 import { LanguageSelector } from '@/modules/i18n';
 import { SETTING_ROW_CLASS } from '@/shared/constants';
@@ -48,14 +46,6 @@ const INPUT_SETTING_TOGGLES: PreferenceToggleItem[] = [
     key: 'voiceEnabled',
     labelKey: 'quickSettings.voiceEnabled',
     icon: Mic,
-  },
-];
-
-const FOREMAN_TOGGLES: PreferenceToggleItem[] = [
-  {
-    key: 'showForemanSuggestions',
-    labelKey: 'quickSettings.showForemanSuggestions',
-    icon: HardHat,
   },
 ];
 
@@ -115,15 +105,6 @@ export default function QuickSettingsContent({
           {t('quickSettings.sendByCtrlEnterDescription')}
         </p>
       </QuickSettingsSection>
-
-      {areForemanSuggestionsAvailable() ? (
-        <QuickSettingsSection title={t('quickSettings.sections.foreman')}>
-          {renderToggleRows(FOREMAN_TOGGLES)}
-          <p className="ml-3 text-xs text-muted-foreground">
-            {t('quickSettings.showForemanSuggestionsDescription')}
-          </p>
-        </QuickSettingsSection>
-      ) : null}
     </div>
   );
 }

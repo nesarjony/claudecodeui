@@ -7,8 +7,8 @@ import type * as Reconciliation from '@/modules/chat/utils/sessionMessageReconci
 import type { NormalizedMessage, ProjectSession, ServerEvent } from '@/shared/types';
 
 /**
- * Foreman broadcasts its suggestions to every open chat socket as a
- * `foreman_suggestion` frame: it has a `kind` and a `sessionId` but no `id`,
+ * An app broadcast reaches every open chat socket as a frame with a `kind`
+ * and a `sessionId` but no `id`,
  * because it is not a row of the conversation. The realtime handler used to
  * append every kind it did not recognise to the session store, and the merge
  * read `message.id.startsWith(...)` on it. The frame then sat in the session's
@@ -61,10 +61,9 @@ const HISTORY = [
   row('claude_2', 'assistant', 'Six agents are running.', 2),
 ];
 
-// The frame exactly as `createSuggestionBroadcaster` sends it
-// (server/modules/foreman/foreman-suggestions.service.ts): no `id`, no `seq`.
-const foremanSuggestionFrame = (): ServerEvent => ({
-  kind: 'foreman_suggestion',
+// An app broadcast as the gateway sends one: no `id`, no `seq`.
+const idlessAppFrame = (): ServerEvent => ({
+  kind: 'app_broadcast',
   sessionId: SESSION,
   suggestion: {
     id: 'sug_6cf7d02a',
@@ -116,7 +115,7 @@ describe('appendRealtime with a row that has no id', () => {
     const { result } = await loadedStore();
 
     act(() => {
-      result.current.appendRealtime(SESSION, foremanSuggestionFrame() as unknown as NormalizedMessage);
+      result.current.appendRealtime(SESSION, idlessAppFrame() as unknown as NormalizedMessage);
     });
     act(() => {
       result.current.appendRealtime(SESSION, optimisticEcho('are the subagents really proceeding or stuck ?'));
@@ -135,13 +134,13 @@ describe('appendRealtime with a row that has no id', () => {
     const { result } = await loadedStore();
 
     act(() => {
-      result.current.appendRealtime(SESSION, foremanSuggestionFrame() as unknown as NormalizedMessage);
-      result.current.appendRealtime(SESSION, foremanSuggestionFrame() as unknown as NormalizedMessage);
+      result.current.appendRealtime(SESSION, idlessAppFrame() as unknown as NormalizedMessage);
+      result.current.appendRealtime(SESSION, idlessAppFrame() as unknown as NormalizedMessage);
     });
 
     assert.deepEqual(result.current.getSessionSlot(SESSION)?.realtimeMessages, []);
     assert.equal(warn.mock.calls.length, 1);
-    assert.match(String(warn.mock.calls[0][0]), /foreman_suggestion/);
+    assert.match(String(warn.mock.calls[0][0]), /app_broadcast/);
   });
 
   it('gives a sequenced conversation row an id derived from its place in the run', async () => {
@@ -228,14 +227,13 @@ describe('realtime handler routing', () => {
     return { store: view.result, dispatch };
   }
 
-  it('leaves a foreman_suggestion frame to the suggestion card, and the next send still lands', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  it('keeps an id-less app frame out of the transcript, and the next send still lands', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
     const { store, dispatch } = await renderChat();
 
-    dispatch(foremanSuggestionFrame());
+    dispatch(idlessAppFrame());
 
     assert.deepEqual(store.current.getSessionSlot(SESSION)?.realtimeMessages, []);
-    assert.equal(warn.mock.calls.length, 0);
 
     act(() => {
       store.current.appendRealtime(SESSION, optimisticEcho('yes continue'));

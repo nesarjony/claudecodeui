@@ -23,7 +23,7 @@ useFakeClaudeRuntime();
 
 /**
  * A sandboxed run keeps its permission prompts: the sandbox covers Bash only, and the file tools rely on the prompts that a bypass or auto
- * mode would skip. And a run the Foreman bridge marked as its own never goes ahead without its sandbox.
+ * mode would skip. And a run marked as requiring a sandbox never goes ahead without one.
  */
 const sandboxAdditions = () => ({
   sandbox: { enabled: true, failIfUnavailable: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false },
@@ -53,14 +53,14 @@ test('run_started reports the mode the CLI really starts in: none sent is defaul
   }
 });
 
-test('run_started reports the tool lists the run\'s options carried and whether the Foreman bridge dispatched it', async () => {
+test('run_started reports the tool lists the run\'s options carried', async () => {
   const owner = await runPrompt('hello', { toolsSettings: settingsWith({ allowedTools: ['Read', 'Bash(npm test:*)'], disallowedTools: ['WebFetch'] }) }, 'app-session-tools-owner');
   const ownRun = owner.events.find((event) => event.kind === 'run_started') as RunStarted;
-  assert.deepEqual([ownRun.allowedTools, ownRun.disallowedTools, ownRun.foremanDispatch], [['Read', 'Bash(npm test:*)'], ['WebFetch'], false]);
+  assert.deepEqual([ownRun.allowedTools, ownRun.disallowedTools], [['Read', 'Bash(npm test:*)'], ['WebFetch']]);
 
-  const bridge = await runPrompt('hello', { foremanDispatch: true }, 'app-session-tools-bridge');
-  const bridgeRun = bridge.events.find((event) => event.kind === 'run_started') as RunStarted;
-  assert.deepEqual([bridgeRun.allowedTools, bridgeRun.disallowedTools, bridgeRun.foremanDispatch], [[], [], true]);
+  const bare = await runPrompt('hello', {}, 'app-session-tools-bare');
+  const bareRun = bare.events.find((event) => event.kind === 'run_started') as RunStarted;
+  assert.deepEqual([bareRun.allowedTools, bareRun.disallowedTools], [[], []]);
 });
 
 test('a sandboxed run asked for bypassPermissions, auto or the UI\'s skipPermissions still prompts, and a call is never allowed unanswered', async () => {
@@ -147,14 +147,14 @@ test('confineSandboxedPermissions keeps a mode a sandboxed run may use, puts any
 
 test('a run marked as the bridge\'s is refused with nobody to ask for its sandbox, and the provider is told which runs are marked', async () => {
   const logged = (await readLog()).length;
-  const refused = await runPrompt('hello', { foremanSandbox: true }, 'app-session-marked-alone');
+  const refused = await runPrompt('hello', { requireSandbox: true }, 'app-session-marked-alone');
   assert.deepEqual(kinds(refused), ['run_error']);
   assert.match((refused.events[0] as RunError).message, /must be sandboxed/);
   assert.equal((await readLog()).length, logged, 'the CLI was not started');
 
   const asked: Array<[string, boolean]> = [];
   await withSandboxProvider((sessionId, run) => { asked.push([sessionId, run.required]); return null; }, async () => {
-    await runPrompt('hello', { foremanSandbox: true }, 'app-session-marked');
+    await runPrompt('hello', { requireSandbox: true }, 'app-session-marked');
     await runPrompt('hello', {}, 'app-session-unmarked');
   });
   assert.deepEqual(asked, [['app-session-marked', true], ['app-session-unmarked', false]]);

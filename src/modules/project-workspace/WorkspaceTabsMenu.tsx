@@ -2,9 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
-import { ArrowLeft, Folder, GitBranch, HardHat, MessageSquare, MoreHorizontal, Terminal } from 'lucide-react';
-
-import { FOREMAN_TAB_LABEL_KEY, isForemanTabAvailable } from '@/modules/foreman';
+import { ArrowLeft, Folder, GitBranch, MessageSquare, MoreHorizontal, Terminal } from 'lucide-react';
 import type { AppTab } from '@/shared/types';
 
 type WorkspaceTabsMenuProps = {
@@ -17,7 +15,6 @@ const VIEWS: Array<{ id: AppTab; labelKey: string; icon: typeof MessageSquare }>
   { id: 'shell', labelKey: 'tabs.shell', icon: Terminal },
   { id: 'files', labelKey: 'tabs.files', icon: Folder },
   { id: 'git', labelKey: 'tabs.git', icon: GitBranch },
-  { id: 'foreman', labelKey: FOREMAN_TAB_LABEL_KEY, icon: HardHat },
 ];
 
 const MENU_WIDTH_PX = 192;
@@ -30,7 +27,7 @@ export default function WorkspaceTabsMenu({ activeTab, setActiveTab }: Workspace
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const [anchor, setAnchor] = useState<{ top: number; left: number } | null>(null);
-  const views = VIEWS.filter((view) => view.id !== 'foreman' || isForemanTabAvailable());
+  const views = VIEWS;
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -87,7 +84,7 @@ export default function WorkspaceTabsMenu({ activeTab, setActiveTab }: Workspace
         aria-label={t('tabs.views', { defaultValue: 'Workspace views' })}
         aria-haspopup="menu"
         aria-expanded={open}
-        title="Shell, files, source control and Foreman"
+        title="Shell, files and source control"
         className={`flex h-8 w-8 items-center justify-center rounded-lg transition hover:bg-muted hover:text-foreground ${
           open ? 'bg-muted text-foreground' : 'text-muted-foreground'
         }`}

@@ -328,19 +328,6 @@ export const api = {
     cancel: (id: string) => del(`/api/scheduled-messages/${encodeURIComponent(id)}`),
   },
 
-  // Foreman suggestions: the supervisor's suggested next step for a session, and what the user did with it.
-  foreman: {
-    pendingSuggestion: (sessionId: string) =>
-      get(`/api/foreman-suggestions/pending${query({ sessionId })}`),
-    suggestionFeedback: (suggestionId: string, body: { action: 'sent' | 'edited' | 'dismissed'; finalText?: string }) =>
-      post(`/api/foreman-suggestions/${encodeURIComponent(suggestionId)}/feedback`, body),
-    // Has Foreman carry out a write_notes or handoff suggestion itself (a handoff answers the new session's id).
-    executeSuggestion: (suggestionId: string) =>
-      post(`/api/foreman-suggestions/${encodeURIComponent(suggestionId)}/execute`, {}),
-    // The task notes Foreman's context keeper last wrote for a session.
-    notes: (sessionId: string) => get(`/api/foreman-suggestions/notes${query({ sessionId })}`),
-  },
-
   // Workspace file tree
   readFile: (projectId: string, filePath: string) =>
     get(`/api/file-tree/projects/${projectId}/file${query({ filePath })}`),

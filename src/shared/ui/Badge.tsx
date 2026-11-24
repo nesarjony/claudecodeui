@@ -23,7 +23,7 @@ export const badgeVariants = cva(
 
 type BadgeProps = React.HTMLAttributes<HTMLDivElement> & VariantProps<typeof badgeVariants>;
 
-/** Used by the browser-use, chat, foreman-next, mcp, settings, sidebar and skills modules for short status labels. */
+/** Used by the browser-use, chat, mcp, settings, sidebar and skills modules for short status labels. */
 export function Badge({ className, variant, ...props }: BadgeProps) {
   return <div className={cn(badgeVariants({ variant }), className)} {...props} />;
 }

@@ -24,7 +24,7 @@ test('denied tools join the run\'s own disallowed tools: deduplicated, every exi
   const options: Options = { disallowedTools: ['Bash(rm:*)', 'mcp__a__b'] };
   const enforced = applyRuntimeModelAndToolAdditions(options, { disallowedTools: ['mcp__a__b', 'mcp__infigraph__save_session', 'mcp__infigraph__save_session', 'WebFetch'] });
   assert.deepEqual(options.disallowedTools, ['Bash(rm:*)', 'mcp__a__b', 'mcp__infigraph__save_session', 'WebFetch']);
-  // Everything Foreman denied is protected, including the entry the run already had.
+  // Everything the additions provider denied is protected, including the entry the run already had.
   assert.deepEqual(enforced, ['mcp__a__b', 'mcp__infigraph__save_session', 'WebFetch']);
 });
 
@@ -48,12 +48,12 @@ test('no additions leave the options alone (and do not create an empty list)', (
   assert.deepEqual(bare, {});
 });
 
-test('an "always allow" removes the tool from the disallowed list, unless Foreman denied it', () => {
+test('an "always allow" removes the tool from the disallowed list, unless the additions provider denied it', () => {
   const disallowed = ['Bash(rm:*)', 'mcp__infigraph__save_session', 'WebFetch'];
   const enforced = ['mcp__infigraph__save_session'];
   // The person's own denial of WebFetch is undone, as before.
   assert.deepEqual(removeRememberedDenial(disallowed, 'WebFetch', enforced), ['Bash(rm:*)', 'mcp__infigraph__save_session']);
-  // Foreman's is not.
+  // The provider's is not.
   assert.deepEqual(removeRememberedDenial(disallowed, 'mcp__infigraph__save_session', enforced), disallowed);
   // With nothing enforced it behaves exactly like the old filter.
   assert.deepEqual(removeRememberedDenial(disallowed, 'mcp__infigraph__save_session', []), ['Bash(rm:*)', 'WebFetch']);
@@ -61,7 +61,7 @@ test('an "always allow" removes the tool from the disallowed list, unless Forema
   assert.deepEqual(removeRememberedDenial(disallowed, 'Read', enforced), disallowed);
 });
 
-test('a Foreman denial that duplicated a user denial survives that user\'s "always allow"', () => {
+test('a provider denial that duplicated a user denial survives that user\'s "always allow"', () => {
   const options: Options = { disallowedTools: ['mcp__a__b'] };
   const enforced = applyRuntimeModelAndToolAdditions(options, { disallowedTools: ['mcp__a__b'] });
   assert.deepEqual(removeRememberedDenial(options.disallowedTools!, 'mcp__a__b', enforced), ['mcp__a__b']);

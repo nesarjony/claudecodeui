@@ -33,10 +33,6 @@ function getTabTitle(activeTab: AppTab, shouldShowTasksTab: boolean, t: (key: st
     return t('tabs.browser');
   }
 
-  if (activeTab === 'foreman') {
-    return t('foreman:tabs.title');
-  }
-
   return t('misc.projectFallback');
 }
 

@@ -18,7 +18,7 @@ const SESSION = 'prov-fake-session';
 const log = process.env.FAKE_CLAUDE_LOG;
 const out = (message) => process.stdout.write(JSON.stringify(message) + '\n');
 const note = (entry) => log && fs.appendFileSync(log, JSON.stringify(entry) + '\n');
-// How the runtime started this process: the command line and the Foreman-controlled environment.
+// How the runtime started this process: the command line and the environment it was given.
 // The routing-relevant slice of the environment (all test values, none real): what decides where the request goes and with which credential.
 const routing = Object.fromEntries(Object.entries(process.env).filter(([name]) => /^(ANTHROPIC_|CLAUDE_AGENT_API|CLAUDE_CODE_(OAUTH|USE_|SUBAGENT))/.test(name)));
 note({ spawn: { argv: process.argv.slice(2), catchAll: process.env.CLAUDE_CODE_REFUSAL_FALLBACK_CATCH_ALL ?? null, env: routing, scratch: { tmpdir: process.env.TMPDIR ?? null, claudeTmpdir: process.env.CLAUDE_CODE_TMPDIR ?? null, autocompact: process.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE ?? null } } });
@@ -154,7 +154,7 @@ export function useFakeClaudeRuntime(): void {
   const unsubscribers: Array<() => void> = [];
 
   before(async () => {
-    directory = await mkdtemp(path.join(os.tmpdir(), 'foreman-runtime-'));
+    directory = await mkdtemp(path.join(os.tmpdir(), 'claude-runtime-'));
     const cli = path.join(directory, 'fake-claude');
     await writeFile(cli, FAKE_CLAUDE);
     await chmod(cli, 0o755);

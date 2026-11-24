@@ -60,7 +60,7 @@ const abortedSessionIds = new Set();
 const supersededInstances = new WeakSet();
 
 // In-process subscribers to this runtime's lifecycle events (the ClaudeRuntimeEvent shapes in
-// server/shared/types.ts). The Foreman bridge is the only subscriber today; the runtime itself
+// server/shared/types.ts). The runtime itself
 // knows nothing about it. Listeners run synchronously inside the run loop, so a faulty one is
 // isolated here and can never break or slow a run.
 const runtimeEventListeners = new Set();
@@ -77,8 +77,8 @@ export function subscribeClaudeRuntimeEvents(listener) {
   };
 }
 
-// The Foreman bridge's hook into each run: it answers with extra SDK hooks, environment variables, subagents, a refusal fallback
-// model and denied tools for a session. Registered once by the foreman module; the runtime knows nothing else about Foreman.
+// A hook into each run: the provider answers with extra SDK hooks, environment variables, subagents, a refusal fallback
+// model and denied tools for a session. Registered once by whoever supervises the session.
 let runtimeAdditionsProvider = null;
 
 /**
@@ -93,7 +93,7 @@ let runtimeAdditionsProvider = null;
  */
 
 /**
- * Registers the provider that adds in-process hooks and environment variables to a run (Foreman's PreCompact and SessionStart
+ * Registers the provider that adds in-process hooks and environment variables to a run (PreCompact and SessionStart
  * hooks, and the autocompact threshold of sessions it started), the subagents a session it started may delegate to (with
  * the PreToolUse hook that limits their Bash), and, for those sessions, the refusal fallback model and the denied tools.
  * @param {((session: RuntimeAdditionsSession) => Promise<RuntimeAdditions>) | null} provider
@@ -1008,8 +1008,8 @@ async function loadMcpConfig(cwd) {
 /**
  * Executes a Claude query using the SDK
  * @param {string} command - User prompt/command
- * @param {Object} options - Query options. `foremanSandbox: true` marks a run the Foreman bridge dispatched for a sandboxed session:
- *   such a run is refused unless its sandbox is found (see `resolveRuntimeSandbox`). `foremanDispatch: true` marks every run the bridge
+ * @param {Object} options - Query options. `requireSandbox: true` marks a run dispatched for a sandboxed session:
+ *   such a run is refused unless its sandbox is found (see `resolveRuntimeSandbox`). Every other run
  *   dispatches, reported on `run_started` so the bridge never counts it as the owner's.
  * @param {Object} ws - WebSocket connection
  * @param {Object} context - Provider-scoped model, session, and auth lookups
@@ -1203,9 +1203,9 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
       }]
     };
 
-    // Foreman-managed sessions get in-process PreCompact/SessionStart hooks (project and Foreman's own repos only) and,
+    // A supervised session gets in-process PreCompact/SessionStart hooks (its own project only) and,
     // when started through the bridge, the worker autocompact threshold. Appended to the hooks above, never replacing them.
-    const sandbox = resolveRuntimeSandbox(sessionId, { required: options.foremanSandbox === true });
+    const sandbox = resolveRuntimeSandbox(sessionId, { required: options.requireSandbox === true });
     // A session that has a sandbox runs in it or not at all (fail closed): there is no other guard.
     if (sandbox && 'refuse' in sandbox) {
       throw new Error(sandbox.refuse);
@@ -1222,13 +1222,13 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
     if (runtimeAdditions.env) {
       sdkOptions.env = { ...sdkOptions.env, ...runtimeAdditions.env };
     }
-    // The refusal fallback model and the tools Foreman denies its workers. The denied tools are kept apart so a stored or
+    // The refusal fallback model and the tools the additions provider denies. The denied tools are kept apart so a stored or
     // ticked "always allow" below cannot take them out of the run again.
     const enforcedDisallowedTools = applyRuntimeModelAndToolAdditions(sdkOptions, runtimeAdditions);
     for (const [event, matchers] of Object.entries(runtimeAdditions.hooks ?? {})) {
       sdkOptions.hooks[event] = [...(sdkOptions.hooks[event] ?? []), ...matchers];
     }
-    // Subagents Foreman lets a bridge-started session delegate to; an agent the run already defines keeps its own definition.
+    // Subagents a supervised session may delegate to; an agent the run already defines keeps its own definition.
     if (runtimeAdditions.agents && typeof runtimeAdditions.agents === 'object') {
       sdkOptions.agents = { ...runtimeAdditions.agents, ...(sdkOptions.agents ?? {}) };
     }
@@ -1251,7 +1251,7 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
       }
 
       if (!requiresInteraction) {
-        // A tool Foreman denies its workers is refused first of all: not even a bypass mode lets it through.
+        // A denied tool is refused first of all: not even a bypass mode lets it through.
         if (enforcedDisallowedTools.some(entry => matchesToolPermission(entry, toolName, input))) {
           return { behavior: 'deny', message: 'Tool disallowed by settings' };
         }
@@ -1351,7 +1351,7 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
       // Keep notification behavior operational via runtime events even if hook registration fails.
       console.warn('Failed to initialize Claude query with hooks, retrying without hooks:', hookError?.message || hookError);
       delete sdkOptions.hooks;
-      // Foreman's subagents come with the hook that limits their Bash: without hooks they are left out too.
+      // The provider's subagents come with the hook that limits their Bash: without hooks they are left out too.
       for (const [name, agent] of Object.entries(runtimeAdditions.agents ?? {})) {
         if (sdkOptions.agents?.[name] === agent) delete sdkOptions.agents[name];
       }
@@ -1377,11 +1377,10 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
       resumed: Boolean(providerSessionId),
       model: resolvedModel || options.model || null,
       // The mode the run really starts in (after the UI's skip-permissions setting and a sandbox's confinement), not the one asked for,
-      // and the UI's tool lists as sent: a session handed over to Foreman runs Foreman's turns with no more than its owner's.
+      // and the UI's tool lists as sent.
       permissionMode: sdkOptions.permissionMode || 'default',
       allowedTools: nonEmptyStrings(options.toolsSettings?.allowedTools),
       disallowedTools: nonEmptyStrings(options.toolsSettings?.disallowedTools),
-      foremanDispatch: options.foremanDispatch === true
     });
     console.log('Starting async generator loop for session:', capturedSessionId || 'NEW');
     for await (const message of queryInstance) {

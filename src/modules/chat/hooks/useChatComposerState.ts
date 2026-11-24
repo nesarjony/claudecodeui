@@ -67,7 +67,7 @@ type UseChatComposerStateArgs = {
   setPendingPermissionRequests: Dispatch<SetStateAction<PendingPermissionRequest[]>>;
   /**
    * Called with the text of every message the user submits from the composer (typed, or sent through `sendText`),
-   * just before it is sent or queued. The Foreman suggestion card uses it to report an edited suggestion.
+   * just before it is sent or queued.
    */
   onUserSubmit?: (text: string) => void;
 };

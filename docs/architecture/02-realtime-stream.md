@@ -380,7 +380,7 @@ the replay buffer had nothing to retract it, so a mid-run page refresh resurrect
 already-answered prompt — and a second tab kept it forever. `permissionPromptReplay.test.tsx`
 pins the replayed request-then-resolution netting out to nothing.
 
-A run that Foreman started with a guard (`options.toolPolicy`) has no person watching it, so
+A run started with a guard (`options.toolPolicy`) has no person watching it, so
 `canUseTool` never prompts for the two interactive tools, `AskUserQuestion` and
 `ExitPlanMode`, which otherwise wait with no timeout. It denies them at once with the guard's
 reason (tell the worker to decide from the repo docs or list the question under OPEN

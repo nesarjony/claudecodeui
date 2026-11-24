@@ -178,12 +178,6 @@ export function useChatRealtimeHandlers({
         case 'loading_progress':
           return;
 
-        // Broadcast to every chat socket by the Foreman bridge. The suggestion
-        // card (useForemanSuggestion) and the Foreman tab subscribe to the same
-        // socket and own it; it is not a row of the conversation.
-        case 'foreman_suggestion':
-          return;
-
         default:
           break;
       }
@@ -230,7 +224,7 @@ export function useChatRealtimeHandlers({
       // --- Conversation rows: route to store ---
       // Only kinds that are rows of the conversation are appended. Anything
       // else here is a control or app event with its own consumer; appending
-      // every unrecognised kind is what let Foreman's id-less suggestion frame
+      // every unrecognised kind is what let an id-less app frame
       // into the merge, where it broke every later send in the session.
       if (sid && isTranscriptRowKind(msg.kind)) {
         sessionStore.appendRealtime(sid, msg as unknown as NormalizedMessage);

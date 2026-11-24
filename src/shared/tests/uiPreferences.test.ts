@@ -37,22 +37,7 @@ test('a fresh install gets the documented defaults', () => {
     sendByCtrlEnter: false,
     sidebarVisible: true,
     voiceEnabled: false,
-    showForemanSuggestions: true,
   });
-});
-
-test('Foreman suggestions are on by default, can be turned off per user, and the stored choice is read back', () => {
-  assert.equal(readStoredUiPreferences().showForemanSuggestions, true);
-
-  storeUiPreferences({ showForemanSuggestions: false });
-  assert.equal(readStoredUiPreferences().showForemanSuggestions, false);
-
-  storeUiPreferences({ showForemanSuggestions: 'false' });
-  assert.equal(readStoredUiPreferences().showForemanSuggestions, false, 'a string value is coerced');
-
-  const off = uiPreferencesReducer(baseline(), { type: 'set', key: 'showForemanSuggestions', value: false });
-  assert.equal(off.showForemanSuggestions, false);
-  assert.equal(uiPreferencesReducer(off, { type: 'set', key: 'showForemanSuggestions', value: true }).showForemanSuggestions, true);
 });
 
 test('the stored blob is read back', () => {

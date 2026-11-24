@@ -51,7 +51,7 @@ export type ProviderModelActions = {
 //----------------- PROJECTS AND SESSIONS ------------
 
 /** Identifies the workspace pane the user is looking at; plugin panes are namespaced by plugin id. */
-export type AppTab = 'chat' | 'files' | 'shell' | 'git' | 'tasks' | 'browser' | 'foreman' | `plugin:${string}`;
+export type AppTab = 'chat' | 'files' | 'shell' | 'git' | 'tasks' | 'browser' | `plugin:${string}`;
 
 /** A message queued to be sent to a session at a future time. */
 export type ScheduledMessage = {
@@ -1111,8 +1111,7 @@ export type PreferenceToggleKey =
   | 'showRawParameters'
   | 'showThinking'
   | 'sendByCtrlEnter'
-  | 'voiceEnabled'
-  | 'showForemanSuggestions';
+  | 'voiceEnabled';
 
 /** The full set of quick settings booleans keyed by PreferenceToggleKey, held together so the panel can read every toggle from one object. */
 export type QuickSettingsPreferences = Record<PreferenceToggleKey, boolean>;

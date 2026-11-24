@@ -4,18 +4,6 @@ export { apiKeysDb } from '@/modules/database/repositories/api-keys.js';
 export { quickCommandsDb } from '@/modules/database/repositories/quick-commands.js';
 export { appConfigDb } from '@/modules/database/repositories/app-config.js';
 export { credentialsDb } from '@/modules/database/repositories/credentials.js';
-// foremanSessionStateDb, foremanEventsDb, foremanIdempotencyDb: used by the Foreman bridge to keep session state, the event log and the answers
-// to idempotency keys across restarts.
-export { foremanSessionStateDb } from '@/modules/database/repositories/foreman-session-state.db.js';
-export type { ForemanSessionStateRow } from '@/modules/database/repositories/foreman-session-state.db.js';
-export { foremanEventsDb } from '@/modules/database/repositories/foreman-events.db.js';
-export type { ForemanEventRow } from '@/modules/database/repositories/foreman-events.db.js';
-export { foremanIdempotencyDb } from '@/modules/database/repositories/foreman-idempotency.db.js';
-export type { ForemanIdempotencyRow } from '@/modules/database/repositories/foreman-idempotency.db.js';
-// foremanHandoverGrantsDb: used by the Foreman bridge's hand-over, which adopts a session only with an unused, unexpired grant of its owner.
-export { foremanHandoverGrantsDb } from '@/modules/database/repositories/foreman-handover-grants.db.js';
-// foremanRunModesDb: used by the Foreman bridge to remember the mode and tools each session's owner last ran it with, which a hand-over never exceeds.
-export { foremanRunModesDb } from '@/modules/database/repositories/foreman-run-modes.db.js';
 export { githubTokensDb } from '@/modules/database/repositories/github-tokens.js';
 export { notificationChannelEndpointsDb } from '@/modules/database/repositories/notification-channel-endpoints.js';
 export { notificationPreferencesDb } from '@/modules/database/repositories/notification-preferences.js';

@@ -1299,10 +1299,9 @@ export function summarizeToolInput(input: unknown, maxLength = 200): string {
  * The CLI marks a failed turn with `is_error: true`, some failures carry only an `error*` subtype (`error_max_turns`,
  * `error_during_execution`), and a failure can even arrive with `subtype: "success"` and `is_error: true`, so both signs count.
  * Takes the loosely typed message of a runtime `turn_result` event; a missing field or a non-string subtype counts as "not failed".
- * This is the single definition on purpose: the status the bridge reports for a session and the event Foreman receives for the turn must
+ * This is the single definition on purpose: the status reported for a session and the event emitted for the turn must
  * never disagree about whether the turn failed.
  */
-// Consumed by the foreman module: foreman-session-state.service.ts (the session's `error` status) and foreman-event-translate.service.ts (`error` or `turn_end`).
 export function isErrorTurnResult(message: Record<string, unknown>): boolean {
   return message.is_error === true || String(message.subtype ?? '').startsWith('error');
 }
@@ -1310,16 +1309,14 @@ export function isErrorTurnResult(message: Record<string, unknown>): boolean {
 // ---------------------------
 //----------------- SANDBOXED RUN PERMISSION MODE UTILITIES ------------
 /**
- * The permission modes a sandboxed run (a session the Foreman bridge started) may run in. The sandbox isolates Bash only: the file tools
+ * The permission modes a sandboxed run may run in. The sandbox isolates Bash only: the file tools
  * (Read, Edit, Write) run in the CLI process, bounded by permission rules and prompts, and `bypassPermissions` skips those prompts while `auto`
  * hands them to a classifier. So a sandboxed run never runs in either, whatever its options, its stored state or the UI's settings say.
  */
-// Consumed by the foreman module: foreman-sessions.service.ts names them when it refuses another mode.
 export const SANDBOXED_PERMISSION_MODES: readonly string[] = ['default', 'acceptEdits', 'plan'];
 
 /** Whether a sandboxed run may run in `mode`: one of `SANDBOXED_PERMISSION_MODES`. Anything else, a non-string included, is not. */
-// Consumed by the foreman module (foreman-sessions.service.ts refuses a start or a message in another mode, foreman-session-state.service.ts
-// never hands a stored one back) and by the providers module's claude-runtime-sandbox.ts (a sandboxed run in another mode runs in `default`).
+// Consumed by the providers module's claude-runtime-sandbox.ts: a sandboxed run in another mode runs in `default`.
 export function isSandboxedPermissionMode(mode: unknown): mode is string {
   return typeof mode === 'string' && SANDBOXED_PERMISSION_MODES.includes(mode);
 }

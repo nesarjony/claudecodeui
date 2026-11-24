@@ -2,7 +2,7 @@ import * as React from 'react';
 
 import { cn } from '@/shared/utils';
 
-/** Used by the chat module to frame the provider picker and plan tool output, and by the foreman-next module for its panels and decision cards. */
+/** Used by the chat module to frame the provider picker and plan tool output. */
 export const Card = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>(
   ({ className, ...props }, ref) => (
     <div

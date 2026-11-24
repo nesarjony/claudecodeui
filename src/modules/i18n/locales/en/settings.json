@@ -70,16 +70,13 @@
     "sections": {
       "appearance": "Appearance",
       "toolDisplay": "Tool Display",
-      "inputSettings": "Input Settings",
-      "foreman": "Foreman"
+      "inputSettings": "Input Settings"
     },
     "darkMode": "Dark Mode",
     "showRawParameters": "Show raw parameters",
     "showThinking": "Show thinking",
     "sendByCtrlEnter": "Send by Ctrl+Enter",
     "voiceEnabled": "Voice (mic + read aloud)",
-    "showForemanSuggestions": "Show Foreman suggestions",
-    "showForemanSuggestionsDescription": "Foreman reads each finished turn and suggests the next step above the message box. Turn this off to hide the suggestions.",
     "sendByCtrlEnterDescription": "When enabled, pressing Ctrl+Enter will send the message instead of just Enter. This is useful for IME users to avoid accidental sends.",
     "dragHandle": {
       "dragging": "Dragging handle",

@@ -7,7 +7,7 @@ export type ClosedProjectCheckFactory = () => ClosedProjectCheck;
 const factories: ClosedProjectCheckFactory[] = [];
 
 /**
- * Lets a module that owns a kind of project (Foreman's batch worktrees) say which of them are over. The sidebar lists the others and the archive
+ * Lets a module that owns a kind of project (batch worktrees, say) report which of them are over. The sidebar lists the others and the archive
  * lists these: the `isArchived` flag of the row cannot decide it, since any session upsert in the project's path sets it back to active. Registering
  * the same factory twice counts once.
  */

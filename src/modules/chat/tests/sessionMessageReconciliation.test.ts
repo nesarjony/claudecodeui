@@ -101,10 +101,10 @@ test('a replacement echo survives a kept turn that repeats its text', () => {
 });
 
 test('passes over a live row without an id instead of throwing', () => {
-  // Foreman's suggestion frame reached the live rows this way: a `kind` and a
+  // An app broadcast reached the live rows this way: a `kind` and a
   // `sessionId` but no `id`. Reading `id.startsWith` on it failed the merge.
   const idless = {
-    kind: 'foreman_suggestion',
+    kind: 'app_broadcast',
     sessionId: 'session-1',
     timestamp: '2026-11-14T15:09:54.000Z',
   } as unknown as NormalizedMessage;

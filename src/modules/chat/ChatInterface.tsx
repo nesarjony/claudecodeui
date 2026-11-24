@@ -29,8 +29,6 @@ import CommandResultModal from '@/modules/chat/modals/CommandResultModal';
 import QuickCommandsControl from '@/modules/chat/quick-commands/QuickCommandsControl';
 import AgentsBar from '@/modules/chat/agents/AgentsBar';
 import ChatHeaderStatus from '@/modules/chat/agents/ChatHeaderStatus';
-import ForemanSuggestionCard from '@/modules/chat/foreman/ForemanSuggestionCard';
-import { useForemanSuggestion } from '@/modules/chat/foreman/useForemanSuggestion';
 
 type ChatInterfaceProps = {
   isActive: boolean;
@@ -49,8 +47,6 @@ type ChatInterfaceProps = {
   newSessionTrigger?: number;
   onTaskClick?: (...args: unknown[]) => void;
   onShowAllTasks?: (() => void) | null;
-  /** The per-user "Foreman suggestions" preference; the suggestion card and its requests are off when false. */
-  showForemanSuggestions?: boolean;
 };
 
 /**
@@ -74,7 +70,6 @@ function ChatInterface({
   externalMessageUpdate,
   newSessionTrigger,
   onShowAllTasks,
-  showForemanSuggestions = true,
 }: ChatInterfaceProps) {
   const { tasksEnabled, isTaskMasterInstalled } = useTasksSettings();
   const { subscribe } = useWebSocket();
@@ -190,13 +185,6 @@ function ChatInterface({
     onNavigateToSession?.(sessionId);
   }, [setCurrentSessionId, onSessionEstablished, onNavigateToSession]);
 
-  // The Foreman suggestion card learns what the user finally sends after pressing Edit. The card's hook is created
-  // after the composer's (it needs the composer's send and fill functions), so the composer reaches it through a ref.
-  const foremanSubmitRef = useRef<((text: string) => void) | null>(null);
-  const handleUserSubmit = useCallback((text: string) => {
-    foremanSubmitRef.current?.(text);
-  }, []);
-
   const {
     input,
     setInput,
@@ -249,7 +237,6 @@ function ChatInterface({
     beginEditMessage,
     cancelEditMessage,
   } = useChatComposerState({
-    onUserSubmit: handleUserSubmit,
     selectedProject,
     selectedSession,
     currentSessionId,
@@ -404,24 +391,6 @@ function ChatInterface({
     }
   }, [currentSessionId, provider, selectProviderEffort, selectedSession?.id]);
 
-  // "Foreman suggests": the supervisor's suggested next step, shown above the composer. Send goes through the normal
-  // send path, Edit fills the composer, and every choice is reported back to Foreman as feedback.
-  const foremanSessionId = currentSessionId || selectedSession?.id || null;
-  const fillComposerFromForeman = useCallback((text: string) => {
-    setInput(text);
-    textareaRef.current?.focus();
-  }, [setInput, textareaRef]);
-  const foreman = useForemanSuggestion({
-    sessionId: foremanSessionId,
-    enabled: showForemanSuggestions,
-    currentModel: currentProviderModel || null,
-    sendText,
-    fillComposer: fillComposerFromForeman,
-    switchModel: handleSelectComposerModel,
-    openSession: (id) => onNavigateToSession?.(id),
-    submitListenerRef: foremanSubmitRef,
-  });
-
   // Mirrors ChatComposer's own visibility check so the message pane can
   // reserve enough bottom space to keep the floating status tab from
   // overlapping the last message.
@@ -534,26 +503,6 @@ function ChatInterface({
           )}
 
           <ChatComposer
-          foremanSuggestion={
-            showForemanSuggestions && foreman.card ? (
-              <ForemanSuggestionCard
-                key={foreman.card.suggestion.id}
-                suggestion={foreman.card.suggestion}
-                plan={foreman.card.plan}
-                onSend={foreman.send}
-                onEdit={foreman.edit}
-                onSwitchModel={foreman.switchTo}
-                onDismiss={foreman.dismiss}
-                execution={foreman.execution}
-                notesView={foreman.notesView}
-                onExecute={foreman.execute}
-                onViewNotes={foreman.viewNotes}
-                onHideNotes={foreman.hideNotes}
-                onCloseExecution={foreman.closeExecution}
-                onOpenSession={onNavigateToSession ? (id) => onNavigateToSession(id) : undefined}
-              />
-            ) : null
-          }
           quickCommands={
             <QuickCommandsControl
               setInput={setInput}

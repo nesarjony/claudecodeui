@@ -226,7 +226,7 @@ test('a prompt of a run without a sandbox keeps the runtime\'s own approval wind
 });
 
 // ---------------------------------------------------------------------------------------------
-// Foreman's refusal fallback model and denied tools, from the runtime additions provider
+// The refusal fallback model and denied tools, from the runtime additions provider
 // ---------------------------------------------------------------------------------------------
 
 test('the additions provider is asked with the run\'s SDK model, without the @api marker', async () => {
@@ -269,14 +269,14 @@ test('without additions the CLI gets no fallback model, and a run without the pr
   assert.equal(catchAll, null);
 });
 
-test('a tool Foreman denies is refused by canUseTool at once, in a bypass mode too, with no prompt', async () => {
+test('a denied tool is refused by canUseTool at once, in a bypass mode too, with no prompt', async () => {
   runtime.setClaudeRuntimeAdditionsProvider(async () => ({ disallowedTools: ['Bash'] }));
   try {
-    const plain = await runPrompt('ask', {}, 'app-session-foreman-deny');
+    const plain = await runPrompt('ask', {}, 'app-session-denied-tool');
     assert.ok(!kinds(plain).includes('permission_request'));
     assert.equal((await permissionAnswers()).at(-1)?.response.message, 'Tool disallowed by settings');
 
-    const bypass = await runPrompt('ask', { toolsSettings: settingsWith({ skipPermissions: true }) }, 'app-session-foreman-deny-bypass');
+    const bypass = await runPrompt('ask', { toolsSettings: settingsWith({ skipPermissions: true }) }, 'app-session-denied-tool-bypass');
     assert.ok(!kinds(bypass).includes('permission_request'));
     assert.equal((await permissionAnswers()).at(-1)?.response.behavior, 'deny');
   } finally {
